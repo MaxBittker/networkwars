@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Network Wars</title>
+<style>
+  :root {
+    --red:#ff4d5e; --green:#36d39a; --yellow:#f5c542; --blue:#4d8bff; --purple:#a96bff;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin:0; height:100%; background:#05140f; color:#cfe; font-family: -apple-system, Segoe UI, Roboto, sans-serif; overflow:hidden; }
+  #app { display:flex; flex-direction:column; height:100%; max-width:800px; margin:0 auto; }
+  header { display:flex; justify-content:center; gap:10px; padding:10px; }
+  .chip { width:46px; height:46px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-weight:700; font-size:18px; border:2px solid; background:#05140f; }
+  .chip.cur { box-shadow:0 0 14px 3px currentColor; }
+  .chip.red{color:var(--red)} .chip.green{color:var(--green)} .chip.yellow{color:var(--yellow)}
+  .chip.blue{color:var(--blue)} .chip.purple{color:var(--purple)}
+  .chip span { color:#fff; }
+  #board { flex:1; position:relative; }
+  canvas { width:100%; height:100%; display:block; touch-action:none; }
+  footer { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; font-size:18px; }
+  .btn { color:#7fd6ff; font-weight:600; cursor:pointer; user-select:none; padding:6px 4px; }
+  .btn:active { opacity:.6; }
+  #status { color:#9fb; font-size:13px; flex:1; text-align:center; }
+  #modal { position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.6); }
+  #modal.show { display:flex; }
+  .dialog { background:#000; border:1px solid #1d3; border-radius:10px; padding:28px 40px; text-align:center; min-width:240px; }
+  .dialog h2 { margin:0 0 6px; font-size:26px; color:#fff; }
+  .dialog p { margin:0 0 18px; color:#cfe; }
+  .dialog .row { display:flex; gap:40px; justify-content:center; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="header"></header>
+  <div id="board"><canvas id="cv"></canvas></div>
+  <footer>
+    <div class="btn" id="surrender">Surrender</div>
+    <div id="status">Select a red node (strength &gt; 1) to attack.</div>
+    <div class="btn" id="endturn">End Turn</div>
+  </footer>
+</div>
+<div id="modal"><div class="dialog">
+  <h2 id="m-title">You Won!</h2>
+  <p>Play again?</p>
+  <div class="row"><div class="btn" id="m-no">No</div><div class="btn" id="m-yes">Yes</div></div>
+</div></div>
+
+<script>
+// ===========================================================================
+// Network Wars — pure rules engine (ported from game.js, runs in the browser).
+// See DESIGN.md for the rules. No server: all state lives client-side and the
+// human plays RED manually against four deterministic bots.
+// ===========================================================================
+const FACTIONS = ['red', 'green', 'yellow', 'blue', 'purple'];
+const BOTS = ['green', 'yellow', 'blue', 'purple'];
+const HUMAN = 'red';
+
+const GRID_ROWS = 6;
+const GRID_COLS = 7;       // 42 grid cells...
+const TARGET_NODES = 30;   // ...minus 12 random vertices = 30 nodes, 6 per faction
+const WIN_NODES = 24;
+const ATTACKER_WIN_P = 0.55;
+
+// --- seeded RNG (mulberry32) -----------------------------------------------
+function makeRng(seed) {
+  let s = seed >>> 0;
+  return function rng() {
+    s |= 0; s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffle(arr, rng) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// --- board generation -------------------------------------------------------
+function buildBoard(rng) {
+  const gidAt = (r, c) => r * GRID_COLS + c;
+  const cellCount = GRID_ROWS * GRID_COLS;
+
+  const gridAdj = Array.from({ length: cellCount }, () => new Set());
+  for (let r = 0; r < GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      const a = gidAt(r, c);
+      const link = (b) => { gridAdj[a].add(b); gridAdj[b].add(a); };
+      if (c + 1 < GRID_COLS) link(gidAt(r, c + 1));    // right (horizontal)
+      if (r + 1 < GRID_ROWS) {
+        link(gidAt(r + 1, c));                         // down
+        if (c - 1 >= 0) link(gidAt(r + 1, c - 1));     // down-left
+        if (c + 1 < GRID_COLS) link(gidAt(r + 1, c + 1)); // down-right
+      }
+    }
+  }
+
+  const alive = new Set(Array.from({ length: cellCount }, (_, i) => i));
+  const stillConnected = (excluded) => {
+    const start = [...alive].find(g => g !== excluded);
+    if (start === undefined) return false;
+    const seen = new Set([start]);
+    const stack = [start];
+    while (stack.length) {
+      const g = stack.pop();
+      for (const nb of gridAdj[g]) {
+        if (nb !== excluded && alive.has(nb) && !seen.has(nb)) { seen.add(nb); stack.push(nb); }
+      }
+    }
+    return seen.size === alive.size - 1;
+  };
+  while (alive.size > TARGET_NODES) {
+    const candidates = shuffle([...alive], rng);
+    let removed = false;
+    for (const gid of candidates) {
+      if (stillConnected(gid)) { alive.delete(gid); removed = true; break; }
+    }
+    if (!removed) break;
+  }
+
+  const survivors = [...alive].sort((a, b) => a - b);
+  const newId = new Map(survivors.map((g, i) => [g, i]));
+  const nodes = survivors.map((g, i) => ({
+    id: i, x: g % GRID_COLS, y: Math.floor(g / GRID_COLS), owner: null, strength: 1,
+  }));
+
+  const linkSet = new Set();
+  const links = [];
+  for (const g of survivors) {
+    for (const nb of gridAdj[g]) {
+      if (!alive.has(nb)) continue;
+      const a = newId.get(g), b = newId.get(nb);
+      const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+      if (linkSet.has(key)) continue;
+      linkSet.add(key);
+      links.push([Math.min(a, b), Math.max(a, b)]);
+    }
+  }
+
+  const adj = nodes.map(() => []);
+  for (const [a, b] of links) { adj[a].push(b); adj[b].push(a); }
+
+  const owners = [];
+  for (const f of FACTIONS) for (let k = 0; k < 6; k++) owners.push(f);
+  shuffle(owners, rng);
+  nodes.forEach((n, i) => { n.owner = owners[i]; });
+
+  for (const n of nodes) n.strength = 1 + Math.floor(rng() * 5);
+  for (const f of FACTIONS) {
+    const owned = nodes.filter(n => n.owner === f);
+    if (owned.every(n => n.strength <= 1)) {
+      owned[Math.floor(rng() * owned.length)].strength = 2;
+    }
+  }
+
+  return { nodes, links, adj };
+}
+
+// --- core mechanics ---------------------------------------------------------
+function counts(state) {
+  const c = {};
+  for (const f of FACTIONS) c[f] = 0;
+  for (const n of state.nodes) c[n.owner]++;
+  return c;
+}
+
+function checkWinner(state) {
+  const c = counts(state);
+  for (const f of FACTIONS) if (c[f] >= WIN_NODES) return f;
+  const alive = FACTIONS.filter(f => c[f] > 0);
+  if (alive.length === 1) return alive[0];
+  return null;
+}
+
+function resolveBattle(state, fromId, toId) {
+  const from = state.nodes[fromId];
+  const to = state.nodes[toId];
+  const attacker = from.owner, defender = to.owner;
+  const fromStart = from.strength, toStart = to.strength;
+  let a = from.strength;
+  let d = to.strength;
+  const flips = [];            // 'd' = defender lost a unit, 'a' = attacker lost a unit
+  while (a > 1 && d > 0) {
+    if (state.rng() < ATTACKER_WIN_P) { d--; flips.push('d'); }
+    else { a--; flips.push('a'); }
+  }
+  let captured = false;
+  if (d === 0) {
+    captured = true;
+    to.owner = from.owner;
+    to.strength = a - 1;
+    from.strength = 1;
+  } else {
+    from.strength = a;
+    to.strength = d;
+  }
+  return {
+    type: 'attack', attacker, defender,
+    from: fromId, to: toId, captured,
+    fromStart, toStart, flips,
+    fromStrength: from.strength, toStrength: to.strength,
+  };
+}
+
+function componentsOf(state, faction) {
+  const seen = new Set();
+  const comps = [];
+  for (const n of state.nodes) {
+    if (n.owner !== faction || seen.has(n.id)) continue;
+    const comp = [];
+    const stack = [n.id];
+    seen.add(n.id);
+    while (stack.length) {
+      const id = stack.pop();
+      comp.push(id);
+      for (const nb of state.adj[id]) {
+        if (!seen.has(nb) && state.nodes[nb].owner === faction) {
+          seen.add(nb);
+          stack.push(nb);
+        }
+      }
+    }
+    comps.push(comp);
+  }
+  return comps;
+}
+
+function reinforce(state, faction) {
+  const comps = componentsOf(state, faction);
+  if (!comps.length) return null;
+  let largest = comps[0];
+  for (const comp of comps) if (comp.length > largest.length) largest = comp;
+  const N = largest.length;
+  const border = largest
+    .filter(id => state.adj[id].some(nb => state.nodes[nb].owner !== faction))
+    .sort((x, y) => x - y);
+  if (!border.length) return null;
+  for (let i = 0; i < N; i++) state.nodes[border[i % border.length]].strength++;
+  return { type: 'reinforce', faction, amount: N, border };
+}
+
+function legalMoves(state, faction) {
+  const moves = [];
+  for (const n of state.nodes) {
+    if (n.owner !== faction || n.strength <= 1) continue;
+    for (const nb of state.adj[n.id]) {
+      if (state.nodes[nb].owner !== faction) moves.push({ from: n.id, to: nb });
+    }
+  }
+  return moves;
+}
+
+function bestBotMove(state, faction) {
+  let best = null;
+  for (const n of state.nodes) {
+    if (n.owner !== faction || n.strength <= 1) continue;
+    for (const nb of state.adj[n.id]) {
+      const t = state.nodes[nb];
+      if (t.owner === faction || t.strength >= n.strength) continue;
+      const cand = { from: n.id, to: nb, atk: n.strength, def: t.strength };
+      if (!best
+        || cand.def < best.def
+        || (cand.def === best.def && cand.atk > best.atk)
+        || (cand.def === best.def && cand.atk === best.atk && cand.from < best.from)
+        || (cand.def === best.def && cand.atk === best.atk && cand.from === best.from && cand.to < best.to)) {
+        best = cand;
+      }
+    }
+  }
+  return best;
+}
+
+function runBotTurn(state, faction, log) {
+  if (counts(state)[faction] === 0) return;
+  let guard = 0;
+  while (guard++ < 1000) {
+    const move = bestBotMove(state, faction);
+    if (!move) break;
+    log.push(resolveBattle(state, move.from, move.to));
+    if (checkWinner(state)) return;
+  }
+  const r = reinforce(state, faction);
+  if (r) log.push(r);
+}
+
+// ===========================================================================
+// Game state + actions (replaces the old HTTP server, all in-process).
+// ===========================================================================
+let game = null;   // { nodes, links, adj, rng, winner, over, redResigned }
+
+function startGame(seed) {
+  const s = (seed === undefined || seed === null || Number.isNaN(+seed))
+    ? (Math.floor(Math.random() * 0xffffffff))
+    : (+seed >>> 0);
+  const rng = makeRng(s);
+  const board = buildBoard(rng);
+  game = {
+    seed: s, rng,
+    nodes: board.nodes, links: board.links, adj: board.adj,
+    winner: null, over: false, redResigned: false,
+  };
+}
+
+// Build the view the renderer consumes (mirrors server.js view()).
+function view(log) {
+  return {
+    seed: game.seed,
+    nodes: game.nodes.map(n => ({ id: n.id, x: n.x, y: n.y, owner: n.owner, strength: n.strength })),
+    links: game.links,
+    counts: counts(game),
+    winner: game.winner,
+    over: game.over,
+    redResigned: game.redResigned,
+    youWon: game.winner === HUMAN,
+    legalMoves: game.over ? [] : legalMoves(game, HUMAN),
+    log: log || [],
+  };
+}
+
+function doAttack(from, to) {
+  if (game.over) return view();
+  const log = [resolveBattle(game, from, to)];
+  const w = checkWinner(game);
+  if (w) { game.winner = w; game.over = true; }
+  return view(log);
+}
+
+function doEndTurn() {
+  if (game.over) return view();
+  const log = [];
+  // RED's turn just ended -> RED reinforces first.
+  const r = reinforce(game, HUMAN);
+  if (r) log.push(r);
+  let w = checkWinner(game);
+  if (!w) {
+    for (const bot of BOTS) {
+      runBotTurn(game, bot, log);
+      w = checkWinner(game);
+      if (w) break;
+    }
+  }
+  if (w) { game.winner = w; game.over = true; }
+  return view(log);
+}
+
+function doSurrender() {
+  game.over = true;
+  game.redResigned = true;
+  game.winner = null;
+  return view();
+}
+
+// ===========================================================================
+// Rendering + interaction (ported from public/index.html).
+// ===========================================================================
+const COLORS = { red:'#ff4d5e', green:'#36d39a', yellow:'#f5c542', blue:'#4d8bff', purple:'#a96bff' };
+const ORDER = ['red','green','yellow','blue','purple'];
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let state = null;       // latest view
+let selected = null;    // selected red node id
+let legalSet = new Set();   // "from-to" strings
+let targetsFor = new Map(); // from -> Set(to)
+let overrides = new Map();   // nodeId -> {strength, owner?} shown during battle animation
+let flashId = null;          // node that just lost a coin-flip (brief highlight)
+let battle = null;           // {from,to} kept highlighted for the duration of a fight
+let inputLocked = false;     // block taps/buttons while a battle animates
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function indexMoves() {
+  legalSet = new Set(); targetsFor = new Map();
+  for (const m of state.legalMoves) {
+    legalSet.add(m.from + '-' + m.to);
+    if (!targetsFor.has(m.from)) targetsFor.set(m.from, new Set());
+    targetsFor.get(m.from).add(m.to);
+  }
+}
+
+function setState(s) {
+  state = s;
+  selected = null;
+  indexMoves();
+  renderHeader();
+  draw();
+  if (s.over) showModal();
+}
+
+function renderHeader() {
+  const h = document.getElementById('header');
+  h.innerHTML = '';
+  for (const f of ORDER) {
+    const d = document.createElement('div');
+    d.className = 'chip ' + f + (f==='red' ? ' cur' : '');
+    d.innerHTML = '<span>' + state.counts[f] + '</span>';
+    h.appendChild(d);
+  }
+}
+
+// --- layout ---
+let layout = { r: 20, s: 1, ox: 0, oy: 0 };
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const b = document.getElementById('board').getBoundingClientRect();
+  cv.width = b.width * dpr; cv.height = b.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (!state) return;
+  const maxX = Math.max(...state.nodes.map(n => n.x)) || 1;
+  const maxY = Math.max(...state.nodes.map(n => n.y)) || 1;
+  const pad = 40;
+  const s = Math.min((b.width - pad*2) / maxX, (b.height - pad*2) / maxY);
+  layout = {
+    r: s * 0.30,
+    s,
+    ox: (b.width - maxX * s) / 2,
+    oy: (b.height - maxY * s) / 2,
+  };
+  draw();
+}
+function nodePos(n) {
+  return { x: layout.ox + n.x * layout.s, y: layout.oy + n.y * layout.s };
+}
+
+function octagon(x, y, r) {
+  ctx.beginPath();
+  for (let i = 0; i < 8; i++) {
+    const a = Math.PI/8 + i * Math.PI/4;
+    const px = x + r * Math.cos(a), py = y + r * Math.sin(a);
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  }
+  ctx.closePath();
+}
+
+function draw() {
+  if (!state) return;
+  const b = document.getElementById('board').getBoundingClientRect();
+  ctx.clearRect(0, 0, b.width, b.height);
+  const pos = state.nodes.map(nodePos);
+
+  for (const [a, c] of state.links) {
+    const inBattle = battle && ((a===battle.from && c===battle.to) || (a===battle.to && c===battle.from));
+    const hot = inBattle || (selected !== null && (
+         (a===selected && targetsFor.get(selected)?.has(c))
+      || (c===selected && targetsFor.get(selected)?.has(a))));
+    ctx.beginPath();
+    ctx.moveTo(pos[a].x, pos[a].y); ctx.lineTo(pos[c].x, pos[c].y);
+    if (hot) { ctx.strokeStyle = COLORS.red; ctx.lineWidth = 4; ctx.setLineDash([]); ctx.shadowColor = COLORS.red; ctx.shadowBlur = 10; }
+    else { ctx.strokeStyle = 'rgba(120,200,160,.35)'; ctx.lineWidth = 1.5; ctx.setLineDash([5,5]); ctx.shadowBlur = 0; }
+    ctx.stroke();
+  }
+  ctx.setLineDash([]); ctx.shadowBlur = 0;
+
+  for (const n of state.nodes) {
+    const p = pos[n.id];
+    const ov = overrides.get(n.id);
+    const owner = (ov && ov.owner) ? ov.owner : n.owner;
+    const strength = ov ? ov.strength : n.strength;
+    const col = COLORS[owner];
+    const isAtk = battle && n.id === battle.from;
+    const isDef = battle && n.id === battle.to;
+    const isSel = n.id === selected || isAtk;
+    const isTarget = isDef || (selected !== null && targetsFor.get(selected)?.has(n.id));
+    const isFlash = n.id === flashId;
+    ctx.save();
+    ctx.shadowColor = col;
+    ctx.shadowBlur = isFlash ? 30 : (isSel ? 26 : (isTarget ? 20 : 12));
+    octagon(p.x, p.y, layout.r);
+    ctx.fillStyle = col;
+    ctx.globalAlpha = 0.92;
+    ctx.fill();
+    ctx.restore();
+    octagon(p.x, p.y, layout.r);
+    ctx.lineWidth = (isSel || isTarget || isFlash) ? 3 : 1.5;
+    ctx.strokeStyle = (isFlash || isSel) ? '#fff' : (isTarget ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.5)');
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = `700 ${Math.round(layout.r*1.0)}px -apple-system, sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(strength, p.x, p.y + 1);
+  }
+}
+
+function hitNode(mx, my) {
+  for (const n of state.nodes) {
+    const p = nodePos(n);
+    if (Math.hypot(mx - p.x, my - p.y) <= layout.r) return n;
+  }
+  return null;
+}
+
+// Replay the coin-flip sequence on the two nodes before showing the result.
+async function animateBattle(e) {
+  const { from, to, fromStart, toStart, flips } = e;
+  let a = fromStart, d = toStart;
+  flashId = null;
+  battle = { from, to };
+  overrides.set(from, { strength: a });
+  overrides.set(to, { strength: d });
+  draw();
+  await sleep(200);
+  const delay = Math.max(45, Math.min(160, Math.round(900 / Math.max(flips.length, 1))));
+  for (const f of flips) {
+    if (f === 'd') { d--; flashId = to; } else { a--; flashId = from; }
+    overrides.set(from, { strength: a });
+    overrides.set(to, { strength: Math.max(d, 0) });
+    draw();
+    await sleep(delay);
+  }
+  flashId = null;
+  if (e.captured) {
+    overrides.set(to, { strength: e.toStrength, owner: e.attacker });
+    overrides.set(from, { strength: e.fromStrength });
+    draw();
+    await sleep(260);
+  }
+  overrides.clear();
+  battle = null;
+}
+
+async function onTap(mx, my) {
+  if (!state || state.over || inputLocked) return;
+  const n = hitNode(mx, my);
+  if (!n) { selected = null; draw(); return; }
+
+  if (selected !== null && targetsFor.get(selected)?.has(n.id)) {
+    const from = selected;
+    selected = null;
+    inputLocked = true;
+    setStatus('Attacking…');
+    const res = doAttack(from, n.id);
+    const e = res.log && res.log[0];
+    if (e && e.flips) await animateBattle(e);   // state stays pre-attack during replay
+    state = res; indexMoves(); renderHeader();
+    setStatus(e ? (e.captured ? `Captured node ${e.to}!` : `Attack on ${e.to} repelled (left ${e.fromStrength}).`) : 'Done.');
+    selected = (!res.over && state.nodes[from].owner === 'red' && state.nodes[from].strength > 1 && targetsFor.has(from)) ? from : null;
+    inputLocked = false;
+    draw();
+    if (state.over) showModal();
+    return;
+  }
+
+  if (n.owner === 'red' && n.strength > 1 && targetsFor.has(n.id)) {
+    selected = n.id; setStatus('Tap a highlighted enemy node to attack.');
+  } else {
+    selected = null;
+    if (n.owner === 'red') setStatus('That node has no attackable neighbors.');
+  }
+  draw();
+}
+
+function setStatus(t) { document.getElementById('status').textContent = t; }
+
+cv.addEventListener('pointerdown', (ev) => {
+  const b = cv.getBoundingClientRect();
+  onTap(ev.clientX - b.left, ev.clientY - b.top);
+});
+
+document.getElementById('endturn').onclick = () => {
+  if (!state || state.over || inputLocked) return;
+  selected = null; setStatus('Bots are moving…');
+  const res = doEndTurn();
+  setState(res);
+  const caps = (res.log||[]).filter(e => e.type==='attack' && e.captured).length;
+  if (!res.over) setStatus(`Bots finished — ${caps} node(s) changed hands. Your move.`);
+};
+
+document.getElementById('surrender').onclick = () => {
+  if (!state || state.over || inputLocked) return;
+  if (!confirm('Surrender this game?')) return;
+  setState(doSurrender());
+};
+
+function showModal() {
+  const t = document.getElementById('m-title');
+  t.textContent = state.youWon ? 'You Won!' : (state.redResigned ? 'You Surrendered' : 'You Lost');
+  document.getElementById('modal').classList.add('show');
+}
+function hideModal() { document.getElementById('modal').classList.remove('show'); }
+document.getElementById('m-yes').onclick = () => { hideModal(); newGame(); };
+document.getElementById('m-no').onclick = () => { hideModal(); };
+
+function newGame() {
+  startGame();
+  setState(view());
+  resize();
+  setStatus('New game. Select a red node (strength > 1) to attack.');
+}
+
+window.addEventListener('resize', resize);
+newGame();
+</script>
+</body>
+</html>

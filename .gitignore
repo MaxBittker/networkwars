@@ -1,0 +1,10 @@
+# Python virtualenv (large, regenerable from rl/uv.lock)
+rl/.venv/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# pufferlib resource symlinks that point into .venv
+/resources
+/rl/resources
