@@ -8,9 +8,9 @@ const FACTIONS = ['red', 'green', 'yellow', 'blue', 'purple'];
 const BOTS = ['green', 'yellow', 'blue', 'purple'];
 const HUMAN = 'red';
 
-const GRID_ROWS = 6;
-const GRID_COLS = 6;       // 36 grid cells...
-const TARGET_NODES = 30;   // ...minus 6 random vertices = 30 nodes, 6 per faction
+const GRID_ROWS = 7;       // real iOS app uses a 6-wide x 7-tall grid (measured via mirror)
+const GRID_COLS = 6;       // 42 grid cells...
+const TARGET_NODES = 30;   // ...minus 12 random vertices = 30 nodes, 6 per faction
 const WIN_NODES = 24;
 const ATTACKER_WIN_P = 0.55;
 
@@ -31,6 +31,41 @@ function shuffle(arr, rng) {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
+}
+
+// Cluster each faction into ~2-3 connected territories (matches the real app, which
+// does not scatter ownership uniformly). Seeded territorial growth with scatter.
+const OWNER_SEEDS = 1;       // initial seeds per faction
+const OWNER_SCATTER = 0.6;   // P(a growth step jumps to a random free node => new cluster)
+function assignOwnership(nodes, adj, rng) {
+  const N = nodes.length;
+  const ids = Array.from({ length: N }, (_, i) => i);
+  const owner = new Array(N).fill(null);
+  const counts = {}; for (const f of FACTIONS) counts[f] = 0;
+  const pool = shuffle([...ids], rng);
+  let p = 0;
+  for (let s = 0; s < OWNER_SEEDS; s++) for (const f of FACTIONS) { owner[pool[p++]] = f; counts[f]++; }
+  let guard = 0;
+  while (FACTIONS.some(f => counts[f] < 6) && guard++ < 10000) {
+    for (const f of shuffle([...FACTIONS], rng)) {
+      if (counts[f] >= 6) continue;
+      const free = ids.filter(i => owner[i] === null);
+      let pick;
+      if (rng() < OWNER_SCATTER) {
+        pick = free[Math.floor(rng() * free.length)];
+      } else {
+        const border = [];
+        for (let i = 0; i < N; i++) {
+          if (owner[i] !== f) continue;
+          for (const nb of adj[i]) if (owner[nb] === null && !border.includes(nb)) border.push(nb);
+        }
+        pick = border.length ? border[Math.floor(rng() * border.length)]
+                             : free[Math.floor(rng() * free.length)];
+      }
+      owner[pick] = f; counts[f]++;
+    }
+  }
+  nodes.forEach((n, i) => { n.owner = owner[i]; });
 }
 
 // --- board generation -------------------------------------------------------
@@ -105,14 +140,19 @@ function buildBoard(rng) {
   const adj = nodes.map(() => []);
   for (const [a, b] of links) { adj[a].push(b); adj[b].push(a); }
 
-  // ownership: exactly 6 of each faction, shuffled across the board.
-  const owners = [];
-  for (const f of FACTIONS) for (let k = 0; k < 6; k++) owners.push(f);
-  shuffle(owners, rng);
-  nodes.forEach((n, i) => { n.owner = owners[i]; });
+  // ownership: the real app clusters each faction into ~2-3 connected territories,
+  // NOT a uniform scatter. Measured components-per-faction: real mean 3.07 (73% <=3
+  // clusters) vs 3.92 (34%) for a uniform shuffle. We reproduce it with seeded
+  // territorial growth: one seed per faction, then round-robin BFS growth where each
+  // step grows a border node, except with prob OWNER_SCATTER it jumps to a random free
+  // node (starting a new cluster). Tuned to the real distribution (n=3 openings).
+  assignOwnership(nodes, adj, rng);
 
-  // initial strengths 1..5, then guarantee every faction can move on turn 1.
-  for (const n of nodes) n.strength = 1 + Math.floor(rng() * 5);
+  // initial strengths: measured from the real app — a bimodal distribution, not 1..5.
+  // ~half the nodes start at 1; the rest cluster in 4..8 (mean ~6). Observed sample
+  // (2 openings, 60 nodes): {1:31, 4:2, 5:9, 6:12, 8:6}. Model: 50% -> 1, else 4..8.
+  // Then guarantee every faction can move on turn 1.
+  for (const n of nodes) n.strength = rng() < 0.5 ? 1 : 4 + Math.floor(rng() * 5);
   for (const f of FACTIONS) {
     const owned = nodes.filter(n => n.owner === f);
     if (owned.every(n => n.strength <= 1)) {

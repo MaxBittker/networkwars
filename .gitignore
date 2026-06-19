@@ -8,3 +8,18 @@ __pycache__/
 # pufferlib resource symlinks that point into .venv
 /resources
 /rl/resources
+/rl/iphone_data/resources
+
+# RL training artifacts — regenerable from the pipeline in rl/ALPHAGO.md
+rl/*.npy
+rl/*.log
+rl/*.pt
+rl/expert.jsonl
+
+# iPhone-capture artifacts — screenshots/captures are debug output;
+# ocr/tap/wininfo are binaries built from the *.swift sources via build.sh
+rl/iphone_data/captures/
+rl/iphone_data/*.png
+rl/iphone_data/ocr
+rl/iphone_data/tap
+rl/iphone_data/wininfo

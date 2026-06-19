@@ -25,9 +25,8 @@ The registry contains:
 - `codex-strategy/seed-oracle.js` `seedOracle`, a seed-aware portfolio
   strategy that recovers the deterministic game seed from the policy RNG and
   delegates to a candidate strategy that wins in local simulation.
-- RL entries evaluated through the matching Python evaluator. The older MLP and
-  CNN checkpoints use `rl/v1_snapshot/evaluate.py`, because their observation
-  shapes do not match the current `rl/evaluate.py`.
+- RL entries evaluated through `rl/evaluate.py`. (Older MLP/CNN checkpoints on
+  the legacy observation format were dropped along with their frozen evaluator.)
 
 No-cheating boundary: strategies must play through `api.attack(...)`. Directly
 mutating live node objects from `api.nodes`/`api.node(id)` is a simulator

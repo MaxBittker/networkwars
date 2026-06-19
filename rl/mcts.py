@@ -29,7 +29,8 @@ import network_wars as nw
 from network_wars import (
     HUMAN, BOTS, FACTIONS, MAX_TURNS, WIN_NODES, DIRS, END_TURN, GRID_COLS,
     make_rng, build_board, make_game, counts, check_winner, resolve_battle,
-    reinforce, run_bot_turn, legal_moves, components_of, Node as GNode, State,
+    reinforce, run_bot_turn, best_bot_move, legal_moves, components_of,
+    Node as GNode, State,
 )
 
 # --- seed-free private RNG for simulated dice -------------------------------
@@ -100,11 +101,14 @@ def apply_action(state, turns, action, c2id):
 
 # --- neural evaluator -------------------------------------------------------
 class Evaluator:
-    """Wraps a Policy net; returns (priors[289], win_prob) for a state.
-    The value head's scalar is treated as a logit -> sigmoid = win prob."""
+    """Returns (priors[289], win_prob) for a state. Priors come from `policy`'s
+    action head; the value comes from `value_net` if provided (a calibrated
+    win-prob net), else from `policy`'s own value head. The value scalar is
+    treated as a logit -> sigmoid = win prob."""
 
-    def __init__(self, policy):
+    def __init__(self, policy, value_net=None):
         self.policy = policy
+        self.value_net = value_net
         self._env = nw.NetworkWarsEnv()      # throwaway, only _obs() is used
 
     def obs(self, state, turns):
@@ -117,6 +121,8 @@ class Evaluator:
         o = torch.as_tensor(self.obs(state, turns)).unsqueeze(0)
         logits, value = self.policy.forward_eval(o)
         priors = torch.softmax(logits[0], dim=-1).numpy()
+        if self.value_net is not None:
+            _, value = self.value_net.forward_eval(o)
         winp = float(torch.sigmoid(value[0]).item())
         return priors, winp
 
@@ -157,8 +163,50 @@ def _backup(path, value):
         node.W[a] = node.W.get(a, 0.0) + value
 
 
+def rollout_to_terminal(state, turns):
+    """Pure-engine playout to the end: RED plays bot-style (attack the weakest
+    strictly-beatable neighbour), the bots play their turns. Returns 1.0 if RED
+    wins, else 0.0. Used as the leaf evaluator in --leaf rollout mode (no value
+    net). Mutates `state` (a throwaway sim clone) using its private RNG."""
+    while True:
+        w = check_winner(state)
+        if w is not None:
+            return 1.0 if w == HUMAN else 0.0
+        if counts(state)[HUMAN] == 0:
+            return 0.0
+        g = 0
+        while g < 500:                       # RED's turn, greedy bot-style
+            mv = best_bot_move(state, HUMAN)
+            if mv is None:
+                break
+            resolve_battle(state, mv[0], mv[1])
+            if check_winner(state):
+                break
+            g += 1
+        w = check_winner(state)
+        if w is not None:
+            return 1.0 if w == HUMAN else 0.0
+        reinforce(state, HUMAN)
+        w = check_winner(state)
+        if w is not None:
+            return 1.0 if w == HUMAN else 0.0
+        for bot in BOTS:
+            run_bot_turn(state, bot)
+            if check_winner(state):
+                break
+        w = check_winner(state)
+        if w is not None:
+            return 1.0 if w == HUMAN else 0.0
+        turns += 1
+        if turns > MAX_TURNS:
+            c = counts(state)
+            return 1.0 if c[HUMAN] > max(c[f] for f in BOTS) else 0.0
+
+
 def mcts_search(root_state, root_turns, ev, c2id, sims, c_puct=1.5,
-                dirichlet=0.0, rng_noise=None):
+                dirichlet=0.0, rng_noise=None, leaf='value', priors='net'):
+    """leaf: 'value' (value-net leaf eval) or 'rollout' (playout to terminal).
+    priors: 'net' (policy-net priors) or 'uniform' (pure UCT, no net)."""
     root = TreeNode()
     for i in range(sims):
         state = clone_state(root_state, _next_rng())
@@ -167,12 +215,21 @@ def mcts_search(root_state, root_turns, ev, c2id, sims, c_puct=1.5,
         path = []
         while True:
             if not node.expanded:
-                priors, v = ev(state, turns)
                 legal = legal_action_indices(state, c2id)
+                if priors == 'net':
+                    p_arr, v_net = ev(state, turns)
+                    for a in legal:
+                        node.P[a] = p_arr[a]
+                else:                                   # uniform priors (pure UCT)
+                    v_net = None
+                    for a in legal:
+                        node.P[a] = 1.0 / len(legal)
+                if leaf == 'rollout':
+                    v = rollout_to_terminal(state, turns)   # mutates throwaway clone
+                else:
+                    v = v_net if v_net is not None else ev(state, turns)[1]
                 node.expanded = True
                 node.v = v
-                for a in legal:
-                    node.P[a] = priors[a]
                 # optional root exploration noise (self-play only)
                 if dirichlet > 0.0 and node is root and rng_noise is not None:
                     noise = rng_noise.dirichlet([dirichlet] * len(legal))
@@ -209,7 +266,7 @@ def best_action(root, legal, by='visits'):
 
 
 # --- play a full game with MCTS as RED --------------------------------------
-def play_game(ev, seed, sims, c_puct=1.5, max_actions=4000):
+def play_game(ev, seed, sims, c_puct=1.5, max_actions=4000, leaf='value', priors='net'):
     state = make_game(seed)              # REAL game (real hidden dice)
     c2id = coord_map(state)
     turns = 1
@@ -221,7 +278,8 @@ def play_game(ev, seed, sims, c_puct=1.5, max_actions=4000):
         if len(legal) == 1:              # only END_TURN
             action = END_TURN
         else:
-            root = mcts_search(state, turns, ev, c2id, sims, c_puct)
+            root = mcts_search(state, turns, ev, c2id, sims, c_puct,
+                               leaf=leaf, priors=priors)
             action = best_action(root, legal, by='visits')
         # apply to the REAL state with the REAL rng
         if action == END_TURN:
@@ -255,25 +313,36 @@ def main():
     ap.add_argument('--c-puct', type=float, default=1.5)
     ap.add_argument('--value-net', default=None,
                     help='optional separate calibrated value checkpoint (value_net.py)')
+    ap.add_argument('--leaf', default='value', choices=['value', 'rollout'],
+                    help="leaf eval: value net, or playout to terminal (no value net)")
+    ap.add_argument('--priors', default='net', choices=['net', 'uniform'],
+                    help="PUCT priors: policy net, or uniform (pure UCT)")
     flags = ap.parse_args()
 
     from evaluate import _EnvShim
     policy = importlib.import_module(flags.policy).Policy(_EnvShim(nw.OBS_DIM))
     policy.load_state_dict(torch.load(flags.checkpoint, map_location='cpu'))
     policy.eval()
-    ev = Evaluator(policy)
+    value_net = None
+    if flags.value_net:
+        value_net = importlib.import_module(flags.policy).Policy(_EnvShim(nw.OBS_DIM))
+        value_net.load_state_dict(torch.load(flags.value_net, map_location='cpu'))
+        value_net.eval()
+    ev = Evaluator(policy, value_net)
 
     import time
     t0 = time.time()
     wins, twin, tot = 0, [], 0
     for s in range(flags.seed_base, flags.seed_base + flags.games):
-        won, turns = play_game(ev, s, flags.sims, flags.c_puct)
+        won, turns = play_game(ev, s, flags.sims, flags.c_puct,
+                               leaf=flags.leaf, priors=flags.priors)
         tot += turns
         if won:
             wins += 1
             twin.append(turns)
     dt = time.time() - t0
-    print(f'MCTS({flags.checkpoint}, sims={flags.sims}, c={flags.c_puct}) — '
+    print(f'MCTS({flags.checkpoint}, sims={flags.sims}, c={flags.c_puct}, '
+          f'leaf={flags.leaf}, priors={flags.priors}) — '
           f'{flags.games} games seeds {flags.seed_base}..{flags.seed_base+flags.games-1}')
     print(f'  winrate     : {wins/flags.games*100:.1f}%  ({wins}/{flags.games})')
     print(f'  avgTurns→win: {np.mean(twin):.2f}' if twin else '  avgTurns→win: —')

@@ -25,8 +25,9 @@ Model history (combined argmax winrate on held-out seeds):
 
 Lessons: the CNN needs the ent=0.01 exploration floor to avoid collapse, and a
 single low-entropy fine-tune rung converts that exploration into ~4pp of
-winrate — but a second rung overshoots. v1–v3 checkpoints use the old 547-dim
-observation; evaluate them with the frozen code in `v1_snapshot/`.
+winrate — but a second rung overshoots. (v1–v3 checkpoints used an old 547-dim
+observation and the now-removed `v1_snapshot/` frozen evaluator; they are no
+longer runnable.)
 
 ## Files
 

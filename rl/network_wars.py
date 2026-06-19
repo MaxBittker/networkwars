@@ -19,7 +19,7 @@ FACTIONS = ['red', 'green', 'yellow', 'blue', 'purple']
 BOTS = ['green', 'yellow', 'blue', 'purple']
 HUMAN = 'red'
 
-GRID_ROWS = 6
+GRID_ROWS = 7       # real iOS app uses a 6-wide x 7-tall grid (measured via mirror)
 GRID_COLS = 6
 TARGET_NODES = 30
 WIN_NODES = 24
@@ -49,6 +49,52 @@ def shuffle(arr, rng):
         j = int(rng() * (i + 1))
         arr[i], arr[j] = arr[j], arr[i]
     return arr
+
+
+# Cluster each faction into ~2-3 connected territories (line-for-line port of
+# assignOwnership in game.js). Seeded territorial growth with scatter; consumes
+# the RNG in the same order as JS.
+OWNER_SEEDS = 1
+OWNER_SCATTER = 0.6
+
+
+def assign_ownership(nodes, adj, rng):
+    n = len(nodes)
+    ids = list(range(n))
+    owner = [None] * n
+    counts = {f: 0 for f in FACTIONS}
+    pool = shuffle(list(ids), rng)
+    p = 0
+    for _ in range(OWNER_SEEDS):
+        for f in FACTIONS:
+            owner[pool[p]] = f
+            counts[f] += 1
+            p += 1
+    guard = 0
+    while any(counts[f] < 6 for f in FACTIONS) and guard < 10000:
+        guard += 1
+        for f in shuffle(list(FACTIONS), rng):
+            if counts[f] >= 6:
+                continue
+            free = [i for i in ids if owner[i] is None]
+            if rng() < OWNER_SCATTER:
+                pick = free[int(rng() * len(free))]
+            else:
+                border = []
+                for i in range(n):
+                    if owner[i] != f:
+                        continue
+                    for nb in adj[i]:
+                        if owner[nb] is None and nb not in border:
+                            border.append(nb)
+                if border:
+                    pick = border[int(rng() * len(border))]
+                else:
+                    pick = free[int(rng() * len(free))]
+            owner[pick] = f
+            counts[f] += 1
+    for i, nd in enumerate(nodes):
+        nd.owner = owner[i]
 
 
 # --- board generation ---------------------------------------------------------
@@ -139,13 +185,14 @@ def build_board(rng):
         adj[a].append(b)
         adj[b].append(a)
 
-    owners = [f for f in FACTIONS for _ in range(6)]
-    shuffle(owners, rng)
-    for i, n in enumerate(nodes):
-        n.owner = owners[i]
+    # ownership: clustered territorial growth (match game.js assignOwnership),
+    # not a uniform scatter.
+    assign_ownership(nodes, adj, rng)
 
+    # bimodal initial strengths (match game.js): 50% -> 1, else 4..8.
+    # JS: rng() < 0.5 ? 1 : 4 + floor(rng()*5)  — second rng() only in the else.
     for n in nodes:
-        n.strength = 1 + int(rng() * 5)
+        n.strength = 1 if rng() < 0.5 else 4 + int(rng() * 5)
     for f in FACTIONS:
         owned = [n for n in nodes if n.owner == f]
         if all(n.strength <= 1 for n in owned):

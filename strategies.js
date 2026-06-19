@@ -66,30 +66,6 @@ const nonStrictJs = new Set([
 ]);
 
 const externalStrategies = {
-  'rlPPO.argmax': {
-    kind: 'python-rl',
-    checkpoint: 'rl/policy_final.pt',
-    script: 'rl/v1_snapshot/evaluate.py',
-    policyModule: 'policy',
-    sample: false,
-    strict: true,
-  },
-  'rlPPO.sampled': {
-    kind: 'python-rl',
-    checkpoint: 'rl/policy_final.pt',
-    script: 'rl/v1_snapshot/evaluate.py',
-    policyModule: 'policy',
-    sample: true,
-    strict: false,
-  },
-  'rlCNN.argmax': {
-    kind: 'python-rl',
-    checkpoint: 'rl/policy_cnn_v3.pt',
-    script: 'rl/v1_snapshot/evaluate.py',
-    policyModule: 'policy_cnn',
-    sample: false,
-    strict: true,
-  },
   'rlCNN.latest.argmax': {
     kind: 'python-rl',
     checkpoint: 'rl/experiments/178106301897/model_000400.pt',
@@ -97,14 +73,6 @@ const externalStrategies = {
     policyModule: 'policy_cnn',
     sample: false,
     strict: true,
-  },
-  'rlCNN.sampled': {
-    kind: 'python-rl',
-    checkpoint: 'rl/policy_cnn_v3.pt',
-    script: 'rl/v1_snapshot/evaluate.py',
-    policyModule: 'policy_cnn',
-    sample: true,
-    strict: false,
   },
 };
 
