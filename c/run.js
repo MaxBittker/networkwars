@@ -24,7 +24,7 @@ const seedBase = Number(process.argv[3]) || 1;
 const extra = process.argv.slice(4);          // passed through to the binary
 const input = dumpBoards(games, seedBase);
 const t0 = process.hrtime.bigint();
-const res = execFileSync(__dirname + '/nw', extra, { input, maxBuffer: 1 << 28 }).toString().trim();
+const res = execFileSync(__dirname + '/nw', extra, { input, maxBuffer: 1 << 28, stdio: ['pipe', 'pipe', 'inherit'] }).toString().trim();
 const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 const [wins, n, rate] = res.split(/\s+/);
 console.log(`${(rate*100).toFixed(1)}%  (${wins}/${n})  seeds ${seedBase}..${seedBase+games-1}  ${(ms).toFixed(0)}ms total, ${(ms/games).toFixed(2)}ms/game  [${extra.join(' ')}]`);

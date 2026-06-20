@@ -19,6 +19,7 @@ rl/expert.jsonl
 # iPhone-capture artifacts — screenshots/captures are debug output;
 # ocr/tap/wininfo are binaries built from the *.swift sources via build.sh
 rl/iphone_data/captures/
+rl/iphone_data/runs/
 rl/iphone_data/*.png
 rl/iphone_data/ocr
 rl/iphone_data/ocrserve

@@ -618,7 +618,8 @@ static int apply_red(int *owner, int *strength, int act, int *pturns, int *winne
  * legal entries; we renormalize over legal). nroll = rollouts per leaf. */
 int uct_search(const int *owner_in, const int *strength_in, int root_turns,
                int sims, double c_puct, int nroll,
-               const double *root_pri, int *out_acts, int *out_visits) {
+               const double *root_pri, int *out_acts, int *out_visits,
+               double *out_q) {
     /* size pools to the sim budget */
     long ncap = (long)sims * 24 + 4096;
     long ecap = ncap * 40;
@@ -733,8 +734,11 @@ int uct_search(const int *owner_in, const int *strength_in, int root_turns,
     MNode *rn = &NODES[root];
     int nc = rn->n_children;
     for (int k = 0; k < nc; k++) {
-        out_acts[k] = E_ACT[rn->child_off + k];
-        out_visits[k] = E_N[rn->child_off + k];
+        int off = rn->child_off + k;
+        out_acts[k] = E_ACT[off];
+        out_visits[k] = E_N[off];
+        /* per-child Q = backed-up mean value = RED win-prob estimate for this move */
+        if (out_q) out_q[k] = (E_N[off] > 0) ? (E_W[off] / E_N[off]) : rn->v;
     }
     return nc;
 }

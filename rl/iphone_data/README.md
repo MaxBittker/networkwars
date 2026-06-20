@@ -15,7 +15,8 @@ acted on with synthetic taps.
 |------|------|
 | `wininfo.swift`/`wininfo` | locate the game window → `id x y w h` (CGWindowBounds). Single source of truth. |
 | `tap.swift`/`tap` | post a CGEvent left-click at a global screen point. |
-| `ocr.swift`/`ocr` | Vision full-image OCR → `text\tcx\tcy` per string. |
+| `ocr.swift`/`ocr` | Vision full-image OCR → `text\tcx\tcy` per string (one-shot). |
+| `ocrserve.swift`/`ocrserve` | persistent Vision OCR: reads image paths on stdin, keeps Vision warm (~70ms/call vs ~240ms). `parse.py` uses this; falls back to `ocr`. |
 | `nwcap.sh` | `shot <file>` / `tap <lx> <ly>` (logical = capture px / 2) / `info`. |
 | `parse.py` | screenshot → state JSON: nodes `{id,col,row,owner,strength,px,py}`, counts, grid. Self-calibrating digit OCR (Vision + template-match fallback). |
 | `nwmove.js` | state JSON → one best RED move via `mcts.js` (rebuilds adjacency from grid coords = 8-connectivity). |
@@ -43,7 +44,10 @@ node nwmove.js state.json strong                  # -> {"action":"attack","from"
 - Taps use `nwcap.sh tapfast` (~0.26s) instead of `tap` (~1.25s, which re-activates
   + repositions + sleeps every call); the window is re-pinned once per turn via
   `place()` and again only on a miss (drift). No routine deselect.
-- `parse.py` `classify` is vectorized (board parse ~540ms → ~320ms).
+- `parse.py` `classify` is vectorized, and Vision OCR runs through a **persistent
+  warm process** (`ocrserve`) instead of spawning `ocr` per call — the per-spawn
+  Vision cold-start (~170ms) is paid once, so OCR drops ~240ms → ~70ms and a full
+  board parse ~540ms → ~130ms (warm), with identical digit accuracy (`.accurate`).
 - `capture_state` settles via cheap gray-diff polling and accepts only when TWO
   consecutive parses agree — this kills the transient wrong numbers from a node's
   count-up animation slipping under the diff threshold.

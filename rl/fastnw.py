@@ -28,7 +28,8 @@ _lib.rollout_avg.restype = ctypes.c_double
 _lib.end_turn.argtypes = [_i32p, _i32p]
 _dblp = ctypes.POINTER(ctypes.c_double)
 _lib.uct_search.argtypes = [_i32p, _i32p, ctypes.c_int, ctypes.c_int,
-                            ctypes.c_double, ctypes.c_int, _dblp, _i32p, _i32p]
+                            ctypes.c_double, ctypes.c_int, _dblp, _i32p, _i32p,
+                            _dblp]
 _lib.uct_search.restype = ctypes.c_int
 _lib.ext_resolve_battle.argtypes = [_i32p, _i32p, ctypes.c_int, ctypes.c_int]
 _lib.ext_reinforce.argtypes = [_i32p, _i32p, ctypes.c_int]
@@ -92,17 +93,23 @@ def end_turn(owner, strength):
 PRI_END = 16192
 _out_acts = np.zeros(4096, dtype=np.int32)
 _out_visits = np.zeros(4096, dtype=np.int32)
+_out_q = np.zeros(4096, dtype=np.float64)
 
 
-def uct_search(owner, strength, turns, sims, c_puct=1.5, nroll=1, root_pri=None):
+def uct_search(owner, strength, turns, sims, c_puct=1.5, nroll=1, root_pri=None,
+               return_q=False):
     """Run the C UCT search. Returns (acts, visits) arrays for the root's legal
     children. acts are frm<<8|to, or -1 for END_TURN. root_pri optional dense
-    np.float64 array length 16193 (index frm<<8|to, PRI_END for end)."""
+    np.float64 array length 16193 (index frm<<8|to, PRI_END for end).
+    If return_q, also returns per-child Q (backed-up RED win-prob estimate)."""
     prip = root_pri.ctypes.data_as(_dblp) if root_pri is not None else None
     nc = _lib.uct_search(_p(owner), _p(strength), turns, sims, c_puct, nroll,
-                         prip, _p(_out_acts), _p(_out_visits))
+                         prip, _p(_out_acts), _p(_out_visits),
+                         _out_q.ctypes.data_as(_dblp))
     if nc < 0:
         raise RuntimeError("uct_search pool alloc failed")
+    if return_q:
+        return _out_acts[:nc].copy(), _out_visits[:nc].copy(), _out_q[:nc].copy()
     return _out_acts[:nc].copy(), _out_visits[:nc].copy()
 
 

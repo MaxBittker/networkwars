@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+"""Run a SERIES of live iOS Network Wars games with the pure C-UCT engine and
+log a rich JSONL: full per-move trajectory + the search's win expectation per
+move + the exact algorithm configuration that produced it.
+
+Reuses play.py's phone-driver primitives (capture/parse/tap/settle). Adds:
+  - per-game play loop -> terminal (win / loss), winner detection
+  - per-move logging: board before, chosen attack, winexp (RED win-prob the MCTS
+    assigns the move), rootValue (position eval), visit count, counts before/after
+  - automatic restart between games via the post-game modal (NEVER surrenders —
+    every game is played to its natural terminal; partial games are kept, not forfeit)
+  - running win tally + JSONL (one record per game, plus a leading meta record)
+
+The phone is the bottleneck; search is sub-second/move. The mirror link drops if
+the physical phone is touched ("iPhone in Use") — the driver pauses and re-polls
+rather than crashing, and logs every game-over modal's raw OCR so no result is
+lost even if auto-classification is unsure.
+
+Usage:
+  python series.py --games 100 --sims 8000 [--out runs/series_b8k.jsonl]
+                   [--max-rounds 45] [--max-attacks 14]
+"""
+import argparse
+import json
+import os
+import subprocess
+import time
+import urllib.request
+
+import play as PL   # reuse the proven phone-driver primitives
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+RUNS = os.path.join(HERE, 'runs')
+os.makedirs(RUNS, exist_ok=True)
+
+DASH_PORT = 8778
+DASH_URL = f'http://127.0.0.1:{DASH_PORT}'
+
+
+def start_dashboard():
+    """Launch the publish-based dashboard server; return (proc, url) or (None, None)."""
+    proc = subprocess.Popen([PL.PYTHON, os.path.join(HERE, 'dashserver.py'),
+                             '--port', str(DASH_PORT)])
+    for _ in range(40):
+        try:
+            if urllib.request.urlopen(DASH_URL + '/healthz', timeout=1).read() == b'ok':
+                return proc, DASH_URL
+        except Exception:
+            time.sleep(0.25)
+    return proc, DASH_URL   # serve anyway; dashboard just polls
+
+
+def _post(path, payload):
+    """Best-effort POST to the dashboard; never let telemetry break the run."""
+    try:
+        req = urllib.request.Request(DASH_URL + path,
+                                     data=json.dumps(payload).encode(),
+                                     headers={'Content-Type': 'application/json'})
+        urllib.request.urlopen(req, timeout=2).read()
+    except Exception:
+        pass
+
+
+def publish_move(st, mv, turn):
+    """Push the current board + the search's decision to the dashboard."""
+    chosen = None if mv.get('action') == 'stop' else {'from': mv.get('from'), 'to': mv.get('to')}
+    _post('/publish', {
+        'board': {'grid': st['grid'], 'nodes': st['nodes']},
+        'counts': st['counts'], 'value': mv.get('winexp'),
+        'chosen': chosen, 'chosen_end': mv.get('action') == 'stop',
+        'top': mv.get('top', []), 'total_visits': mv.get('visits', 0),
+        'phase': 'end-turn' if mv.get('action') == 'stop' else 'attack',
+        'turn': turn,
+    })
+
+# UI coords (logical = capture px / 2), mapped live 2026-06-20 via ocr
+NEW_GAME = (242, 418)        # New Game button position (shared by the post-game modal)
+WIN_NODES = PL.WIN_NODES     # 24
+# Policy: NEVER surrender — play every game to its natural terminal (win/loss) and
+# restart only via the post-game modal. See repo CLAUDE.md.
+
+
+def now():
+    return time.time()
+
+
+def counts_winner(counts):
+    """Return faction at >= WIN_NODES, else None."""
+    for f, c in counts.items():
+        if c >= WIN_NODES:
+            return f
+    return None
+
+
+def classify_over(path, last_counts):
+    """Best-effort win/loss from the game-over modal: OCR keywords first, then the
+    last parsed counts. Returns (result, winner, raw_ocr)."""
+    raw = PL.sh(PL.OCR, path).stdout
+    low = raw.lower()
+    result, winner = 'unknown', None
+    if 'you won' in low or 'you win' in low or 'victory' in low:
+        result, winner = 'win', 'red'
+    elif 'you lost' in low or 'you lose' in low or 'defeat' in low:
+        result, winner = 'loss', None
+    if result == 'unknown' and last_counts:
+        w = counts_winner(last_counts) or max(last_counts, key=last_counts.get)
+        if last_counts.get(w, 0) >= 20:
+            winner = w
+            result = 'win' if w == 'red' else 'loss'
+    return result, winner, raw.strip()
+
+
+def find_button(path, words):
+    """OCR-locate a button whose text contains any of `words`; logical (x,y) or None."""
+    out = PL.sh(PL.OCR, path).stdout
+    for line in out.splitlines():
+        parts = line.split('\t')
+        if len(parts) != 3:
+            continue
+        txt, cx, cy = parts[0].lower(), parts[1], parts[2]
+        if any(w in txt for w in words):
+            try:
+                return (round(float(cx) / 2), round(float(cy) / 2))
+            except ValueError:
+                continue
+    return None
+
+
+def wait_connected(tag='reconnect', timeout=1800):
+    """Poll until the phone shows a parseable board again (mirror link restored)."""
+    t0 = now()
+    while now() - t0 < timeout:
+        PL.place()
+        path = PL.shot(f'{tag}.png')
+        st = PL.P.parse(path)
+        if sum(st['counts'].values()) >= 12:
+            return True
+        print('   …mirror link down ("iPhone in Use"?) — lock the phone to reconnect; retrying')
+        time.sleep(10)
+    return False
+
+
+def restart_game():
+    """Start a fresh game from the post-game (win/loss) modal. NEVER surrenders —
+    only taps the modal's New Game/Play Again button. Returns the fresh parsed
+    state, or None if it can't confirm one (then the caller pauses for help)."""
+    for attempt in range(4):
+        path = PL.shot('restart_probe.png')
+        btn = find_button(path, ('new game', 'play again', 'again', 'rematch',
+                                 'replay', 'play')) or (NEW_GAME if PL.is_game_over(path) else None)
+        if btn is None:
+            print(f'   restart: no post-game button visible yet (attempt {attempt}); waiting')
+            time.sleep(3)
+            continue
+        print(f'   restart: tapping {btn}')
+        PL.tap(*btn)
+        time.sleep(2.5)
+        st, fp = PL.capture_state('restart_check')
+        if fp is not None and sum(st['counts'].values()) == 30:
+            return st
+        print(f'   restart attempt {attempt} did not yield a fresh board; retrying')
+        time.sleep(2)
+    return None
+
+
+def play_one_game(args, gi):
+    """Play a single game to terminal. Returns a trajectory record dict."""
+    rec = {
+        'game_index': gi, 'started_at': now(), 'result': 'unknown',
+        'winner': None, 'rounds': 0, 'red_final': None, 'trajectory': [],
+        'note': None,
+    }
+    PL.place()
+    st, fp = PL.capture_state(f'g{gi}_r0')
+    if st == 'over' or fp is None:
+        if not wait_connected(f'g{gi}_wait'):
+            rec['note'] = 'no board / link down at game start'
+            rec['ended_at'] = now()
+            return rec
+        st, fp = PL.capture_state(f'g{gi}_r0')
+        if fp is None:
+            rec['note'] = 'could not stabilize start board'
+            rec['ended_at'] = now()
+            return rec
+
+    last_counts = dict(st['counts'])
+    for rnd in range(args.max_rounds):
+        rec['rounds'] = rnd + 1
+        # winner check at top of round (a bot may have won during its turn)
+        w = counts_winner(st['counts'])
+        if w is not None:
+            rec['result'] = 'win' if w == 'red' else 'loss'
+            rec['winner'] = w
+            break
+        if st['counts'].get('red', 0) == 0:
+            rec['result'] = 'loss'; rec['winner'] = None; rec['note'] = 'red eliminated'
+            break
+
+        turn = {'round': rnd, 'counts_before': dict(st['counts']),
+                'board_before': [
+                    {'id': n['id'], 'r': n['row'], 'c': n['col'],
+                     'o': n['owner'], 's': n['strength']} for n in st['nodes']],
+                'moves': []}
+        last_counts = dict(st['counts'])
+
+        misses = 0
+        over_mid = False
+        for a in range(args.max_attacks):
+            mv = PL.mcts_move(st, args.rollout, engine='fast', sims=args.sims,
+                              turns=rnd + 1, wset=args.wset, c_puct=args.c_puct,
+                              nroll=args.nroll)
+            publish_move(st, mv, rnd + 1)
+            if mv.get('action') == 'stop':
+                turn['moves'].append({'action': 'stop', 'winexp': mv.get('winexp'),
+                                      'rootValue': mv.get('rootValue'),
+                                      'visits': mv.get('visits')})
+                break
+            fx, fy = mv['fromPx']; tx, ty = mv['toPx']
+            cb = dict(st['counts'])
+            # full tap() re-activates iPhone Mirroring each time — taps land reliably
+            # even after focus changes (tap_fast missed and froze the board mid-series)
+            PL.tap(round(fx / 2), round(fy / 2)); time.sleep(0.3)
+            PL.tap(round(tx / 2), round(ty / 2)); time.sleep(0.4)
+            st2, fp2 = PL.capture_state(f'g{gi}_r{rnd}_a{a}')
+            move_rec = {'from': mv['from'], 'to': mv['to'],
+                        'winexp': mv.get('winexp'), 'rootValue': mv.get('rootValue'),
+                        'visits': mv.get('visits'), 'moveVisits': mv.get('moveVisits'),
+                        'counts_before': cb}
+            if st2 == 'over':
+                move_rec['result'] = 'game_over_modal'
+                turn['moves'].append(move_rec)
+                over_mid = True
+                break
+            if fp2 is None:
+                move_rec['result'] = 'parse_invalid'
+                turn['moves'].append(move_rec)
+                break
+            if fp2 == fp:
+                misses += 1
+                move_rec['result'] = f'no_change_miss{misses}'
+                turn['moves'].append(move_rec)
+                PL.place()
+                if misses >= 2:
+                    break
+                continue
+            misses = 0
+            move_rec['counts_after'] = dict(st2['counts'])
+            move_rec['result'] = 'applied'
+            turn['moves'].append(move_rec)
+            st, fp = st2, fp2
+            last_counts = dict(st['counts'])
+            if counts_winner(st['counts']) == 'red':
+                break
+        turn['counts_after'] = dict(st['counts'])
+        rec['trajectory'].append(turn)
+
+        if over_mid:
+            break
+        w = counts_winner(st['counts'])
+        if w is not None:
+            rec['result'] = 'win' if w == 'red' else 'loss'; rec['winner'] = w
+            break
+
+        # End turn -> bots play (full tap re-activates IM so the tap lands)
+        PL.tap(*PL.END_TURN)
+        time.sleep(1.0)
+        st3, fp3 = PL.capture_state(f'g{gi}_r{rnd}_end')
+        if st3 == 'over':
+            over_mid = True
+            break
+        if fp3 is None:
+            # maybe link dropped mid-bot-turn; try to recover
+            if not wait_connected(f'g{gi}_r{rnd}_recover'):
+                rec['note'] = 'link down during bot turn'; break
+            st3, fp3 = PL.capture_state(f'g{gi}_r{rnd}_end2')
+            if fp3 is None:
+                rec['note'] = 'could not stabilize after bots'; break
+        st, fp = st3, fp3
+        last_counts = dict(st['counts'])
+
+    # if we ended on a modal, classify from it
+    if rec['result'] == 'unknown':
+        over_path = PL.shot(f'g{gi}_over.png')
+        if PL.is_game_over(over_path):
+            res, win, raw = classify_over(over_path, last_counts)
+            rec['result'], rec['winner'] = res, win
+            rec['over_ocr'] = raw
+        elif rec['rounds'] >= args.max_rounds:
+            rec['note'] = 'hit max-rounds without terminal'
+
+    rec['red_final'] = last_counts.get('red')
+    rec['ended_at'] = now()
+    return rec
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--games', type=int, default=100)
+    ap.add_argument('--sims', type=int, default=8000)
+    ap.add_argument('--wset', default='C1')
+    ap.add_argument('--c-puct', type=float, default=2.5)
+    ap.add_argument('--nroll', type=int, default=1)
+    ap.add_argument('--rollout', default='strong')   # unused by fast engine; kept for mcts_move sig
+    ap.add_argument('--max-rounds', type=int, default=80,   # high: let games finish naturally
+                    help='hard cap only; games are expected to reach a natural win/loss')
+    ap.add_argument('--max-attacks', type=int, default=14)
+    ap.add_argument('--out', default=os.path.join(RUNS, 'series_b8k.jsonl'))
+    ap.add_argument('--start-index', type=int, default=0)
+    args = ap.parse_args()
+
+    import sys
+    sys.path.insert(0, os.path.dirname(HERE))
+    from fmcts import WSETS
+    config = {
+        'engine': 'fast_c_uct', 'neural_net': False, 'sims': args.sims,
+        'wset': args.wset, 'ranked_weights': WSETS[args.wset],
+        'c_puct': args.c_puct, 'nroll': args.nroll, 'priors': 'uniform',
+        'rollout_policy': 'ranked_C1', 'win_nodes': WIN_NODES,
+        'max_rounds': args.max_rounds, 'max_attacks': args.max_attacks,
+        'engine_build': 'fast_engine.so (-O3 -ffast-math)', 'role': 'red',
+        'winexp_def': 'backed-up Q of the chosen root child = RED win-prob estimate',
+        'seed_exploitation': False, 'never_surrender': True,
+    }
+
+    print(f'=== SERIES: {args.games} games, pure C-UCT sims={args.sims} '
+          f'wset={args.wset} c_puct={args.c_puct} ===')
+    print(f'logging -> {args.out}')
+    dash_proc, dash_url = start_dashboard()
+    print(f'*** live dashboard: {dash_url} ***', flush=True)
+    PL.place()
+
+    wins = losses = unknown = 0
+    try:
+      with open(args.out, 'a', buffering=1) as fout:
+        if args.start_index == 0:
+            fout.write(json.dumps({'type': 'meta', 'created_at': now(),
+                                   'config': config}) + '\n')
+        for gi in range(args.start_index, args.games):
+            t0 = now()
+            print(f'\n----- GAME {gi+1}/{args.games} -----')
+            _post('/game', {'wins': wins, 'losses': losses, 'unknown': unknown,
+                            'game_index': gi, 'games': args.games, 'last_result': None})
+            rec = play_one_game(args, gi)
+            rec['type'] = 'game'
+            rec['config_ref'] = {'sims': args.sims, 'wset': args.wset,
+                                 'c_puct': args.c_puct, 'engine': 'fast_c_uct'}
+            fout.write(json.dumps(rec) + '\n')
+
+            r = rec['result']
+            wins += r == 'win'; losses += r == 'loss'; unknown += r == 'unknown'
+            done = gi + 1 - args.start_index
+            wr = wins / max(1, wins + losses) * 100
+            _post('/game', {'wins': wins, 'losses': losses, 'unknown': unknown,
+                            'game_index': gi, 'games': args.games, 'last_result': r})
+            print(f'  result={r} winner={rec["winner"]} red_final={rec["red_final"]} '
+                  f'rounds={rec["rounds"]}  [{now()-t0:.0f}s]')
+            print(f'  TALLY: {wins}W-{losses}L-{unknown}? over {done} games '
+                  f'-> {wr:.1f}% (decided)')
+
+            if gi + 1 < args.games:
+                fresh = restart_game()
+                if fresh is None:
+                    print('  !! could not auto-restart — pausing. Inspect '
+                          f'{os.path.join(PL.CAP, "restart_probe.png")} and resume with '
+                          f'--start-index {gi+1}.')
+                    break
+
+        print(f'\n=== DONE: {wins}W-{losses}L-{unknown}? '
+              f'decided winrate {wins/max(1,wins+losses)*100:.1f}% ===')
+    finally:
+        if dash_proc:
+            try:
+                dash_proc.terminate()
+            except Exception:
+                pass
+
+
+if __name__ == '__main__':
+    main()

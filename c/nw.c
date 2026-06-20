@@ -17,6 +17,12 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <time.h>
+
+// decision-timing instrumentation (use with --threads 1 for clean numbers)
+static long g_dec_count=0; static double g_dec_ns=0;
+static inline double now_ns(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
+  return t.tv_sec*1e9 + t.tv_nsec; }
 
 #define MAXN 32
 #define MAXDEG 8
@@ -535,8 +541,10 @@ static int play_game(const Board*b,State*s,uint64_t boardSeed,uint64_t rolloutSe
     // RED turn: re-plan per attack
     for(int a=0;a<g_maxAttacks;a++){
       int c[NFAC]; count_all(b,s,c); if(c[0]>=WIN_NODES) return 0;
-      int of,ot; int act = g_use_tree ? choose_red_tree(b,s,&roll,&of,&ot)
-                                       : choose_red(b,s,&roll,&of,&ot);
+      int of,ot; double _t0=now_ns();
+      int act = g_use_tree ? choose_red_tree(b,s,&roll,&of,&ot)
+                           : choose_red(b,s,&roll,&of,&ot);
+      g_dec_ns += now_ns()-_t0; g_dec_count++;
       if(!act) break;
       resolve(b,s,of,ot,&real);
       if(winner(b,s)>=0) break;
@@ -630,5 +638,7 @@ int main(int argc,char**argv){
   for(int t=0;t<nthreads;t++) pthread_join(th[t],NULL);
   int wins=0; for(int i=0;i<nb;i++) if(G_games[i].result==0) wins++;
   printf("%d %d %.4f\n", wins, nb, (double)wins/nb);
+  if(g_dec_count) fprintf(stderr,"  [timing] %ld decisions, %.2f ms/decision\n",
+    g_dec_count, g_dec_ns/g_dec_count/1e6);
   return 0;
 }

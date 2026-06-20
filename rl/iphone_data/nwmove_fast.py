@@ -74,19 +74,50 @@ def main():
     fastnw.use_sim(args.sim_seed)        # private seed-free sim rng (no seed exploitation)
 
     owner, strength = fastnw.board_arrays(state)
-    acts, visits = fastnw.uct_search(owner, strength, args.turns, args.sims,
-                                     args.c_puct, args.nroll, None)
+    acts, visits, q = fastnw.uct_search(owner, strength, args.turns, args.sims,
+                                        args.c_puct, args.nroll, None, return_q=True)
     if len(acts) == 0:
-        print(json.dumps({'action': 'stop'}))
+        print(json.dumps({'action': 'stop', 'winexp': None}))
         return
-    action = int(acts[int(np.argmax(visits))])
+    best = int(np.argmax(visits))
+    action = int(acts[best])
+    tv = int(visits.sum())
+    # winexp = RED win-prob the search assigns to the chosen move (its backed-up Q).
+    # rootValue = visit-weighted mean Q over all root moves (position eval).
+    winexp = float(q[best])
+    root_val = float((visits * q).sum() / tv) if tv else None
+
+    # top candidate moves (for the dashboard search-tree panel)
+    nodes_by_id = {n['id']: n for n in js['nodes']}
+    order = np.argsort(-visits)[:14]
+    top = []
+    for k in order:
+        a = int(acts[k])
+        if a == -1:
+            top.append({'action': -1, 'from': None, 'to': None, 'label': 'END TURN',
+                        'from_owner': None, 'to_owner': None, 'visits': int(visits[k]),
+                        'frac': float(visits[k] / tv) if tv else 0.0, 'q': float(q[k])})
+            continue
+        f, t = a >> 8, a & 0xFF
+        nf, nt = nodes_by_id.get(f), nodes_by_id.get(t)
+        lbl = (f"{nf['owner'][0].upper()}{nf['strength']}→{nt['owner'][0].upper()}{nt['strength']}"
+               if nf and nt else '?')
+        top.append({'action': a, 'from': f, 'to': t, 'label': lbl,
+                    'from_owner': nf['owner'] if nf else None,
+                    'to_owner': nt['owner'] if nt else None,
+                    'visits': int(visits[k]), 'frac': float(visits[k] / tv) if tv else 0.0,
+                    'q': float(q[k])})
+
     if action == -1:                     # END_TURN won the search
-        print(json.dumps({'action': 'stop'}))
+        print(json.dumps({'action': 'stop', 'winexp': winexp,
+                          'rootValue': root_val, 'visits': tv, 'top': top}))
         return
     frm, to = action >> 8, action & 0xFF
     print(json.dumps({
         'action': 'attack', 'from': frm, 'to': to,
         'fromPx': px[frm], 'toPx': px[to],
+        'winexp': winexp, 'rootValue': root_val,
+        'visits': tv, 'moveVisits': int(visits[best]), 'top': top,
     }))
 
 
