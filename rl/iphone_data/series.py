@@ -61,8 +61,10 @@ def _post(path, payload):
         pass
 
 
-def publish_move(st, mv, turn):
-    """Push the current board + the search's decision to the dashboard."""
+def publish_move(st, mv, turn, shot=None):
+    """Push the current board + the search's decision to the dashboard.
+    `shot` is the screenshot filename the parsed board came from, so the dashboard
+    can show it side-by-side (eyeball stale-frame vs bad-OCR)."""
     chosen = None if mv.get('action') == 'stop' else {'from': mv.get('from'), 'to': mv.get('to')}
     _post('/publish', {
         'board': {'grid': st['grid'], 'nodes': st['nodes']},
@@ -70,7 +72,7 @@ def publish_move(st, mv, turn):
         'chosen': chosen, 'chosen_end': mv.get('action') == 'stop',
         'top': mv.get('top', []), 'total_visits': mv.get('visits', 0),
         'phase': 'end-turn' if mv.get('action') == 'stop' else 'attack',
-        'turn': turn,
+        'turn': turn, 'shot': shot,
     })
 
 # UI coords (logical = capture px / 2), mapped live 2026-06-20 via ocr
@@ -132,6 +134,8 @@ def wait_connected(tag='reconnect', timeout=1800):
     while now() - t0 < timeout:
         PL.place()
         path = PL.shot(f'{tag}.png')
+        if not os.path.exists(path):       # screencapture failed (window gone)
+            time.sleep(10); continue
         st = PL.P.parse(path)
         if sum(st['counts'].values()) >= 12:
             return True
@@ -140,25 +144,47 @@ def wait_connected(tag='reconnect', timeout=1800):
     return False
 
 
+PLAY_AGAIN_YES = (221, 418)   # "Play again?" modal -> Yes button, LOGICAL=px/2 (mapped 2026-06-20)
+
+
 def restart_game():
-    """Start a fresh game from the post-game (win/loss) modal. NEVER surrenders —
-    only taps the modal's New Game/Play Again button. Returns the fresh parsed
-    state, or None if it can't confirm one (then the caller pauses for help)."""
-    for attempt in range(4):
+    """Move to the next playable game. NEVER surrenders. The post-game modal is
+    'You Lost!/Won! — Play again?  No / Yes' -> tap YES. But a game often bails
+    'unknown' on a transient glitch while it's actually STILL LIVE — in that case
+    there's no modal, so just return the live board and keep playing it (this is
+    what kept killing the run). Returns a playable state, or None if truly stuck."""
+    for attempt in range(6):
         path = PL.shot('restart_probe.png')
-        btn = find_button(path, ('new game', 'play again', 'again', 'rematch',
-                                 'replay', 'play')) or (NEW_GAME if PL.is_game_over(path) else None)
-        if btn is None:
-            print(f'   restart: no post-game button visible yet (attempt {attempt}); waiting')
-            time.sleep(3)
-            continue
-        print(f'   restart: tapping {btn}')
-        PL.tap(*btn)
-        time.sleep(2.5)
-        st, fp = PL.capture_state('restart_check')
-        if fp is not None and sum(st['counts'].values()) == 30:
-            return st
-        print(f'   restart attempt {attempt} did not yield a fresh board; retrying')
+        ocr = PL.sh(PL.OCR, path).stdout.lower()
+        if 'play again' in ocr or 'you lost' in ocr or 'you won' in ocr:
+            btn = find_button(path, ('yes',)) or PLAY_AGAIN_YES   # tap YES, not the prompt
+            print(f'   restart: post-game modal -> tapping {btn}')
+            PL.tap(*btn)
+            time.sleep(2.5)
+            st, fp = PL.capture_state('restart_check')
+            if fp is not None and sum(st['counts'].values()) == 30:
+                return st
+        else:
+            btn = find_button(path, ('new game', 'rematch', 'replay'))
+            if btn is not None:
+                print(f'   restart: tapping {btn}')
+                PL.tap(*btn); time.sleep(2.5)
+                st, fp = PL.capture_state('restart_check')
+                if fp is not None and sum(st['counts'].values()) == 30:
+                    return st
+            else:
+                # NO modal -> the 'unknown' was a false bail; the game is still live.
+                # deselect any stale highlight and resume play on the live board.
+                for ex, ey in ((12, 380), (306, 380)):
+                    PL.tap(ex, ey); time.sleep(0.2)
+                st, fp = PL.capture_state('restart_live')
+                if fp is not None and sum(st['counts'].values()) == 30:
+                    print('   restart: no modal — game still live, resuming play')
+                    return st
+                if 'connect' in ocr or 'iphone in use' in ocr:
+                    print('   restart: mirror link down; waiting to reconnect')
+                    wait_connected('restart_recon', timeout=600)
+        print(f'   restart attempt {attempt}: no playable board yet; retrying')
         time.sleep(2)
     return None
 
@@ -171,6 +197,11 @@ def play_one_game(args, gi):
         'note': None,
     }
     PL.place()
+    # clear any stale selection left by an interrupted game (a lingering highlight
+    # makes the parser recover/mis-color nodes -> count mismatch -> stuck start).
+    # full tap() (re-activates IM) on empty margins, where tap_fast silently misses.
+    for ex, ey in ((12, 380), (306, 380), (12, 380)):
+        PL.tap(ex, ey); time.sleep(0.2)
     st, fp = PL.capture_state(f'g{gi}_r0')
     if st == 'over' or fp is None:
         if not wait_connected(f'g{gi}_wait'):
@@ -184,6 +215,7 @@ def play_one_game(args, gi):
             return rec
 
     last_counts = dict(st['counts'])
+    cur_shot = f'g{gi}_r0.png'        # screenshot the current `st` was parsed from
     for rnd in range(args.max_rounds):
         rec['rounds'] = rnd + 1
         # winner check at top of round (a bot may have won during its turn)
@@ -209,7 +241,7 @@ def play_one_game(args, gi):
             mv = PL.mcts_move(st, args.rollout, engine='fast', sims=args.sims,
                               turns=rnd + 1, wset=args.wset, c_puct=args.c_puct,
                               nroll=args.nroll)
-            publish_move(st, mv, rnd + 1)
+            publish_move(st, mv, rnd + 1, shot=cur_shot)
             if mv.get('action') == 'stop':
                 turn['moves'].append({'action': 'stop', 'winexp': mv.get('winexp'),
                                       'rootValue': mv.get('rootValue'),
@@ -248,6 +280,7 @@ def play_one_game(args, gi):
             move_rec['result'] = 'applied'
             turn['moves'].append(move_rec)
             st, fp = st2, fp2
+            cur_shot = f'g{gi}_r{rnd}_a{a}.png'
             last_counts = dict(st['counts'])
             if counts_winner(st['counts']) == 'red':
                 break
@@ -263,19 +296,29 @@ def play_one_game(args, gi):
 
         # End turn -> bots play (full tap re-activates IM so the tap lands)
         PL.tap(*PL.END_TURN)
-        time.sleep(1.0)
-        st3, fp3 = PL.capture_state(f'g{gi}_r{rnd}_end')
+        time.sleep(1.2)
+        st3, fp3 = PL.capture_state(f'g{gi}_r{rnd}_end', max_tries=45)  # bots animate longer
         if st3 == 'over':
             over_mid = True
             break
+        # transient post-bot parse glitches are common — re-place + recapture a few
+        # times (and ride out a brief link drop) before giving up on the game.
+        tries = 0
+        while fp3 is None and tries < 4:
+            tries += 1
+            if not wait_connected(f'g{gi}_r{rnd}_recover{tries}', timeout=300):
+                break
+            PL.place(); time.sleep(0.6)
+            st3, fp3 = PL.capture_state(f'g{gi}_r{rnd}_end{tries}', max_tries=45)
+            if st3 == 'over':
+                over_mid = True
+                break
+        if over_mid:
+            break
         if fp3 is None:
-            # maybe link dropped mid-bot-turn; try to recover
-            if not wait_connected(f'g{gi}_r{rnd}_recover'):
-                rec['note'] = 'link down during bot turn'; break
-            st3, fp3 = PL.capture_state(f'g{gi}_r{rnd}_end2')
-            if fp3 is None:
-                rec['note'] = 'could not stabilize after bots'; break
+            rec['note'] = 'could not stabilize after bots (retries exhausted)'; break
         st, fp = st3, fp3
+        cur_shot = f'g{gi}_r{rnd}_end{tries}.png' if tries else f'g{gi}_r{rnd}_end.png'
         last_counts = dict(st['counts'])
 
     # if we ended on a modal, classify from it
@@ -296,7 +339,7 @@ def play_one_game(args, gi):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--games', type=int, default=100)
-    ap.add_argument('--sims', type=int, default=8000)
+    ap.add_argument('--sims', type=int, default=16000)   # ~0.56s/move; ~80% target
     ap.add_argument('--wset', default='C1')
     ap.add_argument('--c-puct', type=float, default=2.5)
     ap.add_argument('--nroll', type=int, default=1)

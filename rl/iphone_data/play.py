@@ -102,12 +102,26 @@ def capture_state(tag, max_tries=30):
     tried_deselect = False
     for k in range(max_tries):
         path = shot(f'{tag}.png')
+        if not os.path.exists(path):   # screencapture failed (window vanished / link drop)
+            time.sleep(SETTLE_POLL)
+            prev = None                # force a fresh settle once it comes back
+            continue
         th = _thumb(path)
         settled = prev is not None and np.abs(th - prev).mean() < DIFF_THRESH
         prev = th
         if settled:
             st = P.parse(path)
             fp = fingerprint(st)
+            # a recovered node means a SELECTION is active (its glow hid it from the
+            # blob detector). The selected node's STRENGTH reads wrong (e.g. 8->2),
+            # so deselect once and re-read to get the true, clean board.
+            if fp is not None and st.get('recovered', 0) > 0 and not tried_deselect:
+                tap(12, 380); tap(306, 380)   # full taps (re-activate) on empty margins
+                tried_deselect = True
+                prev = None
+                last_fp = None
+                time.sleep(SETTLE_POLL)
+                continue
             if fp is not None:
                 if fp == last_fp:                   # two identical valid parses
                     with open(os.path.join(CAP, f'{tag}.json'), 'w') as f:
@@ -172,14 +186,22 @@ def mcts_move(st, rollout, engine='js', sims=100, turns=1, server_url=None,
         tmp = os.path.join(CAP, '_state.json')
         with open(tmp, 'w') as f:
             json.dump(st, f)
-        r = sh(PYTHON, os.path.join(HERE, 'nwmove_fast.py'), tmp,
-               '--sims', str(sims), '--turns', str(turns), '--wset', wset,
-               '--c-puct', str(c_puct), '--nroll', str(nroll))
-        line = r.stdout.strip().split('\n')[-1] if r.stdout.strip() else ''
-        if not line:
-            print('  nwmove_fast stderr:', r.stderr[-300:])
-            return {'action': 'stop'}
-        return json.loads(line)
+        # retry: a transient empty stdout (subprocess hiccup) must NOT be misread as
+        # 'stop' — that silently passes the turn and can stall a whole game.
+        for attempt in range(3):
+            r = sh(PYTHON, os.path.join(HERE, 'nwmove_fast.py'), tmp,
+                   '--sims', str(sims), '--turns', str(turns), '--wset', wset,
+                   '--c-puct', str(c_puct), '--nroll', str(nroll))
+            line = r.stdout.strip().split('\n')[-1] if r.stdout.strip() else ''
+            if line:
+                try:
+                    return json.loads(line)
+                except json.JSONDecodeError:
+                    line = ''
+            if attempt < 2:
+                time.sleep(0.4)
+        print('  nwmove_fast empty after retries; stderr:', r.stderr[-200:])
+        return {'action': 'stop'}
     # JS flat MCTS (mcts.js)
     tmp = os.path.join(CAP, '_state.json')
     with open(tmp, 'w') as f:

@@ -16,11 +16,15 @@ Run:  dashserver.py [--port 8778]
 """
 import argparse
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CAP = os.path.join(HERE, 'captures')
 
 _TELE = {'move_num': 0, 'board': None, 'value': None, 'chosen': None,
          'chosen_end': False, 'top': [], 'total_visits': 0, 'counts': None,
-         'phase': 'idle', 'history': [],
+         'phase': 'idle', 'history': [], 'shot': None,
          'series': {'wins': 0, 'losses': 0, 'unknown': 0, 'game_index': 0,
                     'games': 0, 'last_result': None}}
 
@@ -29,7 +33,7 @@ def publish_move(t):
     """Merge a per-move telemetry payload and append to the win-exp history."""
     _TELE['move_num'] += 1
     for k in ('board', 'counts', 'value', 'chosen', 'chosen_end', 'top',
-              'total_visits', 'phase'):
+              'total_visits', 'phase', 'shot'):
         if k in t:
             _TELE[k] = t[k]
     if t.get('value') is not None:
@@ -67,13 +71,17 @@ DASHBOARD = r"""<!doctype html><html><head><meta charset=utf-8>
 </style></head><body>
 <div class=wrap>
  <div>
-  <div class=card><h2>Board — live</h2><div id=board class=board></div>
+  <div class=card><h2>Parsed board (what the AI sees)</h2><div id=board class=board></div>
    <div class=counts id=counts style=margin-top:10px></div>
    <div class=muted id=phase style=margin-top:6px></div>
   </div>
+  <div class=card style=margin-top:18px><h2>Phone screenshot (ground truth)</h2>
+   <img id=shot style="width:100%;border-radius:8px;display:block" />
+   <div class=muted style=margin-top:6px>compare to the parsed board to spot stale frames vs bad reads</div>
+  </div>
  </div>
  <div>
-  <div class=card><h2>Series tally — pure C-UCT, 8000 sims</h2>
+  <div class=card><h2>Series tally — pure C-UCT, 16000 sims</h2>
    <div class=tally><div class=big id=wr>—</div>
      <div><div id=tally class=muted></div><div id=cfg class=muted></div></div></div>
   </div>
@@ -107,6 +115,12 @@ async function tick(){
   document.getElementById('counts').innerHTML=Object.entries(s.counts||{}).map(
    ([k,v])=>'<span style="color:'+(COL[k]||'#aaa')+'">'+k[0].toUpperCase()+' '+v+'</span>').join('');
   document.getElementById('phase').textContent='move #'+s.move_num+'  ·  '+(s.phase||'');
+ }
+ // refresh the phone screenshot when it changes (cache-bust by move_num)
+ if(s.shot){
+  const img=document.getElementById('shot');
+  const url='/shot?v='+s.move_num;
+  if(img.getAttribute('data-v')!==''+s.move_num){ img.src=url; img.setAttribute('data-v',''+s.move_num); }
  }
  // series tally
  const se=s.series||{};const dec=(se.wins||0)+(se.losses||0);
@@ -173,6 +187,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, 'ok', 'text/plain')
         elif self.path.startswith('/state'):
             self._send(200, json.dumps(_TELE, default=float))
+        elif self.path.startswith('/shot'):
+            name = _TELE.get('shot')
+            path = os.path.join(CAP, os.path.basename(name)) if name else None
+            if path and os.path.exists(path):
+                with open(path, 'rb') as f:
+                    self._send(200, f.read(), 'image/png')
+            else:
+                self._send(404, b'', 'image/png')
         else:
             self._send(200, DASHBOARD, 'text/html')
 

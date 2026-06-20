@@ -231,32 +231,203 @@ def digit_feature(im, cx, cy, box=58):
     return (f, (x2-x1) / max(1, (y2-y1)))   # feature + aspect ratio
 
 
-def read_strengths(im, blobs, tokens):
-    """Assign a strength to every node: trust Vision where it reads a digit, then
-    template-match the remaining nodes against the Vision-labeled glyphs (self-
-    calibrating: same font/size within one screenshot)."""
-    feats = [digit_feature(im, b['px'], b['py']) for b in blobs]
-    strengths = [match_digit(b['px'], b['py'], tokens) for b in blobs]
+# ---- template-matching digit reader (primary) -----------------------------
+# Pipeline per node: crop -> white-threshold -> circular border mask -> keep the
+# central connected component(s) (drops the node-ring dash) -> gap-segment into
+# per-digit glyphs -> match each against a verified font-stable template bank.
+# This is far more accurate than Vision OCR, which misreads ~5% of digits
+# (6/0, 2/7, 9/0, 1/4 ...). Bank built offline by build_digit_bank().
+TM_R = 36                      # crop half-size (px) around a node center
+TM_GH, TM_GW = 30, 20          # normalized single-glyph size
+_yy, _xx = np.mgrid[-TM_R:TM_R, -TM_R:TM_R]
+TM_CMASK = np.sqrt(_xx**2 + _yy**2) < (TM_R * 0.80)   # border/glow mask
 
-    # templates: value -> list of feature arrays (only single-glyph, narrow aspect)
-    templates = {}
-    for s, fa in zip(strengths, feats):
-        if s is None or fa is None:
-            continue
-        if 1 <= s <= 9 and fa[1] < 0.95:        # single narrow glyph
-            templates.setdefault(s, []).append(fa[0])
+def _holes(g, thr=0.5):
+    """Count enclosed background regions in a normalized glyph (topology cue):
+    8 has 2, {0,6,9} have 1, {1,2,3,4,5,7} have 0. Robust to the 0/8 (and 4/6/8)
+    confusions that pure template SSD gets wrong."""
+    b = g < thr                                  # background = dark
+    H, W = b.shape
+    seen = np.zeros_like(b)
+    stack = []
+    for x in range(W):
+        for y in (0, H - 1):
+            if b[y, x] and not seen[y, x]:
+                seen[y, x] = True; stack.append((y, x))
+    for y in range(H):
+        for x in (0, W - 1):
+            if b[y, x] and not seen[y, x]:
+                seen[y, x] = True; stack.append((y, x))
+    while stack:                                  # flood-fill background from the border
+        y, x = stack.pop()
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < H and 0 <= nx < W and b[ny, nx] and not seen[ny, nx]:
+                seen[ny, nx] = True; stack.append((ny, nx))
+    enc = b & ~seen                               # background unreachable from outside = holes
+    nh = 0; vis = np.zeros_like(enc)
+    for y0 in range(H):
+        for x0 in range(W):
+            if enc[y0, x0] and not vis[y0, x0]:
+                nh += 1; vis[y0, x0] = True; st = [(y0, x0)]
+                while st:
+                    y, x = st.pop()
+                    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < H and 0 <= nx < W and enc[ny, nx] and not vis[ny, nx]:
+                            vis[ny, nx] = True; st.append((ny, nx))
+    return nh
 
-    for i, (s, fa) in enumerate(zip(strengths, feats)):
-        if s is not None or fa is None:
-            continue
-        best, bd = None, 1e18
-        for val, fs in templates.items():
-            for t in fs:
-                d = float(((fa[0]-t)**2).sum())
-                if d < bd:
-                    bd, best = d, val
-        strengths[i] = best
-    return strengths
+
+_DIGIT_BANK = None
+_BANK_HOLES = None
+def _bank():
+    global _DIGIT_BANK, _BANK_HOLES
+    if _DIGIT_BANK is None:
+        p = os.path.join(HERE, 'digit_bank.npy')
+        _DIGIT_BANK = np.load(p, allow_pickle=True).item() if os.path.exists(p) else {}
+        _BANK_HOLES = {v: _holes(_DIGIT_BANK[v]) for v in _DIGIT_BANK}
+    return _DIGIT_BANK
+
+
+TM_GLOW_MAX = 550   # white-px ceiling; a real digit is <~400, a selection glow >~900
+
+
+def _clean_mask(im, cx, cy):
+    """White digit, border-masked, central components only (drops the ring dash).
+    Returns None for a SELECTED/glowing node — its bright halo floods the white
+    mask (and inverts the digit to dark), so it's unreadable; the caller then
+    deselects and re-reads rather than trusting a garbage number."""
+    cx, cy = int(cx), int(cy)
+    box = im[cy-TM_R:cy+TM_R, cx-TM_R:cx+TM_R]
+    if box.shape[:2] != (2*TM_R, 2*TM_R):
+        return None
+    w = ((box[:, :, 0] > 150) & (box[:, :, 1] > 150) & (box[:, :, 2] > 150)) & TM_CMASK
+    if w.sum() > TM_GLOW_MAX:          # selection glow floods the mask -> unreadable
+        return None
+    keep = np.zeros_like(w)
+    for comp in components(w):
+        ys = np.fromiter((p[0] for p in comp), int)
+        if len(comp) >= 12 and (np.abs(ys - TM_R) < 0.42 * TM_R).any():
+            for y, x in comp:
+                keep[y, x] = True
+    return keep if keep.any() else w
+
+
+def _norm_glyph(g):
+    ys, xs = np.where(g)
+    if len(ys) < 8:
+        return None
+    sub = g[ys.min():ys.max()+1, xs.min():xs.max()+1]
+    return np.asarray(Image.fromarray((sub*255).astype(np.uint8)).resize((TM_GW, TM_GH)),
+                      dtype=np.float32) / 255.0
+
+
+def _segment_glyphs(m):
+    """Split a clean mask into per-digit normalized glyphs by empty-column gaps
+    (>=2 cols). Caps at the 2 widest segments (guards selection-glow over-split)."""
+    ys, xs = np.where(m)
+    if len(ys) < 8:
+        return []
+    x0, x1 = xs.min(), xs.max()
+    colhas = (m[:, x0:x1+1].sum(0) > 1)
+    segs, run, gap = [], None, 0
+    for i, h in enumerate(colhas):
+        if h:
+            run = [i, i] if run is None else [run[0], i]
+            gap = 0
+        else:
+            gap += 1
+            if run is not None and gap >= 2:
+                segs.append(tuple(run)); run = None
+    if run is not None:
+        segs.append(tuple(run))
+    if len(segs) <= 1:
+        g = _norm_glyph(m)
+        return [g] if g is not None else []
+    if len(segs) > 2:                          # keep the 2 widest (left-to-right)
+        segs = sorted(sorted(segs, key=lambda s: s[1]-s[0])[-2:])
+    out = []
+    for a, b in segs:
+        sub = m.copy(); sub[:, :x0+a] = False; sub[:, x0+b+1:] = False
+        g = _norm_glyph(sub)
+        if g is not None:
+            out.append(g)
+    return out
+
+
+def read_strength_tm(im, cx, cy):
+    """Read one node's strength. THE strategy = per-digit template matching:
+    crop -> threshold -> border mask -> central component -> gap-segment into
+    digits -> match each glyph to the nearest bank template.
+
+    The match is nearest-template by pixel SSD, BUT scoped to digits with the same
+    number of enclosed holes as the glyph (8->2, {0,6,9}->1, {1,2,3,4,5,7}->0).
+    Holes are the only thing separating 0 from 8 (one tiny middle stroke), which
+    SSD alone can't see reliably; everything else SSD distinguishes on its own.
+    Returns None if unreadable."""
+    bank = _bank()
+    if not bank:
+        return None
+    m = _clean_mask(im, cx, cy)
+    if m is None:
+        return None
+    glyphs = _segment_glyphs(m)
+    if not glyphs:
+        return None
+    vals = sorted(bank)
+    digits = []
+    for g in glyphs:
+        h = _holes(g)
+        cands = [v for v in vals if _BANK_HOLES.get(v) == h] or vals
+        digits.append(min(cands, key=lambda v: float(((g - bank[v])**2).sum())))
+    return int(''.join(str(d) for d in digits))
+
+
+def read_strengths(im, blobs):
+    """Read every node's strength with the ONE strategy: per-digit template
+    matching (see read_strength_tm). Requires digit_bank.npy."""
+    return [read_strength_tm(im, b['px'], b['py']) for b in blobs]
+
+
+def dominant_owner(im, cx, cy, dx):
+    """Most common faction color in a box around (cx,cy), ignoring white/dark pixels
+    (selection glow + the central digit classify as -1). None if no faction dominates."""
+    H, W, _ = im.shape
+    rad = int(dx * 0.32)
+    x0, y0 = max(0, int(cx) - rad), max(0, int(cy) - rad)
+    crop = im[y0:int(cy) + rad, x0:int(cx) + rad]
+    if crop.size == 0:
+        return None
+    lbl = classify_array(crop[np.newaxis, ::1, ::1][0])  # HxW int8, -1 = none
+    counts = np.bincount(lbl[lbl >= 0].ravel(), minlength=len(NAMES)) if (lbl >= 0).any() else None
+    if counts is None or counts.max() < 40:              # too few colored px -> a hole
+        return None
+    return NAMES[int(counts.argmax())]
+
+
+def recover_missing(im, nodes, grid):
+    """Find nodes the blob detector missed (e.g. a SELECTED node whose highlight
+    breaks its colored ring). A missing grid cell is a real node iff it has a white
+    digit glyph AND a dominant faction color; a removed cell (hole) has neither."""
+    have = {(n['row'], n['col']) for n in nodes}
+    x0, y0, dx, dy = grid['x0'], grid['y0'], grid['dx'], grid['dy']
+    out = []
+    for r in range(grid['rows']):
+        for c in range(grid['cols']):
+            if (r, c) in have:
+                continue
+            cx, cy = x0 + c * dx, y0 + r * dy
+            if cy < BOARD_Y0 or cy > BOARD_Y1:
+                continue
+            if digit_feature(im, cx, cy) is None:        # no number -> genuine hole
+                continue
+            owner = dominant_owner(im, cx, cy, dx)
+            if owner is None:
+                continue
+            out.append({'owner': owner, 'px': float(cx), 'py': float(cy),
+                        'size': MIN_BLOB, 'row': r, 'col': c, 'recovered': True})
+    return out
 
 
 def match_digit(cx, cy, tokens, max_dist=45):
@@ -290,8 +461,16 @@ def parse(img_path):
         b['col'] = int(round((b['px']-x0)/dx))
         b['row'] = int(round((b['py']-y0)/dy))
 
+    # recover nodes the blob detector missed (e.g. a selected/highlighted node)
+    grid0 = {'cols': len(col_centers), 'rows': len(row_centers),
+             'dx': dx, 'dy': dy, 'x0': x0, 'y0': y0}
+    recovered = recover_missing(im, blobs, grid0)
+    n_recovered = len(recovered)
+    if recovered:
+        blobs = blobs + recovered   # NOT a warning — recovery is a successful detection
+
     tokens = ocr_full(img_path)
-    strengths = read_strengths(im, blobs, tokens)
+    strengths = read_strengths(im, blobs)
     for b, s in zip(blobs, strengths):
         b['strength'] = s
         if s is None:
@@ -311,11 +490,15 @@ def parse(img_path):
     for b in nodes:
         counts[b['owner']] += 1
 
+    # Scoreboard cross-check is INFORMATIONAL ONLY — the top chips OCR is flaky
+    # (misreads turn/animation digits, e.g. "214"), so a mismatch must NOT block
+    # acting on an otherwise-valid board (sum==30, all strengths read). Board node
+    # detection is the source of truth; keep these out of `warnings`.
     scoreboard = {f: match_digit(SCORE_X[f], SCORE_Y, tokens, max_dist=35) for f in NAMES}
-    if scoreboard:
-        for f in NAMES:
-            if scoreboard.get(f) is not None and scoreboard[f] != counts[f]:
-                warnings.append(f"count mismatch {f}: board={counts[f]} scoreboard={scoreboard[f]}")
+    scoreboard_warnings = []
+    for f in NAMES:
+        if scoreboard.get(f) is not None and scoreboard[f] != counts[f]:
+            scoreboard_warnings.append(f"count mismatch {f}: board={counts[f]} scoreboard={scoreboard[f]}")
 
     return {
         'nodes': [{'id': b['id'], 'col': b['col'], 'row': b['row'], 'owner': b['owner'],
@@ -326,6 +509,8 @@ def parse(img_path):
         'grid': {'cols': len(col_centers), 'rows': len(row_centers),
                  'dx': round(dx, 1), 'dy': round(dy, 1), 'x0': round(x0, 1), 'y0': round(y0, 1)},
         'warnings': warnings,
+        'scoreboard_warnings': scoreboard_warnings,
+        'recovered': n_recovered,
     }
 
 
