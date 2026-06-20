@@ -190,14 +190,19 @@ function resolveBattle(state, fromId, toId) {
   let d = to.strength;
   const flips = [];            // 'd' = defender lost a unit, 'a' = attacker lost a unit
   while (a > 1 && d > 0) {
-    if (state.rng() < ATTACKER_WIN_P) { d--; flips.push('d'); }
+    if (state.rng() < ATTACKER_WIN_P) {
+      d--; flips.push('d');
+      // the attacker's last striker (a===2) is spent clearing the final defender:
+      // it captures the node but has nothing left to spread in -> the node ends at 0.
+      if (d === 0 && a === 2) a--;
+    }
     else { a--; flips.push('a'); }
   }
   let captured = false;
   if (d === 0) {
     captured = true;
     to.owner = from.owner;
-    to.strength = a - 1;
+    to.strength = a - 1;     // 0 when the attacker was reduced to its garrison
     from.strength = 1;
   } else {
     from.strength = a;

@@ -102,7 +102,9 @@ static inline int winner(const Board*b,const State*s){
 // resolve a full battle from->to using rng r. caller guarantees legality.
 static inline int resolve(const Board*b,State*s,int from,int to,Rng*r){
   int a=s->str[from], d=s->str[to];
-  while(a>1 && d>0){ if(rng_d(r)<ATT_P) d--; else a--; }
+  // last striker (a==2) spent clearing the final defender: captures the node but
+  // can't spread -> captured node ends at 0.
+  while(a>1 && d>0){ if(rng_d(r)<ATT_P){ d--; if(d==0&&a==2) a--; } else a--; }
   if(d==0){ s->owner[to]=s->owner[from]; s->str[to]=a-1; s->str[from]=1; return 1; }
   s->str[from]=a; s->str[to]=d; return 0;
 }
@@ -194,6 +196,10 @@ static int largest_red_comp(const Board*b,const State*s,int flip){
 
 // rollout tuning weights (global, set from argv)
 static double RP_FLOOR=0.10, RP_GROW=10, RP_PC=2, RP_LEAD=1;
+// post-fix: a 2-stack attack (attacker==2) that wins captures a 0-strength node
+// and drops the attacker to 1 — usually wasteful. RP_2PEN discourages it in the
+// rollout (0 = original behavior). Skipped when the capture itself ends the game.
+static double RP_2PEN=0;
 static int g_srollout=0;     // use the strong (codex evaluatePosition) rollout
 
 // --- codex evaluatePosition, ported (DEFAULT_WEIGHTS) ------------------------
@@ -279,6 +285,9 @@ static int rollout_pick(const Board*b,const State*s,int*of,int*ot){
       if(pc<RP_FLOOR) continue;
       int grow=largest_red_comp(b,s,nb)-cur;
       double sc=grow*RP_GROW + pc*RP_PC + c[s->owner[nb]]*RP_LEAD;
+      // discourage wasteful 2-stack captures (win => 0-strength node, atk->1),
+      // unless capturing this node would win the game outright.
+      if(RP_2PEN>0 && atk==2 && c[0]+1<WIN_NODES) sc-=RP_2PEN;
       if(sc>bs){bs=sc;bf=i;bt=nb;}
     }
   }
@@ -299,9 +308,20 @@ static int rollout_red_turn(const Board*b,State*s,Rng*r){
 
 static int g_rollhorizon=0;     // 0 => full game; else cap rollout at N rounds
 static int g_leafeval=0;        // map horizon state via evalpos logistic
+// NOTE: these defaults are MISCALIBRATED for the 7x6 rules. On real decisions
+// evalpos ranges ~[-23000,7000] (mean ~-2500), so sigmoid((evalpos-1600)/650)
+// saturates wrong (BCE ~5.1). Calibrated scalar is ref~-5000 scale~4800 (BCE
+// ~0.57, still marginal). The richer --vvalue (8-feature logistic, BCE ~0.25) is
+// a far better value. Always calibrate before using --leafeval/--vmix. See
+// FINDINGS.md. Left as-is to preserve historical behavior.
 static double g_evRef=1600, g_evScale=650;
+static double g_vmix=0;         // AlphaGo-style leaf value mix: (1-vmix)*rollout_z + vmix*logistic(evalpos@leaf)
+// forward decls for the learned value (Exp D2), defined further below
+static int g_vvalue;
+static inline double learned_value(const Board*b,const State*s);
 
 static inline double leaf_value(const Board*b,const State*s){
+  if(g_vvalue) return learned_value(b,s);
   if(g_leafeval){ double e=evalpos(b,s); return 1.0/(1.0+exp(-(e-g_evRef)/g_evScale)); }
   int c[NFAC]; count_all(b,s,c);
   int me=c[1]; for(int f=2;f<=4;f++) if(c[f]>me)me=c[f];
@@ -309,14 +329,20 @@ static inline double leaf_value(const Board*b,const State*s){
 }
 
 // play out to terminal from "RED to move, start of turn". returns value in [0,1].
+// With g_vmix>0, blends the AlphaGo way: the entry-leaf positional logistic is
+// mixed with the rollout-to-terminal result, (1-vmix)*z + vmix*e0. vmix=0 is the
+// original pure-rollout behavior.
 static double playout_from_red(const Board*b,State*s,Rng*r){
-  int w; int H = g_rollhorizon>0 ? g_rollhorizon : MAX_TURNS;
+  double e0=0; if(g_vmix>0) e0 = g_vvalue ? learned_value(b,s)
+                                          : 1.0/(1.0+exp(-(evalpos(b,s)-g_evRef)/g_evScale));
+  double z; int w, done=0; int H = g_rollhorizon>0 ? g_rollhorizon : MAX_TURNS;
   for(int t=0;t<H;t++){
-    w=rollout_red_turn(b,s,r); if(w>=0) return w==0?1:0;
-    reinforce(b,s,0); w=winner(b,s); if(w>=0) return w==0?1:0;
-    w=run_all_bots(b,s,r); if(w>=0) return w==0?1:0;
+    w=rollout_red_turn(b,s,r); if(w>=0){ z=w==0?1:0; done=1; break; }
+    reinforce(b,s,0); w=winner(b,s); if(w>=0){ z=w==0?1:0; done=1; break; }
+    w=run_all_bots(b,s,r); if(w>=0){ z=w==0?1:0; done=1; break; }
   }
-  return leaf_value(b,s);
+  if(!done) z=leaf_value(b,s);
+  return g_vmix>0 ? (1.0-g_vmix)*z + g_vmix*e0 : z;
 }
 
 // ----------------------------------------------------------------------------
@@ -395,6 +421,7 @@ typedef struct {
   int   child[MAXCH];        // child node index, -1 if not yet expanded
   int   cvis[MAXCH];         // child visit count (cached for PUCT)
   double cw[MAXCH];          // child value sum (cached for PUCT)
+  double cw2[MAXCH];         // child value sum-of-squares (for LCB root selection)
 } Node;
 
 typedef struct { Node*pool; int cap; int used; } Pool;
@@ -415,8 +442,63 @@ static double g_cpuct=2.5;
 static double g_temp=8.0;        // softmax temperature for the policy prior (uniform when unused)
 static double g_fpu=0.5;         // first-play urgency value for unvisited children
 static double g_stopLogit=0; // additive logit for the STOP action's prior
+static double g_lcb=0;       // root selection: pick max (mean - lcb*stderr) instead of max mean
 
 static int g_strongprior=0;  // use evalpos-based move scores for the PUCT prior
+
+// ---- distillation feature dump (Exp C): record per-root-decision candidate
+// features + the search's resulting visit counts, to fit a learned prior. ----
+static int g_dumpfeat=0; static FILE* g_dumpf=NULL; static long g_decid=0;
+static pthread_mutex_t g_dumpmu=PTHREAD_MUTEX_INITIALIZER;
+// Exp D: per-decision (evalpos(root), search win-prob) for value calibration.
+// g_dumpvfmode=1 dumps VFEAT state features instead of scalar evalpos (Exp D2).
+static int g_dumpval=0; static FILE* g_dumpvf=NULL; static int g_dumpvfmode=0;
+// shared feature extractor: NFEAT features for an action from state s0 (RED to move).
+#define NFEAT 9
+static void action_features(const Board*b,const State*s0,int act,const int*c,int cur,double*f){
+  if(act==ACT_STOP){ f[0]=0;f[1]=0;f[2]=0;f[3]=0;f[4]=0;f[5]=0;f[6]=0;f[7]=0;f[8]=1; return; }
+  int from=act>>5,to=act&31; int atk=s0->str[from],def=s0->str[to];
+  double pc=capprob(atk,def), ec=ecap(atk,def);
+  int grow=largest_red_comp(b,s0,to)-cur;
+  int defLeader=c[s0->owner[to]];
+  f[0]=pc; f[1]=ec/8.0; f[2]=grow; f[3]=defLeader/8.0;
+  f[4]=(def<=2)?1:0; f[5]=atk/8.0; f[6]=def/8.0; f[7]=b->deg[to]/8.0; f[8]=0; // f8=STOP indicator
+}
+// ---- Exp D2: richer learned VALUE. State features -> search win-prob. ----
+#define VFEAT 8
+static void state_vfeatures(const Board*b,const State*s,double*vf){
+  int c[NFAC]; count_all(b,s,c);
+  int ncomp,largestLen,inL[MAXN]; red_comp_info(b,s,&ncomp,inL,&largestLen);
+  double redStr=0,borderStr=0,botThreat=0; int sumEnemy=0,maxEnemy=0;
+  for(int f=1;f<=4;f++) if(c[f]>maxEnemy) maxEnemy=c[f];
+  for(int i=0;i<b->N;i++){
+    if(s->owner[i]==0){ redStr+=s->str[i]; int hasE=0;
+      for(int k=0;k<b->deg[i];k++){ int nb=b->adj[i][k]; if(s->owner[nb]!=0){ hasE=1;
+        if(s->str[nb]>s->str[i]) botThreat+=capprob(s->str[nb],s->str[i]); } }
+      if(hasE) borderStr+=s->str[i];
+    } else sumEnemy+=s->str[i];
+  }
+  vf[0]=c[0]/24.0; vf[1]=largestLen/24.0; vf[2]=ncomp/6.0; vf[3]=redStr/40.0;
+  vf[4]=borderStr/40.0; vf[5]=maxEnemy/24.0; vf[6]=sumEnemy/80.0; vf[7]=botThreat/10.0;
+}
+static int g_vvalue=0; static double VW[VFEAT+1]={0};
+static void load_vvalue(const char*path){
+  FILE*fp=fopen(path,"r"); if(!fp){fprintf(stderr,"vvalue: cannot open %s\n",path);return;}
+  for(int i=0;i<VFEAT+1;i++) if(fscanf(fp,"%lf",&VW[i])!=1){fprintf(stderr,"vvalue: short\n");break;}
+  fclose(fp); g_vvalue=1;
+}
+static inline double learned_value(const Board*b,const State*s){
+  double vf[VFEAT]; state_vfeatures(b,s,vf);
+  double z=VW[VFEAT]; for(int k=0;k<VFEAT;k++) z+=VW[k]*vf[k];
+  return 1.0/(1.0+exp(-z));
+}
+// learned linear prior (Exp C): weights[0..NFEAT-1] dot features + bias = logit.
+static int g_lprior=0; static double LW[NFEAT+1]={0};
+static void load_lprior(const char*path){
+  FILE*fp=fopen(path,"r"); if(!fp){fprintf(stderr,"lprior: cannot open %s\n",path);return;}
+  for(int i=0;i<NFEAT+1;i++) if(fscanf(fp,"%lf",&LW[i])!=1){fprintf(stderr,"lprior: short file\n");break;}
+  fclose(fp); g_lprior=1;
+}
 
 // Fill a node's candidate actions + policy priors from state s (RED to move).
 static void init_node(const Board*b,const State*s0,Node*nd){
@@ -431,7 +513,11 @@ static void init_node(const Board*b,const State*s0,Node*nd){
   for(int i=0;i<nm && n<MAXCH-1;i++){
     int from=mv[i].from,to=mv[i].to;
     int atk=s0->str[from], def=s0->str[to];
-    if(g_strongprior){
+    if(g_lprior){
+      double f[NFEAT]; action_features(b,s0,(from<<5)|to,c,cur,f);
+      double z=LW[NFEAT]; for(int k=0;k<NFEAT;k++) z+=LW[k]*f[k];
+      sc[n]=z;
+    } else if(g_strongprior){
       double pc=capprob(atk,def);
       int8_t oOwn=tmp.owner[to]; int16_t oF=tmp.str[from], oT=tmp.str[to];
       int ec=(int)(ecap(atk,def)+0.5); if(ec<1)ec=1;
@@ -445,12 +531,15 @@ static void init_node(const Board*b,const State*s0,Node*nd){
     act[n]=(from<<5)|to; n++;
   }
   // STOP candidate
-  sc[n]=g_stopLogit; act[n]=ACT_STOP; n++;
+  if(g_lprior){ double f[NFEAT]; action_features(b,s0,ACT_STOP,c,cur,f);
+    double z=LW[NFEAT]; for(int k=0;k<NFEAT;k++) z+=LW[k]*f[k]; sc[n]=z+g_stopLogit; }
+  else sc[n]=g_stopLogit;
+  act[n]=ACT_STOP; n++;
   // softmax with temperature -> priors
   double mx=-1e18; for(int i=0;i<n;i++) if(sc[i]>mx)mx=sc[i];
   double sum=0; for(int i=0;i<n;i++){ sc[i]=exp((sc[i]-mx)/g_temp); sum+=sc[i]; }
   for(int i=0;i<n;i++){ nd->priAct[i]=act[i]; nd->priP[i]=(float)(sc[i]/sum);
-    nd->child[i]=-1; nd->cvis[i]=0; nd->cw[i]=0; }
+    nd->child[i]=-1; nd->cvis[i]=0; nd->cw[i]=0; nd->cw2[i]=0; }
   nd->ncand=n;
 }
 
@@ -499,7 +588,7 @@ static double puct_sim(const Board*b,Pool*pool,int root,const State*root_s,Rng*r
   }
   // backprop along edges (update cached child stats) and node totals
   for(int i=0;i<pl;i++){ Node*n=&pool->pool[path[i]]; int sl=slotPath[i];
-    n->visits++; n->sumW+=value; n->cvis[sl]++; n->cw[sl]+=value; }
+    n->visits++; n->sumW+=value; n->cvis[sl]++; n->cw[sl]+=value; n->cw2[sl]+=value*value; }
   return value;
 }
 
@@ -515,12 +604,39 @@ static int choose_red_tree(const Board*b,const State*root_s,Rng*r,int*of,int*ot)
   for(int i=0;i<g_tree_budget;i++) puct_sim(b,&g_pool,root,root_s,r);
   // pick root action: most-visited (robust) or highest-mean (--selmean)
   Node*rn=&g_pool.pool[root];
+  if(g_dumpfeat && g_dumpf){
+    int c[NFAC]; count_all(b,root_s,c); int cur=largest_red_comp(b,root_s,-1);
+    pthread_mutex_lock(&g_dumpmu);
+    long did=g_decid++;
+    for(int i=0;i<rn->ncand;i++){
+      double f[NFEAT]; action_features(b,root_s,rn->priAct[i],c,cur,f);
+      double mean=rn->cvis[i]?rn->cw[i]/rn->cvis[i]:0;
+      fprintf(g_dumpf,"%ld",did);
+      for(int k=0;k<NFEAT;k++) fprintf(g_dumpf," %.4f",f[k]);
+      fprintf(g_dumpf," %d %.4f\n",rn->cvis[i],mean);
+    }
+    pthread_mutex_unlock(&g_dumpmu);
+  }
+  if(g_dumpval && g_dumpvf){
+    double wp=rn->visits? rn->sumW/rn->visits : 0.5;
+    pthread_mutex_lock(&g_dumpmu);
+    if(g_dumpvfmode){ double vf[VFEAT]; state_vfeatures(b,root_s,vf);
+      for(int k=0;k<VFEAT;k++) fprintf(g_dumpvf,"%.4f ",vf[k]);
+      fprintf(g_dumpvf,"%.4f\n",wp);
+    } else { double ev=evalpos(b,root_s); fprintf(g_dumpvf,"%.2f %.4f\n",ev,wp); }
+    pthread_mutex_unlock(&g_dumpmu);
+  }
   int bestAct=ACT_STOP, bestVis=-1; double bestMean=-1, bestScore=-1e18;
   for(int i=0;i<rn->ncand;i++){
     if(rn->cvis[i] < g_minVisits) continue;
     double mean=rn->cvis[i]?rn->cw[i]/rn->cvis[i]:0;
     if(g_selmean){
-      if(mean>bestScore){ bestScore=mean; bestAct=rn->priAct[i]; bestVis=rn->cvis[i]; }
+      double score=mean;
+      if(g_lcb>0 && rn->cvis[i]>1){            // lower-confidence-bound on the win-prob estimate
+        double var=rn->cw2[i]/rn->cvis[i]-mean*mean; if(var<0)var=0;
+        score=mean - g_lcb*sqrt(var/rn->cvis[i]);
+      }
+      if(score>bestScore){ bestScore=score; bestAct=rn->priAct[i]; bestVis=rn->cvis[i]; }
     } else if(rn->cvis[i]>bestVis || (rn->cvis[i]==bestVis && mean>bestMean)){
       bestVis=rn->cvis[i]; bestMean=mean; bestAct=rn->priAct[i]; } }
   if(bestAct==ACT_STOP) return 0;
@@ -620,6 +736,14 @@ int main(int argc,char**argv){
     else if(!strcmp(argv[i],"--leafeval")) g_leafeval=1;
     else if(!strcmp(argv[i],"--evref")) g_evRef=atof(argv[++i]);
     else if(!strcmp(argv[i],"--evscale")) g_evScale=atof(argv[++i]);
+    else if(!strcmp(argv[i],"--vmix")) g_vmix=atof(argv[++i]);
+    else if(!strcmp(argv[i],"--dumpfeat")){ g_dumpfeat=1; g_dumpf=fopen(argv[++i],"w"); }
+    else if(!strcmp(argv[i],"--lprior")) load_lprior(argv[++i]);
+    else if(!strcmp(argv[i],"--dumpval")){ g_dumpval=1; g_dumpvf=fopen(argv[++i],"w"); }
+    else if(!strcmp(argv[i],"--dumpvf")){ g_dumpval=1; g_dumpvfmode=1; g_dumpvf=fopen(argv[++i],"w"); }
+    else if(!strcmp(argv[i],"--vvalue")) load_vvalue(argv[++i]);
+    else if(!strcmp(argv[i],"--lcb")) g_lcb=atof(argv[++i]);
+    else if(!strcmp(argv[i],"--r2pen")) RP_2PEN=atof(argv[++i]);
   }
   // read boards: "B\n" then per board "seed N M\n" N×"owner str" M×"a b"
   int nb; if(scanf("%d",&nb)!=1){fprintf(stderr,"bad input\n");return 1;}

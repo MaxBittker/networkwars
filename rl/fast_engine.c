@@ -353,11 +353,16 @@ void set_heur_priors(int on, double beta) { HEUR_PRIORS = on; PRIOR_BETA = beta;
 static void resolve_battle(int *owner, int *strength, int frm, int to) {
     int a = strength[frm], d = strength[to];
     while (a > 1 && d > 0) {
-        if (RNG() < ATTACKER_WIN_P) d--; else a--;
+        if (RNG() < ATTACKER_WIN_P) {
+            d--;
+            /* last striker (a==2) spent clearing the final defender: captures the
+             * node but has nothing left to spread -> captured node ends at 0. */
+            if (d == 0 && a == 2) a--;
+        } else a--;
     }
     if (d == 0) {
         owner[to] = owner[frm];
-        strength[to] = a - 1;
+        strength[to] = a - 1;        /* 0 when attacker reduced to its garrison */
         strength[frm] = 1;
     } else {
         strength[frm] = a;

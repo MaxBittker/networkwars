@@ -26,8 +26,10 @@ rl/iphone_data/ocrserve
 rl/iphone_data/tap
 rl/iphone_data/wininfo
 
-# compiled native MCTS binary
+# compiled native MCTS binary (and ad-hoc experiment build variants)
 c/nw
+c/nw[0-9]*
+c/nw_agg
 
 # compiled C hot-path shared lib (built from rl/fast_engine.c)
 rl/fast_engine.so

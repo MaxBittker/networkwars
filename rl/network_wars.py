@@ -239,13 +239,17 @@ def resolve_battle(state, from_id, to_id):
     while a > 1 and d > 0:
         if rng() < ATTACKER_WIN_P:
             d -= 1
+            # last striker (a==2) spent clearing the final defender: captures the
+            # node but has nothing left to spread in -> the node ends at 0.
+            if d == 0 and a == 2:
+                a -= 1
         else:
             a -= 1
     captured = False
     if d == 0:
         captured = True
         to.owner = frm.owner
-        to.strength = a - 1
+        to.strength = a - 1     # 0 when the attacker was reduced to its garrison
         frm.strength = 1
     else:
         frm.strength = a
