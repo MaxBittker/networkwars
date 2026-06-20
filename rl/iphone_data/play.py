@@ -157,7 +157,8 @@ def start_server(port):
     raise RuntimeError('nwserver failed to start')
 
 
-def mcts_move(st, rollout, engine='js', sims=100, turns=1, server_url=None):
+def mcts_move(st, rollout, engine='js', sims=100, turns=1, server_url=None,
+              wset='C1', c_puct=2.5, nroll=1):
     if engine == 'nn':   # neural MCTS via persistent server (model already resident)
         body = json.dumps({'board': st, 'sims': sims, 'turns': turns}).encode()
         req = urllib.request.Request(server_url + '/move', data=body,
@@ -167,6 +168,18 @@ def mcts_move(st, rollout, engine='js', sims=100, turns=1, server_url=None):
         except Exception as e:
             print('  server error -> ending turn:', e)
             return {'action': 'stop'}
+    if engine == 'fast':   # pure C UCT (fast_engine.so, no net) — the ~78-80% config
+        tmp = os.path.join(CAP, '_state.json')
+        with open(tmp, 'w') as f:
+            json.dump(st, f)
+        r = sh(PYTHON, os.path.join(HERE, 'nwmove_fast.py'), tmp,
+               '--sims', str(sims), '--turns', str(turns), '--wset', wset,
+               '--c-puct', str(c_puct), '--nroll', str(nroll))
+        line = r.stdout.strip().split('\n')[-1] if r.stdout.strip() else ''
+        if not line:
+            print('  nwmove_fast stderr:', r.stderr[-300:])
+            return {'action': 'stop'}
+        return json.loads(line)
     # JS flat MCTS (mcts.js)
     tmp = os.path.join(CAP, '_state.json')
     with open(tmp, 'w') as f:
@@ -184,11 +197,16 @@ def main():
     ap.add_argument('--max-rounds', type=int, default=3)
     ap.add_argument('--rollout', default='strong')
     ap.add_argument('--max-attacks', type=int, default=12)
-    ap.add_argument('--engine', default='js', choices=['js', 'nn'],
-                    help="'js' = mcts.js flat MCTS; 'nn' = mcts.py + sl_cnn.pt")
-    ap.add_argument('--sims', type=int, default=100, help='neural MCTS simulations/move')
+    ap.add_argument('--engine', default='js', choices=['js', 'nn', 'fast'],
+                    help="'js'=mcts.js flat MCTS; 'nn'=mcts.py+sl_cnn.pt; 'fast'=pure C UCT")
+    ap.add_argument('--sims', type=int, default=100, help='MCTS simulations/move (fast: 8000)')
+    ap.add_argument('--wset', default='C1', help='fast engine ranked weight set')
+    ap.add_argument('--c-puct', type=float, default=2.5, help='fast engine PUCT exploration')
+    ap.add_argument('--nroll', type=int, default=1, help='fast engine rollouts per leaf')
     ap.add_argument('--port', type=int, default=SERVER_PORT)
     args = ap.parse_args()
+    if args.engine == 'fast' and args.sims < 1000:
+        args.sims = 8000   # pure-MCTS needs a real budget; 100 is a neural-MCTS default
 
     # pin window on-screen so taps register (off-display buttons = dead clicks)
     print('placing window:', place())
@@ -230,7 +248,8 @@ def play_loop(args, server_url):
         misses = 0
         for a in range(args.max_attacks):
             mv = mcts_move(st, args.rollout, engine=args.engine, sims=args.sims,
-                           turns=rnd + 1, server_url=server_url)
+                           turns=rnd + 1, server_url=server_url,
+                           wset=args.wset, c_puct=args.c_puct, nroll=args.nroll)
             if mv['action'] == 'stop':
                 print(f"  mcts: STOP after {a} attacks")
                 break

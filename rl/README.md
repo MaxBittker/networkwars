@@ -1,63 +1,69 @@
-# Network Wars — RL policy (PufferLib)
+# Network Wars — search & learning for RED
 
-PPO policy for RED, trained with [PufferLib](https://puffer.ai) 3.0 against the
-deterministic bots. `network_wars.py` is a Python port of `../game.js` with
-bit-identical RNG (mulberry32), verified game-for-game against the JS engine,
-so winrates here are directly comparable to `node ../sim.js`.
+Everything here plays **RED against the four fixed deterministic bots** — the
+only matchup the game has. The shared foundation is `network_wars.py`, a Python
+port of `../game.js` with bit-identical RNG (mulberry32), verified game-for-game
+against the JS engine (`verify_port.py`, 400/400), so every win rate below is
+directly comparable to `node ../sim.js`.
 
-## Results
+Board rules match the iOS app as of 2026-06-19: a **7×6 (42-cell) lattice**,
+**bimodal** initial strengths (50%→1, else 4..8), **clustered** ownership. One
+step = one battle; observation is a 42-cell grid + globals + a 337-bit legal-move
+mask (`OBS_DIM 685`).
 
-Best model: `policy_cnn_v5.pt` — **51.3% argmax winrate** over 600 held-out
-games (seeds 1–200, 5001–5200, 9001–9200). Baselines on seeds 1–200
-(`node sim.js 200`): randomAll 33.0%, greedyWeakest 27.0%, cautiousExpand
-21.0%, safeExpand 19.5%.
+## Two approaches
 
-Model history (combined argmax winrate on held-out seeds):
+### 1. Multi-turn UCT MCTS, seed-free — **~80%** (current best)
 
-| model | recipe | winrate |
-|-------|--------|---------|
-| v1 `policy_final.pt` | MLP, γ=0.97, ent 0.001, 10M steps | 44.0% |
-| v2 (discarded) | CNN, γ=0.99, ent 0.001 — entropy collapsed at ~7M | ~37% |
-| v3 `policy_cnn_v3.pt` | CNN, γ=0.99, ent 0.01, lr 0.008, 25M | 46.5% |
-| v4 `policy_cnn_v4.pt` | v3 + component-aware obs, 25M | 47.3% |
-| **v5 `policy_cnn_v5.pt`** | **v4 fine-tuned 8M @ ent 0.002, lr 0.003** | **51.3%** |
-| v6 (discarded) | v5 fine-tuned again @ ent 0.0005 — regressed | 45.8% |
+A heuristic-rollout UCT search over RED's action sequence, with a STOP edge that
+runs all four bots so the tree spans many turns. No neural net, **no seed/RNG
+exploitation** (search rollouts use a private RNG independent of the game seed).
+This is the strongest player and the headline result.
 
-Lessons: the CNN needs the ent=0.01 exploration floor to avoid collapse, and a
-single low-entropy fine-tune rung converts that exploration into ~4pp of
-winrate — but a second rung overshoots. (v1–v3 checkpoints used an old 547-dim
-observation and the now-removed `v1_snapshot/` frozen evaluator; they are no
-longer runnable.)
+- **`../c/`** — standalone from-scratch C engine + search, ~1000× the JS engine,
+  ~78–80% on held-out seeds. See `../c/README.md` for the design, fairness
+  argument, and tuned config.
+- **`fast_engine.c` + `fastnw.py` + `fmcts.py`** — the same hot path as a ctypes
+  shared lib driving the Python engine, used to tune the ranked-rollout weight
+  sets. `fmcts.py` plans with the C UCT search but applies moves to the *real*
+  seeded Python game, so outcomes are genuine.
 
-## Files
+  ```sh
+  cc -O3 -ffast-math -shared -fPIC fast_engine.c -o fast_engine.so
+  uv run python fmcts.py --games 120 --sims 3200 --wset C1 --c-puct 2.5
+  ```
 
-- `network_wars.py` — engine port + Gymnasium env. Obs: 6×6 grid (owner one-hot,
-  strength, exists, in-largest-component) + globals (counts, turn, per-faction
-  largest-component sizes, red border size) + 289-bit legal-move mask. Action:
-  `Discrete(289)` = 36 cells × 8 directions + end-turn. One step = one battle.
-- `policy.py` / `policy_cnn.py` — MLP and CNN policies; both mask illegal
-  actions inside `forward`, so the trainer never needs mask support. The CNN
-  feeds the mask in as 8 per-direction legality planes and emits attack logits
-  from a spatial 1×1-conv head.
-- `train.py` — PPO via `pufferlib.pufferl` (CPU, multiprocessing vecenv).
-- `evaluate.py` — plays fixed seeds, reports winrate.
-- `verify_dump.js` / `verify_port.py` — JS↔Python engine parity check
-  (400 games must match winner/turns/counts exactly).
+### 2. Learned policy+value MCTS (AlphaZero-style) — ~57%
+
+Distill the modalScout heuristic into a CNN, then guide PUCT MCTS with it and
+push further with self-play. Beats the heuristic but plateaus well below the
+seed-free UCT search above. Full pipeline, results, and lessons in
+**`ALPHAGO.md`**.
+
+- `policy_cnn.py` — CNN policy/value net (masks illegal actions in `forward`).
+- `dump_expert.js` → `replay_expert.py` → `train_sl.py` — distill modalScout
+  into `sl_cnn.pt` (SL step).
+- `mcts.py` — open-loop PUCT MCTS over the net (leaves = value head, no rollouts).
+- `selfplay.py` → `train_az.py` — AlphaZero self-play iterations.
+- `gen_data.py` / `train_value.py` — optional calibrated win-probability value
+  head (BCE-fine-tuned).
+- `evaluate.py` — fixed-seed win-rate harness (also provides the `_EnvShim`
+  shared by the scripts above).
 
 ## Reproduce
 
 ```sh
 uv sync
-uv run python verify_port.py                     # engine parity (optional)
-# v3-equivalent base run (~2h on an M-series CPU):
-uv run python train.py --timesteps 25000000 --policy policy_cnn \
-    --gamma 0.99 --lr 0.008 --ent-coef 0.01 --out base.pt
-# low-entropy fine-tune (the +4pp step):
-uv run python train.py --timesteps 8000000 --policy policy_cnn \
-    --gamma 0.99 --lr 0.003 --ent-coef 0.002 --resume base.pt --out final.pt
-uv run python evaluate.py final.pt --policy policy_cnn
+uv run python verify_port.py        # engine parity vs JS (optional)
+# strongest player (also runnable standalone from ../c/):
+cc -O3 -ffast-math -shared -fPIC fast_engine.c -o fast_engine.so
+uv run python fmcts.py --games 120 --sims 3200 --wset C1 --c-puct 2.5
+# learned-net line — see ALPHAGO.md for the SL + self-play steps.
 ```
 
 Pinned deps: pufferlib 3.0.0 requires `numpy<2`, and its prebuilt C advantage
 kernel on macOS matches `torch==2.10.0` exactly (other torch versions fail with
-missing-symbol errors at import).
+missing-symbol errors at import). Managed with `uv` (`pyproject.toml`/`uv.lock`).
+
+Regenerable artifacts (`*.pt`, `*.npy`, `*.log`, `expert.jsonl`, `fast_engine.so`)
+are gitignored — rebuild them from the steps above.

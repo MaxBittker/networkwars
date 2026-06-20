@@ -153,22 +153,55 @@ def detect_blobs(im):
     return blobs
 
 
-def ocr_full(img_path):
-    """Run Vision once; return list of (text, cx, cy)."""
-    out = subprocess.run([OCR, img_path], capture_output=True, text=True).stdout
+OCRSERVE = os.path.join(HERE, "ocrserve")
+_OCR_PROC = None
+
+
+def _ocr_proc():
+    """Lazily start a persistent Vision OCR coprocess (ocrserve). Keeping Vision
+    warm across images costs ~70ms/call vs ~240ms for a fresh `ocr` spawn."""
+    global _OCR_PROC
+    if _OCR_PROC is None or _OCR_PROC.poll() is not None:
+        _OCR_PROC = subprocess.Popen([OCRSERVE], stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, text=True, bufsize=1)
+    return _OCR_PROC
+
+
+def _parse_tokens(lines):
     toks = []
-    for line in out.strip().split("\n"):
-        if not line.strip():
-            continue
-        parts = line.split("\t")
+    for line in lines:
+        parts = line.rstrip("\n").split("\t")
         if len(parts) != 3:
             continue
-        txt, cx, cy = parts
         try:
-            toks.append((txt, float(cx), float(cy)))
+            toks.append((parts[0], float(parts[1]), float(parts[2])))
         except ValueError:
             pass
     return toks
+
+
+def ocr_full(img_path):
+    """Vision OCR via the warm coprocess; returns list of (text, cx, cy). Falls
+    back to a one-shot `ocr` spawn if the coprocess is unavailable."""
+    if os.path.exists(OCRSERVE):
+        try:
+            p = _ocr_proc()
+            p.stdin.write(img_path + "\n")
+            p.stdin.flush()
+            lines = []
+            while True:
+                line = p.stdout.readline()
+                if line == "":            # coprocess died
+                    raise BrokenPipeError("ocrserve closed")
+                if line == "\x01\n":      # end-of-image sentinel
+                    break
+                lines.append(line)
+            return _parse_tokens(lines)
+        except (BrokenPipeError, OSError):
+            global _OCR_PROC
+            _OCR_PROC = None              # force restart next call; fall through to one-shot
+    out = subprocess.run([OCR, img_path], capture_output=True, text=True).stdout
+    return _parse_tokens(out.strip().split("\n"))
 
 
 FEAT_W, FEAT_H = 18, 26   # normalized digit-glyph size for template matching

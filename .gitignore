@@ -21,5 +21,15 @@ rl/expert.jsonl
 rl/iphone_data/captures/
 rl/iphone_data/*.png
 rl/iphone_data/ocr
+rl/iphone_data/ocrserve
 rl/iphone_data/tap
 rl/iphone_data/wininfo
+
+# compiled native MCTS binary
+c/nw
+
+# compiled C hot-path shared lib (built from rl/fast_engine.c)
+rl/fast_engine.so
+
+# Claude Code worktree scaffolding
+.claude/
