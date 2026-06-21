@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Drive a live iOS Network Wars game with the mcts.js policy.
+"""Drive a live iOS Network Wars game with the pure C-UCT policy.
 
 Loop per RED turn:
   - deselect, settle, capture, parse (validated)
-  - ask nwmove.js for one move; if attack -> tap source, tap target; repeat
+  - ask nwmove_fast.py for one move; if attack -> tap source, tap target; repeat
   - if stop -> tap End Turn, wait for bots
 Stops on win (>=24), only-one-faction, repeated parse failure (likely modal), or
 --max-rounds. Every parsed state is saved to captures/ for later analysis.
 
-Usage: play.py [--max-rounds N] [--rollout strong|safety|cheap] [--max-attacks N]
+Usage: play.py [--max-rounds N] [--max-attacks N] [--sims N]
 """
-import os, sys, json, time, subprocess, argparse, urllib.request
+import os, sys, json, time, subprocess, argparse
 import numpy as np
 from PIL import Image
 import parse as P
@@ -27,7 +27,6 @@ DESELECT = (12, 500)       # empty left margin
 # stops animating, instead of fixed long sleeps + repeated full parses.
 DIFF_THRESH = 2.5          # mean 0-255 gray delta below which the screen is "settled"
 SETTLE_POLL = 0.3          # s between settle polls
-SERVER_PORT = 8777
 
 
 def sh(*args):
@@ -65,6 +64,28 @@ def _thumb(path):
     return np.asarray(Image.open(path).convert('L').resize((64, 140)), dtype=np.float32)
 
 
+def _deselect_glow(path, st):
+    """A node parsed as strength None is a SELECTED node — its selection glow
+    floods the digit so it can't be read. You deselect by tapping the node itself
+    (empty-margin taps do NOT deselect in this game). Tap the most-glowing
+    unreadable node (the selection source; its attack-lines also blank neighbors,
+    so clearing it fixes them too). Returns True if it tapped something."""
+    bad = [n for n in st['nodes'] if n.get('strength') is None]
+    if not bad:
+        return False
+    im = np.asarray(Image.open(path).convert('RGB')).astype(np.int16)
+    H, W, _ = im.shape
+
+    def glow(n):
+        x, y, r = int(n['px']), int(n['py']), 30
+        b = im[max(0, y-r):y+r, max(0, x-r):x+r]
+        return int(((b[:, :, 0] > 150) & (b[:, :, 1] > 150) & (b[:, :, 2] > 150)).sum())
+
+    src = max(bad, key=glow)                       # the selected source = brightest glow
+    tap(round(src['px'] / 2), round(src['py'] / 2))   # tap it to toggle the selection off
+    return True
+
+
 def fingerprint(st):
     """Owner+strength keyed by pixel-cell, order-independent; None if board invalid.
     Requires the real app's 6-col x 7-row grid so the parse matches the model's
@@ -100,6 +121,7 @@ def capture_state(tag, max_tries=30):
     last_st = None
     obscured = 0
     tried_deselect = False
+    deselects = 0
     for k in range(max_tries):
         path = shot(f'{tag}.png')
         if not os.path.exists(path):   # screencapture failed (window vanished / link drop)
@@ -112,16 +134,6 @@ def capture_state(tag, max_tries=30):
         if settled:
             st = P.parse(path)
             fp = fingerprint(st)
-            # a recovered node means a SELECTION is active (its glow hid it from the
-            # blob detector). The selected node's STRENGTH reads wrong (e.g. 8->2),
-            # so deselect once and re-read to get the true, clean board.
-            if fp is not None and st.get('recovered', 0) > 0 and not tried_deselect:
-                tap(12, 380); tap(306, 380)   # full taps (re-activate) on empty margins
-                tried_deselect = True
-                prev = None
-                last_fp = None
-                time.sleep(SETTLE_POLL)
-                continue
             if fp is not None:
                 if fp == last_fp:                   # two identical valid parses
                     with open(os.path.join(CAP, f'{tag}.json'), 'w') as f:
@@ -135,8 +147,11 @@ def capture_state(tag, max_tries=30):
                     obscured += 1
                     if obscured >= 2:
                         return 'over', None
-                elif not tried_deselect:            # maybe a stuck selection — clear it once
-                    deselect()
+                # An unreadable node is a SELECTED node (its glow floods the digit).
+                # You DESELECT it by tapping the node itself — empty-margin taps do
+                # NOT deselect in this game. Tap the most-glowing unreadable node.
+                elif deselects < 3 and _deselect_glow(path, st):
+                    deselects += 1
                     tried_deselect = True
                     prev = None
         time.sleep(SETTLE_POLL)
@@ -158,95 +173,50 @@ def board_str(st):
 PYTHON = os.path.join(os.path.dirname(HERE), '.venv', 'bin', 'python')
 
 
-def start_server(port):
-    """Launch the persistent neural-MCTS server (model loaded once) and wait for it."""
-    proc = subprocess.Popen([PYTHON, os.path.join(HERE, 'nwserver.py'), '--port', str(port)])
-    url = f'http://127.0.0.1:{port}'
-    for _ in range(60):
-        try:
-            if urllib.request.urlopen(url + '/healthz', timeout=1).read() == b'ok':
-                return proc, url
-        except Exception:
-            time.sleep(0.5)
-    raise RuntimeError('nwserver failed to start')
-
-
-def mcts_move(st, rollout, engine='js', sims=100, turns=1, server_url=None,
+def mcts_move(st, rollout, engine='fast', sims=8000, turns=1,
               wset='C1', c_puct=2.5, nroll=1):
-    if engine == 'nn':   # neural MCTS via persistent server (model already resident)
-        body = json.dumps({'board': st, 'sims': sims, 'turns': turns}).encode()
-        req = urllib.request.Request(server_url + '/move', data=body,
-                                     headers={'Content-Type': 'application/json'})
-        try:
-            return json.loads(urllib.request.urlopen(req, timeout=30).read())
-        except Exception as e:
-            print('  server error -> ending turn:', e)
-            return {'action': 'stop'}
-    if engine == 'fast':   # pure C UCT (fast_engine.so, no net) — the ~78-80% config
-        tmp = os.path.join(CAP, '_state.json')
-        with open(tmp, 'w') as f:
-            json.dump(st, f)
-        # retry: a transient empty stdout (subprocess hiccup) must NOT be misread as
-        # 'stop' — that silently passes the turn and can stall a whole game.
-        for attempt in range(3):
-            r = sh(PYTHON, os.path.join(HERE, 'nwmove_fast.py'), tmp,
-                   '--sims', str(sims), '--turns', str(turns), '--wset', wset,
-                   '--c-puct', str(c_puct), '--nroll', str(nroll))
-            line = r.stdout.strip().split('\n')[-1] if r.stdout.strip() else ''
-            if line:
-                try:
-                    return json.loads(line)
-                except json.JSONDecodeError:
-                    line = ''
-            if attempt < 2:
-                time.sleep(0.4)
-        print('  nwmove_fast empty after retries; stderr:', r.stderr[-200:])
-        return {'action': 'stop'}
-    # JS flat MCTS (mcts.js)
+    """Pure C-UCT move (fast_engine.so, no net) — the ~78-80% config. The `rollout`
+    and `engine` args are vestigial (kept for the call signature)."""
     tmp = os.path.join(CAP, '_state.json')
     with open(tmp, 'w') as f:
         json.dump(st, f)
-    r = sh('node', os.path.join(HERE, 'nwmove.js'), tmp, rollout)
-    line = r.stdout.strip().split('\n')[-1] if r.stdout.strip() else ''
-    if not line:
-        print('  nwmove stderr:', r.stderr[-300:])
-        return {'action': 'stop'}
-    return json.loads(line)
+    # retry: a transient empty stdout (subprocess hiccup) must NOT be misread as
+    # 'stop' — that silently passes the turn and can stall a whole game.
+    for attempt in range(3):
+        r = sh(PYTHON, os.path.join(HERE, 'nwmove_fast.py'), tmp,
+               '--sims', str(sims), '--turns', str(turns), '--wset', wset,
+               '--c-puct', str(c_puct), '--nroll', str(nroll))
+        line = r.stdout.strip().split('\n')[-1] if r.stdout.strip() else ''
+        if line:
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                line = ''
+        if attempt < 2:
+            time.sleep(0.4)
+    print('  nwmove_fast empty after retries; stderr:', r.stderr[-200:])
+    return {'action': 'stop'}
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--max-rounds', type=int, default=3)
-    ap.add_argument('--rollout', default='strong')
+    ap.add_argument('--rollout', default='strong')   # unused by fast engine; kept for mcts_move sig
     ap.add_argument('--max-attacks', type=int, default=12)
-    ap.add_argument('--engine', default='js', choices=['js', 'nn', 'fast'],
-                    help="'js'=mcts.js flat MCTS; 'nn'=mcts.py+sl_cnn.pt; 'fast'=pure C UCT")
-    ap.add_argument('--sims', type=int, default=100, help='MCTS simulations/move (fast: 8000)')
+    ap.add_argument('--sims', type=int, default=8000, help='MCTS simulations/move')
     ap.add_argument('--wset', default='C1', help='fast engine ranked weight set')
     ap.add_argument('--c-puct', type=float, default=2.5, help='fast engine PUCT exploration')
     ap.add_argument('--nroll', type=int, default=1, help='fast engine rollouts per leaf')
-    ap.add_argument('--port', type=int, default=SERVER_PORT)
     args = ap.parse_args()
-    if args.engine == 'fast' and args.sims < 1000:
-        args.sims = 8000   # pure-MCTS needs a real budget; 100 is a neural-MCTS default
 
     # pin window on-screen so taps register (off-display buttons = dead clicks)
     print('placing window:', place())
 
-    server_proc, server_url = None, None
-    if args.engine == 'nn':
-        server_proc, server_url = start_server(args.port)
-        print(f'\n*** neural-MCTS server up — open the live dashboard: {server_url} ***\n')
-
-    try:
-        play_loop(args, server_url)
-    finally:
-        if server_proc:
-            server_proc.terminate()
+    play_loop(args)
     print("\nDone. States saved in captures/.")
 
 
-def play_loop(args, server_url):
+def play_loop(args):
     for rnd in range(args.max_rounds):
         print(f"\n===== ROUND {rnd}  (RED turn) =====")
         place()   # re-pin + refocus once per turn; taps within the turn use tap_fast
@@ -269,8 +239,8 @@ def play_loop(args, server_url):
         # RED attacks until mcts says stop
         misses = 0
         for a in range(args.max_attacks):
-            mv = mcts_move(st, args.rollout, engine=args.engine, sims=args.sims,
-                           turns=rnd + 1, server_url=server_url,
+            mv = mcts_move(st, args.rollout, engine='fast', sims=args.sims,
+                           turns=rnd + 1,
                            wset=args.wset, c_puct=args.c_puct, nroll=args.nroll)
             if mv['action'] == 'stop':
                 print(f"  mcts: STOP after {a} attacks")
