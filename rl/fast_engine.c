@@ -33,6 +33,8 @@ static int ADJ[MAXN * 8];
 
 static void build_cap_tables(void);   /* fwd decl */
 static void reinforce(int *owner, int *strength, int faction);  /* fwd decl */
+static double heur_value(const int *owner, const int *strength, int turns);  /* fwd decl */
+static int value_greedy_move(const int *owner, const int *strength, int turns);  /* fwd decl */
 
 void set_topology(int n, const int *adj_off, const int *adj_list) {
     N = n;
@@ -487,7 +489,10 @@ int rollout(const int *owner_in, const int *strength_in, int turns) {
         int g = 0;
         while (g < 200) {
             int mv;
-            if (RED_ROLLOUT_POLICY == 2) {
+            if (RED_ROLLOUT_POLICY == 3) {
+                mv = value_greedy_move(owner, strength, turns);
+                if (mv == A_END) break;
+            } else if (RED_ROLLOUT_POLICY == 2) {
                 mv = safety_best_move(owner, strength);
                 if (mv == A_END) break;
             } else if (RED_ROLLOUT_POLICY == 1) {
@@ -517,6 +522,119 @@ int rollout(const int *owner_in, const int *strength_in, int turns) {
             for (int f = 2; f < NF; f++) if (c[f] > mx) mx = c[f];
             return c[0] > mx;
         }
+    }
+}
+
+/* ---- fitted static leaf value (logistic on cheap board features) ----
+ * Features (must match gen_value_data.py order): [bias, red_n, red_n-maxEn,
+ * red_n-avgEn, redS-maxES, red_big, fracture(red_big-red_n), turns]. */
+static double VALW[8] = {0,0,0,0,0,0,0,0};
+static int VAL_READY = 0;
+static int LEAF_TRUNC = -1;   /* -1 = full rollout to terminal; >=0 = trunc rounds then heur */
+void set_value_weights(const double *w) { for (int i = 0; i < 8; i++) VALW[i] = w[i]; VAL_READY = 1; }
+void set_leaf_trunc(int k) { LEAF_TRUNC = k; }
+
+static int red_largest_comp(const int *owner) {
+    static int seen[MAXN], stk[MAXN];
+    for (int i = 0; i < N; i++) seen[i] = 0;
+    int best = 0;
+    for (int s = 0; s < N; s++) {
+        if (owner[s] != 0 || seen[s]) continue;
+        int top = 0, sz = 0; stk[top++] = s; seen[s] = 1;
+        while (top > 0) {
+            int nid = stk[--top]; sz++;
+            for (int k = ADJ_OFF[nid]; k < ADJ_OFF[nid+1]; k++) {
+                int j = ADJ[k];
+                if (!seen[j] && owner[j] == 0) { seen[j] = 1; stk[top++] = j; }
+            }
+        }
+        if (sz > best) best = sz;
+    }
+    return best;
+}
+
+static double heur_value(const int *owner, const int *strength, int turns) {
+    int c[NF]; counts(owner, c);
+    int red_n = c[0];
+    int max_en = c[1]; for (int f = 2; f < NF; f++) if (c[f] > max_en) max_en = c[f];
+    int sum_en = 0; for (int f = 1; f < NF; f++) sum_en += c[f];
+    int sstr[NF]; for (int f = 0; f < NF; f++) sstr[f] = 0;
+    for (int i = 0; i < N; i++) sstr[owner[i]] += strength[i];
+    int red_s = sstr[0];
+    int max_es = sstr[1]; for (int f = 2; f < NF; f++) if (sstr[f] > max_es) max_es = sstr[f];
+    int red_big = red_largest_comp(owner);
+    double z = VALW[0] + VALW[1]*red_n + VALW[2]*(red_n - max_en)
+             + VALW[3]*(red_n - sum_en/4.0) + VALW[4]*(red_s - max_es)
+             + VALW[5]*red_big + VALW[6]*(red_big - red_n) + VALW[7]*turns;
+    if (z > 40) z = 40; else if (z < -40) z = -40;
+    return 1.0 / (1.0 + exp(-z));
+}
+
+/* value-greedy RED rollout move (policy 3): pick the attack maximizing the fitted
+ * value of the (probability-weighted expected) resulting board; A_END if ending
+ * the turn is best. Uses the calibrated leaf value as the rollout policy. */
+static int value_greedy_move(const int *owner, const int *strength, int turns) {
+    if (!VAL_READY) return A_END;
+    double best = heur_value(owner, strength, turns);   /* value of ending the turn */
+    int best_mv = A_END;
+    int oc[MAXN], sc[MAXN];
+    for (int i = 0; i < N; i++) {
+        if (owner[i] != 0 || strength[i] <= 1) continue;
+        int a = strength[i];
+        for (int k = ADJ_OFF[i]; k < ADJ_OFF[i+1]; k++) {
+            int j = ADJ[k];
+            if (owner[j] == 0) continue;                /* skip own / empty */
+            int d = strength[j];
+            double pc = capture_prob(a, d);
+            /* capture outcome */
+            memcpy(oc, owner, N * sizeof(int)); memcpy(sc, strength, N * sizeof(int));
+            int es = (int)(exp_cap_strength(a, d) + 0.5); if (es < 0) es = 0;
+            oc[j] = 0; sc[j] = es; sc[i] = 1;
+            double vmove = heur_value(oc, sc, turns);
+            if (pc < 0.999) {
+                /* fail outcome: attacker spent to 1, defender roughly holds */
+                memcpy(sc, strength, N * sizeof(int)); sc[i] = 1;
+                double vfail = heur_value(owner, sc, turns);
+                vmove = pc * vmove + (1.0 - pc) * vfail;
+            }
+            if (vmove > best) { best = vmove; best_mv = (i << 8) | j; }
+        }
+    }
+    return best_mv;
+}
+
+/* truncated rollout: play up to LEAF_TRUNC red-turn cycles, then return the
+ * heuristic value if still live (else the terminal 0/1). LEAF_TRUNC<0 or no
+ * fitted value -> behaves exactly like rollout(). */
+double rollout_v(const int *owner_in, const int *strength_in, int turns) {
+    if (LEAF_TRUNC < 0 || !VAL_READY) return (double)rollout(owner_in, strength_in, turns);
+    int owner[MAXN], strength[MAXN];
+    memcpy(owner, owner_in, N * sizeof(int));
+    memcpy(strength, strength_in, N * sizeof(int));
+    int c[NF];
+    int rounds = 0;
+    for (;;) {
+        int w = check_winner(owner); if (w != -1) return w == 0 ? 1.0 : 0.0;
+        counts(owner, c); if (c[0] == 0) return 0.0;
+        if (rounds >= LEAF_TRUNC) return heur_value(owner, strength, turns);
+        int g = 0;
+        while (g < 200) {
+            int mv;
+            if (RED_ROLLOUT_POLICY == 3) { mv = value_greedy_move(owner, strength, turns); if (mv == A_END) break; }
+            else if (RED_ROLLOUT_POLICY == 2) { mv = safety_best_move(owner, strength); if (mv == A_END) break; }
+            else if (RED_ROLLOUT_POLICY == 1) { mv = ranked_best_move(owner, strength); if (mv == A_END) break; }
+            else { mv = best_bot_move(owner, strength, 0); if (mv == 0) break; mv -= 1; }
+            resolve_battle(owner, strength, mv >> 8, mv & 0xFF);
+            if (check_winner(owner) != -1) break;
+            g++;
+        }
+        w = check_winner(owner); if (w != -1) return w == 0 ? 1.0 : 0.0;
+        reinforce(owner, strength, 0);
+        w = check_winner(owner); if (w != -1) return w == 0 ? 1.0 : 0.0;
+        for (int b = 1; b <= 4; b++) { run_bot_turn(owner, strength, b); if (check_winner(owner) != -1) break; }
+        w = check_winner(owner); if (w != -1) return w == 0 ? 1.0 : 0.0;
+        turns++; rounds++;
+        if (turns > MAX_TURNS) return heur_value(owner, strength, turns);
     }
 }
 
@@ -647,6 +765,12 @@ int uct_search(const int *owner_in, const int *strength_in, int root_turns,
         for (;;) {
             if (plen >= 16384) { leaf_value = NODES[cur].v; leaf_value_set = 1; break; }
             MNode *node = &NODES[cur];
+            /* terminal node: a prior sim's stochastic battle reached a winner here
+             * and cached a terminal child (n_children=0, child_off=-1). A later sim
+             * whose dice DON'T end the game can walk into this same child; it must be
+             * treated as a leaf, never run through select (off=child_off+0=-1 would
+             * read E_*[-1] just below the edge pool -> SIGSEGV). */
+            if (node->terminal) { leaf_value = node->v; leaf_value_set = 1; break; }
             if (!node->expanded) {
                 static double hscore[MAXCHILD];
                 int nc;
@@ -683,7 +807,7 @@ int uct_search(const int *owner_in, const int *strength_in, int root_turns,
                 double v = 0.0;
                 for (int r = 0; r < nroll; r++) {
                     if (ENS_N > 0) RW = ENS[r % ENS_N];
-                    v += rollout(owner, strength, turns);
+                    v += rollout_v(owner, strength, turns);
                 }
                 v /= (double)nroll;
                 node->expanded = 1;

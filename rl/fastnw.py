@@ -153,6 +153,25 @@ def set_red_rollout_policy(p):
     _lib.set_red_rollout_policy(p)
 
 
+_lib.set_value_weights.argtypes = [_dblp]
+_lib.set_leaf_trunc.argtypes = [ctypes.c_int]
+
+
+def set_value_weights(w):
+    """w: 8 logistic weights for the fitted static leaf value (features:
+    [bias, red_n, red_n-maxEn, red_n-avgEn, redS-maxES, red_big, fracture, turns]).
+    Enables truncated-rollout heuristic leaf when combined with set_leaf_trunc(k>=0)."""
+    arr = np.asarray(w, dtype=np.float64)
+    assert arr.size == 8
+    _lib.set_value_weights(arr.ctypes.data_as(_dblp))
+
+
+def set_leaf_trunc(k):
+    """Leaf eval: -1 = full rollout to terminal (default); k>=0 = roll k red-turn
+    cycles then return the fitted heuristic value. Requires set_value_weights first."""
+    _lib.set_leaf_trunc(int(k))
+
+
 def set_ranked_weights(w):
     """w: float64 array of 13 [capture,weakTarget,margin,source,redAdj,merge,
     largestTouch,enemyCount,eliminate,exposure,lowChancePenalty,

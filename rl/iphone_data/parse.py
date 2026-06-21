@@ -469,8 +469,7 @@ def parse(img_path):
     if recovered:
         blobs = blobs + recovered   # NOT a warning — recovery is a successful detection
 
-    tokens = ocr_full(img_path)
-    strengths = read_strengths(im, blobs)
+    strengths = read_strengths(im, blobs)   # template matching — no Vision OCR needed
     for b, s in zip(blobs, strengths):
         b['strength'] = s
         if s is None:
@@ -490,26 +489,16 @@ def parse(img_path):
     for b in nodes:
         counts[b['owner']] += 1
 
-    # Scoreboard cross-check is INFORMATIONAL ONLY — the top chips OCR is flaky
-    # (misreads turn/animation digits, e.g. "214"), so a mismatch must NOT block
-    # acting on an otherwise-valid board (sum==30, all strengths read). Board node
-    # detection is the source of truth; keep these out of `warnings`.
-    scoreboard = {f: match_digit(SCORE_X[f], SCORE_Y, tokens, max_dist=35) for f in NAMES}
-    scoreboard_warnings = []
-    for f in NAMES:
-        if scoreboard.get(f) is not None and scoreboard[f] != counts[f]:
-            scoreboard_warnings.append(f"count mismatch {f}: board={counts[f]} scoreboard={scoreboard[f]}")
-
+    # Scoreboard OCR dropped: template matching reads the board reliably, and the
+    # top-chip Vision OCR was flaky (misreads) AND ~77ms/parse — pure overhead now.
     return {
         'nodes': [{'id': b['id'], 'col': b['col'], 'row': b['row'], 'owner': b['owner'],
                    'strength': b['strength'], 'px': round(b['px'], 1), 'py': round(b['py'], 1)}
                   for b in nodes],
         'counts': counts,
-        'scoreboard': scoreboard,
         'grid': {'cols': len(col_centers), 'rows': len(row_centers),
                  'dx': round(dx, 1), 'dy': round(dy, 1), 'x0': round(x0, 1), 'y0': round(y0, 1)},
         'warnings': warnings,
-        'scoreboard_warnings': scoreboard_warnings,
         'recovered': n_recovered,
     }
 

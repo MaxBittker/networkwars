@@ -61,6 +61,12 @@ def _post(path, payload):
         pass
 
 
+def stage(name):
+    """Report the driver's current activity to the dashboard (with a server-side
+    timestamp) so a stall shows up as a growing elapsed timer."""
+    _post('/stage', {'stage': name})
+
+
 def publish_move(st, mv, turn, shot=None):
     """Push the current board + the search's decision to the dashboard.
     `shot` is the screenshot filename the parsed board came from, so the dashboard
@@ -69,6 +75,7 @@ def publish_move(st, mv, turn, shot=None):
     _post('/publish', {
         'board': {'grid': st['grid'], 'nodes': st['nodes']},
         'counts': st['counts'], 'value': mv.get('winexp'),
+        'fitted': mv.get('fitted_winexp'),
         'chosen': chosen, 'chosen_end': mv.get('action') == 'stop',
         'top': mv.get('top', []), 'total_visits': mv.get('visits', 0),
         'phase': 'end-turn' if mv.get('action') == 'stop' else 'attack',
@@ -139,6 +146,7 @@ def wait_connected(tag='reconnect', timeout=1800):
         st = PL.P.parse(path)
         if sum(st['counts'].values()) >= 12:
             return True
+        stage('⚠ mirror link DOWN — lock the phone to reconnect')
         print('   …mirror link down ("iPhone in Use"?) — lock the phone to reconnect; retrying')
         time.sleep(10)
     return False
@@ -154,6 +162,7 @@ def restart_game():
     there's no modal, so just return the live board and keep playing it (this is
     what kept killing the run). Returns a playable state, or None if truly stuck."""
     for attempt in range(6):
+        stage(f'restarting — next game (attempt {attempt + 1})')
         path = PL.shot('restart_probe.png')
         ocr = PL.sh(PL.OCR, path).stdout.lower()
         if 'play again' in ocr or 'you lost' in ocr or 'you won' in ocr:
@@ -202,6 +211,7 @@ def play_one_game(args, gi):
     # full tap() (re-activates IM) on empty margins, where tap_fast silently misses.
     for ex, ey in ((12, 380), (306, 380), (12, 380)):
         PL.tap(ex, ey); time.sleep(0.2)
+    stage(f'capturing start board (game {gi + 1})')
     st, fp = PL.capture_state(f'g{gi}_r0')
     if st == 'over' or fp is None:
         if not wait_connected(f'g{gi}_wait'):
@@ -238,6 +248,7 @@ def play_one_game(args, gi):
         misses = 0
         over_mid = False
         for a in range(args.max_attacks):
+            stage(f'searching · game {gi + 1} round {rnd + 1} move {a + 1}')
             mv = PL.mcts_move(st, args.rollout, engine='fast', sims=args.sims,
                               turns=rnd + 1, wset=args.wset, c_puct=args.c_puct,
                               nroll=args.nroll)
@@ -253,6 +264,7 @@ def play_one_game(args, gi):
             # even after focus changes (tap_fast missed and froze the board mid-series)
             PL.tap(round(fx / 2), round(fy / 2)); time.sleep(0.3)
             PL.tap(round(tx / 2), round(ty / 2)); time.sleep(0.4)
+            stage(f'reading board after attack · game {gi + 1} round {rnd + 1}')
             st2, fp2 = PL.capture_state(f'g{gi}_r{rnd}_a{a}')
             move_rec = {'from': mv['from'], 'to': mv['to'],
                         'winexp': mv.get('winexp'), 'rootValue': mv.get('rootValue'),
@@ -297,6 +309,7 @@ def play_one_game(args, gi):
         # End turn -> bots play (full tap re-activates IM so the tap lands)
         PL.tap(*PL.END_TURN)
         time.sleep(1.2)
+        stage(f'bots playing — waiting · game {gi + 1} round {rnd + 1}')
         st3, fp3 = PL.capture_state(f'g{gi}_r{rnd}_end', max_tries=45)  # bots animate longer
         if st3 == 'over':
             over_mid = True
