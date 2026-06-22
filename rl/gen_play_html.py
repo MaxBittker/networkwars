@@ -104,6 +104,55 @@ async function endTurn(){
 function endGame(w){ over=w; banner=''; log(w==='red'?'🏆 YOU WIN!':`💀 ${w} wins — you lose.`); }
 function setSpeed(v){ SPEED = parseInt(v); }
 
+// --- import a board grabbed from the phone (grab_board.py) -------------------
+function importNodes(arr){
+  if(!Array.isArray(arr) || !arr.length){ alert('No nodes found in JSON.'); return; }
+  // reindex to contiguous ids; build 8-connectivity (king) adjacency from (x,y),
+  // exactly like the engine's lattice, so bots/reinforce/battle work unchanged.
+  const nodes = arr.map((n,i)=>({ id:i, x:n.x, y:n.y, owner:n.owner,
+                                  strength:(n.strength==null?1:n.strength) }));
+  const adj = nodes.map(()=>[]); const links=[];
+  for(let i=0;i<nodes.length;i++) for(let j=i+1;j<nodes.length;j++){
+    if(Math.abs(nodes[i].x-nodes[j].x)<=1 && Math.abs(nodes[i].y-nodes[j].y)<=1){
+      adj[i].push(j); adj[j].push(i); links.push([i,j]);
+    }
+  }
+  state = {nodes, links, adj};
+  state.rng = NW.makeRng((Math.floor(Math.random()*1e9))||1);   // fresh battle dice
+  sel=null; over=null; logLines=[]; lastChanged=new Set(); hl=null; banner=''; animating=false;
+  const c = NW.counts(state);
+  log(`— imported phone board: ${nodes.length} nodes. You are RED (${c.red}). Counts ${JSON.stringify(c)}. —`);
+  const w = NW.checkWinner(state); if(w) endGame(w);
+  render();
+}
+function parseImport(text){
+  let j; try{ j=JSON.parse(text); }catch(e){ alert('Bad JSON: '+e.message); return; }
+  importNodes(Array.isArray(j) ? j : (j.nodes||[]));
+}
+function importFile(inp){
+  const f = inp.files[0]; if(!f) return;
+  const r = new FileReader(); r.onload = ()=>{ parseImport(r.result); inp.value=''; };
+  r.readAsText(f);
+}
+function importPaste(){ const t=document.getElementById('pastebox').value.trim(); if(t) parseImport(t); }
+async function syncPhone(){
+  const btn=document.getElementById('syncbtn'); btn.disabled=true; const old=btn.textContent;
+  btn.textContent='⏳ capturing…'; banner='syncing from phone…'; render();
+  try{
+    const r=await fetch('/grab',{cache:'no-store'});
+    const j=await r.json();
+    if(j.error){ alert('Sync failed: '+j.error); }
+    else { importNodes(j.nodes); }
+  }catch(e){
+    alert('Sync needs the local server. Run:\n  python iphone_data/play_server.py\nthen open the http://127.0.0.1 URL it prints (not the file://).');
+  }
+  btn.disabled=false; btn.textContent=old; if(banner==='syncing from phone…'){banner='';} render();
+}
+function togglePaste(){
+  const b=document.getElementById('pastebox'), r=document.getElementById('pasterow');
+  const show = b.style.display==='none'; b.style.display = r.style.display = show?'block':'none';
+}
+
 function render(){
   const c = NW.counts(state);
   document.getElementById('counts').innerHTML = NW.FACTIONS.map(f=>
@@ -117,15 +166,15 @@ function render(){
   const cell=78, pad=44, W=COLS*cell+pad, H=ROWS*cell+pad;
   const cx=id=>nodeAt(id).x*cell+pad/2+cell/2, cy=id=>nodeAt(id).y*cell+pad/2+cell/2;
   let svg=`<svg viewBox="0 0 ${W} ${H}" id="svg">`
-        +`<defs><marker id="ah" markerWidth=9 markerHeight=9 refX=7 refY=3 orient="auto">`
-        +`<path d="M0,0 L7,3 L0,6 Z" fill="#fff"/></marker></defs>`;
+        +`<defs><marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">`
+        +`<path d="M0,0 L7,3 L0,6 Z" fill="#fff" /></marker></defs>`;
   for(const [a,b] of state.links)
     svg+=`<line x1=${cx(a)} y1=${cy(a)} x2=${cx(b)} y2=${cy(b)} stroke="#3a3a3c" stroke-width=3 />`;
   // battle arrow
   if(hl){
     const x1=cx(hl.from),y1=cy(hl.from),x2=cx(hl.to),y2=cy(hl.to);
     const ax=x1+(x2-x1)*0.72, ay=y1+(y2-y1)*0.72;
-    svg+=`<line x1=${x1} y1=${y1} x2=${ax} y2=${ay} stroke="#fff" stroke-width=5 marker-end="url(#ah)" opacity=.95/>`;
+    svg+=`<line x1="${x1}" y1="${y1}" x2="${ax}" y2="${ay}" stroke="#fff" stroke-width="5" marker-end="url(#ah)" opacity="0.95" />`;
   }
   const att = (sel!=null && !animating) ? new Set(attackableFrom(sel)) : new Set();
   for(const n of state.nodes){
@@ -149,7 +198,9 @@ function render(){
 }
 
 window.clickNode=clickNode; window.endTurn=endTurn; window.newGame=newGame; window.setSpeed=setSpeed;
-newGame(0);
+window.importFile=importFile; window.importPaste=importPaste; window.togglePaste=togglePaste; window.syncPhone=syncPhone;
+if (window.__IMPORTED_BOARD__) importNodes(window.__IMPORTED_BOARD__.nodes || window.__IMPORTED_BOARD__);
+else newGame(0);
 """
 
 CSS = r"""
@@ -166,6 +217,10 @@ h1{font-size:19px;margin:0 0 4px} .sub{color:#999;font-size:13px;margin-bottom:1
 button{background:#0a84ff;color:#fff;border:0;border-radius:8px;padding:9px 16px;font-size:14px;font-weight:600;cursor:pointer}
 button:disabled{opacity:.4;cursor:default} button.ghost{background:#3a3a3c}
 input{width:90px;background:#2c2c2e;border:1px solid #444;color:#eee;border-radius:7px;padding:8px}
+.filebtn{background:#3a3a3c;color:#fff;border-radius:8px;padding:9px 16px;font-size:14px;font-weight:600;cursor:pointer}
+.filebtn input{display:none}
+.hint{color:#888;font-size:12px} .hint code{color:#aaa}
+#pastebox{width:100%;height:70px;background:#161617;border:1px solid #444;color:#ccc;border-radius:8px;padding:8px;font-size:11px;font-family:ui-monospace,monospace;margin-bottom:8px}
 #log{font-size:12.5px;line-height:1.55;max-height:430px;overflow:auto;background:#161617;border-radius:10px;padding:10px}
 #log div{padding:1px 0;border-bottom:1px solid #242426}
 .st{fill:#fff;font-weight:700;font-size:17px;text-shadow:0 1px 2px rgba(0,0,0,.6);pointer-events:none}
@@ -174,6 +229,11 @@ g.clk{cursor:pointer} g.clk:hover circle{filter:brightness(1.18)}
 
 def main():
     game = open(GAME_JS).read()
+    # if a phone board was grabbed (grab_board.py), embed it so play_sim opens on it
+    board_path = os.path.join(os.path.dirname(OUT), 'iphone_data', 'imported_board.json')
+    board_js = ''
+    if os.path.exists(board_path):
+        board_js = f'<script>window.__IMPORTED_BOARD__ = {open(board_path).read()};</script>'
     html = f"""<!doctype html><html><head><meta charset="utf8">
 <title>Network Wars — play the sim</title><style>{CSS}</style></head><body>
 <h1>Network Wars — you (red) vs the sim bots</h1>
@@ -194,11 +254,20 @@ Click your node (str ≥ 2), then a bordering enemy to attack. Reach 24 nodes to
       <input id="seed" type="number" placeholder="seed" />
       <button class="ghost" onclick="newGame(parseInt(document.getElementById('seed').value)||0)">New Game</button>
     </div>
+    <div class="controls">
+      <button id="syncbtn" onclick="syncPhone()">🔄 Sync from phone</button>
+      <label class="filebtn">Import board file<input id="boardfile" type="file" accept=".json,application/json" onchange="importFile(this)"></label>
+      <button class="ghost" onclick="togglePaste()">paste JSON</button>
+      <span class="hint">Sync needs <code>python iphone_data/play_server.py</code></span>
+    </div>
+    <textarea id="pastebox" placeholder="paste the board JSON printed by grab_board.py, then Load" style="display:none"></textarea>
+    <div id="pasterow" style="display:none"><button class="ghost" onclick="importPaste()">Load pasted board</button></div>
     <div id="status"></div>
     <div id="log"></div>
   </div>
 </div>
 <script>var module={{exports:{{}}}};</script>
+{board_js}
 <script>
 {game}
 </script>
