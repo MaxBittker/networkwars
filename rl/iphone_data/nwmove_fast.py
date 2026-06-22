@@ -26,30 +26,6 @@ import network_wars as nw
 from network_wars import HUMAN, State, Node as GNode
 import fastnw
 from fmcts import WSETS
-from gen_value_data import features as value_features
-
-
-_VAL_W = None
-_VAL_W_MISSING = False
-
-
-def fitted_winprob(state, turns):
-    """Calibrated RED win probability from the fitted static value-leaf
-    (value_leaf_w.npy: 8 logistic weights over gen_value_data.features). This is
-    the same board-feature logistic the truncated-rollout leaf uses; here it gives
-    the dashboard a calibrated (AUC ~0.96) win% readout that doesn't share the
-    MCTS backed-up Q's pessimism. Returns a float in [0,1], or None if no weights."""
-    global _VAL_W, _VAL_W_MISSING
-    if _VAL_W is None and not _VAL_W_MISSING:
-        wp = os.path.join(RL_DIR, 'value_leaf_w.npy')
-        if os.path.exists(wp):
-            _VAL_W = np.load(wp)
-        else:
-            _VAL_W_MISSING = True
-    if _VAL_W is None:
-        return None
-    z = float(value_features(state, turns) @ _VAL_W)
-    return float(1.0 / (1.0 + np.exp(-z)))
 
 
 def build_state(js):
@@ -96,22 +72,18 @@ def main():
     fastnw.set_ensemble([])
     fastnw.use_sim(args.sim_seed)        # private seed-free sim rng (no seed exploitation)
 
-    # calibrated static win-prob for the dashboard readout (independent of search Q)
-    fitted = fitted_winprob(state, args.turns)
-
     owner, strength = fastnw.board_arrays(state)
     acts, visits, q = fastnw.uct_search(owner, strength, args.turns, args.sims,
                                         args.c_puct, args.nroll, None, return_q=True)
     if len(acts) == 0:
-        print(json.dumps({'action': 'stop', 'winexp': None, 'fitted_winexp': fitted}))
+        print(json.dumps({'action': 'stop', 'winexp': None}))
         return
     best = int(np.argmax(visits))
     action = int(acts[best])
     tv = int(visits.sum())
-    # winexp = RED win-prob the search assigns to the chosen move (its backed-up Q).
-    # rootValue = visit-weighted mean Q over all root moves (position eval).
+    # winexp = the single RED win-prob readout: the search's backed-up Q of the
+    # chosen move. AUC ~0.955 vs real outcomes (it falls out of the MCTS itself).
     winexp = float(q[best])
-    root_val = float((visits * q).sum() / tv) if tv else None
 
     # top candidate moves (for the dashboard search-tree panel)
     nodes_by_id = {n['id']: n for n in js['nodes']}
@@ -136,15 +108,13 @@ def main():
 
     if action == -1:                     # END_TURN won the search
         print(json.dumps({'action': 'stop', 'winexp': winexp,
-                          'fitted_winexp': fitted,
-                          'rootValue': root_val, 'visits': tv, 'top': top}))
+                          'visits': tv, 'top': top}))
         return
     frm, to = action >> 8, action & 0xFF
     print(json.dumps({
         'action': 'attack', 'from': frm, 'to': to,
         'fromPx': px[frm], 'toPx': px[to],
-        'winexp': winexp, 'fitted_winexp': fitted, 'rootValue': root_val,
-        'visits': tv, 'moveVisits': int(visits[best]), 'top': top,
+        'winexp': winexp, 'visits': tv, 'moveVisits': int(visits[best]), 'top': top,
     }))
 
 

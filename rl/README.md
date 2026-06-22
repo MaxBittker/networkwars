@@ -29,9 +29,10 @@ uv run python par_eval.py --games 1000 --sims 8000 --workers 9          # parall
   seeded Python game, so outcomes are genuine (the search never sees the game
   seed). Best config: ranked **C1** weights, `c_puct=2.5`, `sims=1600–3200`.
 - **`par_eval.py`** — splits seeds across processes for fast winrate evals.
-- **`gen_value_data.py` + `value_leaf_w.npy`** — a fitted (AUC ~0.96) static
-  leaf-value logistic; drives the live dashboard's calibrated win% readout
-  (`iphone_data/nwmove_fast.py`).
+
+The single win% readout (live dashboard + JSONL) is **`winexp`** — the search's own
+backed-up Q of the chosen move. It falls out of the MCTS (no separate calibration
+model) and tracks real outcomes at AUC ~0.955.
 
 A standalone from-scratch C variant of the same idea lives in **`../c/`**.
 

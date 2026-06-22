@@ -6,7 +6,7 @@ move + the exact algorithm configuration that produced it.
 Reuses play.py's phone-driver primitives (capture/parse/tap/settle). Adds:
   - per-game play loop -> terminal (win / loss), winner detection
   - per-move logging: board before, chosen attack, winexp (RED win-prob the MCTS
-    assigns the move), rootValue (position eval), visit count, counts before/after
+    assigns the move), visit count, counts before/after
   - automatic restart between games via the post-game modal (NEVER surrenders —
     every game is played to its natural terminal; partial games are kept, not forfeit)
   - running win tally + JSONL (one record per game, plus a leading meta record)
@@ -75,7 +75,6 @@ def publish_move(st, mv, turn, shot=None):
     _post('/publish', {
         'board': {'grid': st['grid'], 'nodes': st['nodes']},
         'counts': st['counts'], 'value': mv.get('winexp'),
-        'fitted': mv.get('fitted_winexp'),
         'chosen': chosen, 'chosen_end': mv.get('action') == 'stop',
         'top': mv.get('top', []), 'total_visits': mv.get('visits', 0),
         'phase': 'end-turn' if mv.get('action') == 'stop' else 'attack',
@@ -255,7 +254,6 @@ def play_one_game(args, gi):
             publish_move(st, mv, rnd + 1, shot=cur_shot)
             if mv.get('action') == 'stop':
                 turn['moves'].append({'action': 'stop', 'winexp': mv.get('winexp'),
-                                      'rootValue': mv.get('rootValue'),
                                       'visits': mv.get('visits')})
                 break
             fx, fy = mv['fromPx']; tx, ty = mv['toPx']
@@ -267,7 +265,7 @@ def play_one_game(args, gi):
             stage(f'reading board after attack · game {gi + 1} round {rnd + 1}')
             st2, fp2 = PL.capture_state(f'g{gi}_r{rnd}_a{a}')
             move_rec = {'from': mv['from'], 'to': mv['to'],
-                        'winexp': mv.get('winexp'), 'rootValue': mv.get('rootValue'),
+                        'winexp': mv.get('winexp'),
                         'visits': mv.get('visits'), 'moveVisits': mv.get('moveVisits'),
                         'counts_before': cb}
             if st2 == 'over':

@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 CAP = os.path.join(HERE, 'captures')
 
-_TELE = {'move_num': 0, 'board': None, 'value': None, 'fitted': None, 'chosen': None,
+_TELE = {'move_num': 0, 'board': None, 'value': None, 'chosen': None,
          'chosen_end': False, 'top': [], 'total_visits': 0, 'counts': None,
          'phase': 'idle', 'history': [], 'shot': None,
          'stage': 'idle', 'stage_at': time.time(),
@@ -63,13 +63,12 @@ def _power(board):
 def publish_move(t):
     """Merge a per-move telemetry payload and append to the win-exp history."""
     _TELE['move_num'] += 1
-    for k in ('board', 'counts', 'value', 'fitted', 'chosen', 'chosen_end', 'top',
+    for k in ('board', 'counts', 'value', 'chosen', 'chosen_end', 'top',
               'total_visits', 'phase', 'shot'):
         if k in t:
             _TELE[k] = t[k]
     if t.get('value') is not None:
         _TELE['history'].append({'move_num': _TELE['move_num'], 'value': t['value'],
-                                 'fitted': t.get('fitted'),
                                  'red': (t.get('counts') or {}).get('red'),
                                  'power': _power(t.get('board')),
                                  'turn': t.get('turn')})
@@ -191,38 +190,33 @@ async function tick(){
    +(se.unknown?(' · '+se.unknown+'?'):'')+'  over '+dec+' decided';
  document.getElementById('cfg').textContent='game '+((se.game_index||0)+1)+'/'+(se.games||'?')
    +(se.last_result?('  · last: '+se.last_result):'');
- // win % — primary readout is the calibrated value-leaf (s.fitted); fall back to
- // the MCTS backed-up Q (s.value) when no fitted weights are wired in.
+ // win % — the single readout is the search's own estimate (MCTS backed-up Q of
+ // the chosen move). AUC ~0.955 vs real outcomes; it falls out of the algorithm.
  const val=document.getElementById('val');
- const primary=(s.fitted!=null)?s.fitted:s.value;
+ const primary=s.value;
  if(primary!=null){val.textContent=(primary*100).toFixed(1)+'%';
    val.style.color=primary>0.5?'#39b54a':(primary<0.3?'#e0473b':'#d9b310');}
  const h=(s.history||[]);
  document.getElementById('valsub').textContent=
-   (s.value!=null?('MCTS Q '+(s.value*100).toFixed(1)+'%  ·  '):'')
-   +'RED nodes: '+(s.counts?.red??'?')+'  ·  '+h.length+' moves';
+   'RED nodes: '+(s.counts?.red??'?')+'  ·  '+h.length+' moves';
  document.getElementById('vallegend').innerHTML=
-   '<span style="color:#2a6db0">━ value-leaf</span>'
-   +' &nbsp; <span style="color:#7aa6d0">━ MCTS Q</span>';
+   '<span style="color:#2a6db0">━ RED win% (MCTS)</span>';
  const sv=document.getElementById('chart');
  if(h.length>1){
   const W=700,H=140,n=h.length;
-  const fit=d=>(d.fitted!=null?d.fitted:d.value);
-  const allv=h.flatMap(d=>[d.value,fit(d)]).filter(v=>v!=null);
+  const allv=h.map(d=>d.value).filter(v=>v!=null);
   let lo=Math.min(...allv),hi=Math.max(...allv);
   const pad=Math.max(0.04,(hi-lo)*0.25);lo=Math.max(0,lo-pad);hi=Math.min(1,hi+pad);
   const Y=v=>H-(v-lo)/((hi-lo)||1)*H;
-  const path=(sel)=>{const pts=h.map((d,i)=>[i/(n-1)*W,Y(sel(d))]);
-    return {line:pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' '),pts:pts};};
-  const fp=path(fit), mp=path(d=>d.value);
-  const area='M'+fp.pts[0][0].toFixed(1)+' '+H+' '+fp.pts.map(p=>'L'+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ')+' L'+W+' '+H+' Z';
+  const pts=h.map((d,i)=>[i/(n-1)*W,Y(d.value)]);
+  const line=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
+  const area='M'+pts[0][0].toFixed(1)+' '+H+' '+pts.map(p=>'L'+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ')+' L'+W+' '+H+' Z';
   const grid=v=>'<line x1="0" y1="'+Y(v).toFixed(1)+'" x2="'+W+'" y2="'+Y(v).toFixed(1)+'" stroke="#c4c4c4" stroke-dasharray="4"/><text x="4" y="'+(Y(v)-3).toFixed(1)+'" fill="#707070" font-size="11">'+(v*100).toFixed(0)+'%</text>';
   let gl='';[0.5,Math.round(lo*100)/100,Math.round(hi*100)/100].forEach(v=>{if(v>lo&&v<hi)gl+=grid(v)});
   sv.innerHTML='<svg width="100%" height="140" viewBox="0 0 700 140" preserveAspectRatio="none">'
    +gl+'<path d="'+area+'" fill="rgba(42,109,176,.10)"/>'
-   +'<path d="'+mp.line+'" fill="none" stroke="#7aa6d0" stroke-width="1.5"/>'
-   +'<path d="'+fp.line+'" fill="none" stroke="#2a6db0" stroke-width="2"/>'
-   +fp.pts.map(p=>'<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.5" fill="#2a6db0"/>').join('')
+   +'<path d="'+line+'" fill="none" stroke="#2a6db0" stroke-width="2"/>'
+   +pts.map(p=>'<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.5" fill="#2a6db0"/>').join('')
    +'</svg>';
  }
  // color power over time (stacked bar, one segment per faction per step)
