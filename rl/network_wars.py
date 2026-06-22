@@ -17,6 +17,8 @@ One env step is one attack (a full battle) or an end-turn (which runs RED's
 reinforcements and all four bot turns).
 """
 
+import math
+
 import numpy as np
 import gymnasium
 
@@ -28,9 +30,21 @@ GRID_ROWS = 7       # real iOS app uses a 6-wide x 7-tall grid (measured via mir
 GRID_COLS = 6
 TARGET_NODES = 30
 WIN_NODES = 24
-# Per-round attacker-win probability. Measured from 1629 live iOS battles (MLE ~0.60);
-# see memory sim-vs-real-battle-mismatch. (The old game.js value was 0.55.)
+# Legacy iterated-Bernoulli constant (no longer used by resolve_battle).
 ATTACKER_WIN_P = 0.60
+# Fitted iOS battle = POWER-RATIO. Per round the attacker wins w.p.
+#   q(a,d) = a^PR_K / (a^PR_K + PR_C0 * d^PR_K)
+# (fit from ~3300 live battles; see rl/BATTLE_FUNCTION.md). This is what the live
+# MCTS driver uses (fast_engine power-ratio) and what game.js/fast_engine.c carry.
+# q is truncated to 1e-6 so JS (Math.pow) and Python (**) agree bit-for-bit.
+PR_K = 0.62
+PR_C0 = 0.93
+
+
+def _battle_q(a, d):
+    ak = a ** PR_K
+    dk = d ** PR_K
+    return math.floor(ak / (ak + PR_C0 * dk) * 1e6) / 1e6
 
 MAX_TURNS = 300  # draw/loss cutoff
 
@@ -267,25 +281,25 @@ def resolve_battle(state, from_id, to_id):
     a = frm.strength
     d = to.strength
     rng = state.rng
+    a0, d0 = a, d
     while a > 1 and d > 0:
-        if rng() < ATTACKER_WIN_P:
+        if rng() < _battle_q(a, d):
             d -= 1
-            # last striker (a==2) spent clearing the final defender: captures the
-            # node but has nothing left to spread in -> the node ends at 0.
-            if d == 0 and a == 2:
-                a -= 1
         else:
             a -= 1
-    captured = False
-    if d == 0:
-        captured = True
+    if d == 0 and a >= 2:
+        # capture: attacker still has a unit to occupy. Node gets a-1 (>= 1),
+        # source keeps its garrison of 1. A capture can NEVER leave the node at 0.
         to.owner = frm.owner
-        to.strength = a - 1     # 0 when the attacker was reduced to its garrison
+        to.strength = a - 1
         frm.strength = 1
-    else:
-        frm.strength = a
-        to.strength = d
-    return captured
+        return True
+    # repelled: source garrisons at 1; the defender was gutted by the full attacking
+    # force -> remnant max(0, d0 - a0 + 1) (can be 0 — the legal "fail and leave 0").
+    frm.strength = 1
+    rem = d0 - a0 + 1
+    to.strength = rem if rem > 0 else 0
+    return False
 
 
 def components_of(state, faction):

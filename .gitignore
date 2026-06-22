@@ -34,5 +34,12 @@ c/nw_agg
 # compiled C hot-path shared lib (built from rl/fast_engine.c)
 rl/fast_engine.so
 
+# generated HTML (regenerable from gen_play_html.py / gen_botdiff_html.py)
+rl/play_sim.html
+rl/iphone_data/botdiff.html
+
+# iPhone-Mirroring window-geometry cache (machine-local)
+rl/iphone_data/.wincache
+
 # Claude Code worktree scaffolding
 .claude/

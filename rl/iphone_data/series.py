@@ -289,6 +289,13 @@ def play_one_game(args, gi):
                 continue
             misses = 0
             move_rec['counts_after'] = dict(st2['counts'])
+            # full post-attack board (with strengths) so each red tap is a single,
+            # ground-truth battle observation: chaining board_before -> board_after
+            # gives (attacker a, defender d, outcome, SURVIVOR strengths) for fitting
+            # the real iOS battle function. See iphone_data/extract_battles.py.
+            move_rec['board_after'] = [
+                {'id': n['id'], 'r': n['row'], 'c': n['col'],
+                 'o': n['owner'], 's': n['strength']} for n in st2['nodes']]
             move_rec['result'] = 'applied'
             turn['moves'].append(move_rec)
             st, fp = st2, fp2

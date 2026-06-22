@@ -23,6 +23,15 @@
 #define WIN_NODES 24
 #define MAX_TURNS 300
 #define ATTACKER_WIN_P 0.60
+/* Power-ratio (fitted iOS) battle: per round attacker wins w.p.
+ *   q(a,d) = a^PR_K / (a^PR_K + PR_C0 * d^PR_K)   instead of a fixed p.
+ * Fitted from ~650 live battles (iphone_data/battle_model.py). */
+#define PR_K  0.62
+#define PR_C0 0.93
+static inline double pr_q(int a, int d) {
+    double ak = pow((double)a, PR_K), dk = pow((double)d, PR_K);
+    return ak / (ak + PR_C0 * dk);
+}
 #define A_END (-1)          /* action sentinel: distinct from any frm<<8|to (>=0) */
 #define MAXCHILD 512        /* max legal RED actions at one node */
 
@@ -97,7 +106,6 @@ static double CAPES[MAXS][MAXS];
 static int CAP_READY = 0;
 
 static void build_cap_tables(void) {
-    double p = ATTACKER_WIN_P, q = 1.0 - ATTACKER_WIN_P;
     for (int a = 0; a < MAXS; a++) {
         CAPP[a][0] = (a >= 1) ? 1.0 : 0.0;
         CAPES[a][0] = (a >= 1) ? (double)(a - 1) : 0.0;
@@ -108,6 +116,8 @@ static void build_cap_tables(void) {
     }
     for (int a = 2; a < MAXS; a++) {
         for (int d = 1; d < MAXS; d++) {
+            /* per-round odds depend on current (a,d) for the power-ratio model */
+            double p = pr_q(a, d), q = 1.0 - p;
             CAPP[a][d]  = p * CAPP[a][d-1]  + q * CAPP[a-1][d];
             CAPES[a][d] = p * CAPES[a][d-1] + q * CAPES[a-1][d];
         }
@@ -351,24 +361,22 @@ static int HEUR_PRIORS = 0;
 static double PRIOR_BETA = 0.02;
 void set_heur_priors(int on, double beta) { HEUR_PRIORS = on; PRIOR_BETA = beta; }
 
-/* dice battle, frm attacks to */
+/* dice battle, frm attacks to — fitted iOS power-ratio mechanic */
 static void resolve_battle(int *owner, int *strength, int frm, int to) {
     int a = strength[frm], d = strength[to];
+    int a0 = a, d0 = d;
     while (a > 1 && d > 0) {
-        if (RNG() < ATTACKER_WIN_P) {
-            d--;
-            /* last striker (a==2) spent clearing the final defender: captures the
-             * node but has nothing left to spread -> captured node ends at 0. */
-            if (d == 0 && a == 2) a--;
-        } else a--;
+        if (RNG() < pr_q(a, d)) d--;
+        else a--;
     }
-    if (d == 0) {
+    if (d == 0 && a >= 2) {           /* capture requires a surviving occupier */
         owner[to] = owner[frm];
-        strength[to] = a - 1;        /* 0 when attacker reduced to its garrison */
+        strength[to] = a - 1;
         strength[frm] = 1;
-    } else {
-        strength[frm] = a;
-        strength[to] = d;
+    } else {                          /* repel (incl. spent-striker d==0,a==1): no flip */
+        strength[frm] = 1;
+        int rem = d0 - a0 + 1;        /* defender gutted by the full attacking force */
+        strength[to] = rem > 0 ? rem : 0;
     }
 }
 

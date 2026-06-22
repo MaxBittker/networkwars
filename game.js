@@ -12,7 +12,16 @@ const GRID_ROWS = 7;       // real iOS app uses a 6-wide x 7-tall grid (measured
 const GRID_COLS = 6;       // 42 grid cells...
 const TARGET_NODES = 30;   // ...minus 12 random vertices = 30 nodes, 6 per faction
 const WIN_NODES = 24;
-const ATTACKER_WIN_P = 0.60;
+const ATTACKER_WIN_P = 0.60;   // legacy iterated-Bernoulli constant (unused by resolveBattle)
+// Fitted iOS battle = POWER-RATIO. Per round the attacker wins w.p.
+//   q(a,d) = a^PR_K / (a^PR_K + PR_C0 * d^PR_K)   (fit from ~3300 live battles).
+// Same model the live MCTS driver uses (fast_engine power-ratio). q is truncated to
+// 1e-6 so this (Math.pow) and network_wars.py (**) stay bit-for-bit identical.
+const PR_K = 0.62, PR_C0 = 0.93;
+function battleQ(a, d) {
+  const ak = Math.pow(a, PR_K), dk = Math.pow(d, PR_K);
+  return Math.floor(ak / (ak + PR_C0 * dk) * 1e6) / 1e6;
+}
 
 // --- seeded RNG (mulberry32) -----------------------------------------------
 function makeRng(seed) {
@@ -208,24 +217,24 @@ function resolveBattle(state, fromId, toId) {
   let a = from.strength;
   let d = to.strength;
   const flips = [];            // 'd' = defender lost a unit, 'a' = attacker lost a unit
+  const a0 = a, d0 = d;
   while (a > 1 && d > 0) {
-    if (state.rng() < ATTACKER_WIN_P) {
-      d--; flips.push('d');
-      // the attacker's last striker (a===2) is spent clearing the final defender:
-      // it captures the node but has nothing left to spread in -> the node ends at 0.
-      if (d === 0 && a === 2) a--;
-    }
+    if (state.rng() < battleQ(a, d)) { d--; flips.push('d'); }
     else { a--; flips.push('a'); }
   }
   let captured = false;
-  if (d === 0) {
+  if (d === 0 && a >= 2) {
+    // capture: attacker still has a unit to occupy. Node gets a-1 (>= 1), source
+    // keeps its garrison of 1. A CAPTURE can never leave the node at 0.
     captured = true;
     to.owner = from.owner;
-    to.strength = a - 1;     // 0 when the attacker was reduced to its garrison
+    to.strength = a - 1;
     from.strength = 1;
   } else {
-    from.strength = a;
-    to.strength = d;
+    // repelled: source garrisons at 1; defender gutted by the full attacking force
+    // -> remnant max(0, d0-a0+1) (can be 0 — the legal "fail and leave 0").
+    from.strength = 1;
+    to.strength = Math.max(0, d0 - a0 + 1);
   }
   return {
     type: 'attack', attacker, defender,
