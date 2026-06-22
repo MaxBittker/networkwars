@@ -291,6 +291,10 @@ def _bank():
 
 
 TM_GLOW_MAX = 550   # white-px ceiling; a real digit is <~400, a selection glow >~900
+# Hole-count is only consulted when the 2nd-best SSD is within this factor of the
+# best (a genuine toss-up, e.g. 0-vs-8 at 35 vs 32). A decisive pixel winner
+# (e.g. 4-vs-6 at 6 vs 226, ratio ~38) keeps its SSD pick and ignores holes.
+TM_HOLE_TIE = 1.3
 
 
 def _clean_mask(im, cx, cy):
@@ -361,11 +365,14 @@ def read_strength_tm(im, cx, cy):
     crop -> threshold -> border mask -> central component -> gap-segment into
     digits -> match each glyph to the nearest bank template.
 
-    The match is nearest-template by pixel SSD, BUT scoped to digits with the same
-    number of enclosed holes as the glyph (8->2, {0,6,9}->1, {1,2,3,4,5,7}->0).
-    Holes are the only thing separating 0 from 8 (one tiny middle stroke), which
-    SSD alone can't see reliably; everything else SSD distinguishes on its own.
-    Returns None if unreadable."""
+    The match is nearest-template by pixel SSD. Enclosed-hole count (8->2,
+    {0,6,9}->1, {1,2,3,4,5,7}->0) is used ONLY as a tie-break when the top-2 SSDs
+    are close: holes are the one cue separating 0 from 8 (a ~2-row crossbar that
+    unweighted global SSD can't reliably see), but they are a fragile topological
+    feature, so a DECISIVE pixel winner must override them. Hard hole-scoping used
+    to misread a closed-top "4" (which traps a phantom hole) as "6" -- SSD said 4
+    by a margin of ~40x, but holes vetoed it. Now pixels win when decisive; holes
+    only break genuine near-ties. Returns None if unreadable."""
     bank = _bank()
     if not bank:
         return None
@@ -378,9 +385,15 @@ def read_strength_tm(im, cx, cy):
     vals = sorted(bank)
     digits = []
     for g in glyphs:
-        h = _holes(g)
-        cands = [v for v in vals if _BANK_HOLES.get(v) == h] or vals
-        digits.append(min(cands, key=lambda v: float(((g - bank[v])**2).sum())))
+        ssd = {v: float(((g - bank[v]) ** 2).sum()) for v in vals}
+        order = sorted(vals, key=lambda v: ssd[v])
+        best, second = order[0], order[1]
+        if ssd[second] > TM_HOLE_TIE * ssd[best]:
+            digits.append(best)               # decisive pixel match -> trust SSD
+        else:                                  # near-tie -> let hole topology decide
+            h = _holes(g)
+            cands = [v for v in vals if _BANK_HOLES.get(v) == h]
+            digits.append(min(cands, key=lambda v: ssd[v]) if cands else best)
     return int(''.join(str(d) for d in digits))
 
 

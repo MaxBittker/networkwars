@@ -7,33 +7,39 @@
   keep partial-game data, do not Surrender to reset. Restart only via the
   post-game (win/loss) modal's New Game / Play Again button.
 
-## Engine (pure MCTS — RL/neural-net path was removed)
-- `rl/` is the search + analysis subproject. **Pure C-UCT MCTS (no neural net) is
-  our best algorithm** — the AlphaZero/PufferLib training path was dropped (it
-  plateaued below the search; findings in memory `alphago-levers-ruled-out`). There
-  is no Gymnasium env or torch/pufferlib dependency anymore.
-- Three engine ports model the **real iOS app (the source of truth)** and are kept
-  bit-identical: `rl/network_wars.py` (the readable Python spec), `rl/fast_engine.c`
-  (the C hot path + UCT search, for speed), and `game.js` (the browser-playable
-  version). Each has a distinct consumer; automated parity gates keep them in sync:
-  `validate_fast.py` (C↔Python, bit-exact: 1000 primitives + 600 playouts) and
-  `verify_port.py` (Python↔JS, 400 games).
+## Engine (one C source of truth; pure MCTS — RL/neural-net path was removed)
+- `solver/` is the engine + search + analysis subproject. **Pure C-UCT MCTS (no
+  neural net) is our best algorithm** — the AlphaZero/PufferLib training path was
+  dropped (it plateaued below the search; findings in memory
+  `alphago-levers-ruled-out`). No Gymnasium env or torch/pufferlib dependency.
+- **`solver/fast_engine.c` is the single implementation of everything**: board
+  generation + the iOS deal, the four deterministic bots, the power-ratio battle,
+  reinforcement, win check, and the open-loop C-UCT search (ranked **C1** rollout
+  baked in, `c_puct=2.5`). Everything else is a thin client over it:
+  - `solver/fastnw.py` — ctypes client (marshals int32 arrays; implements no rules).
+  - `solver/network_wars.py` — a readable State/Node shim that delegates every rule
+    to the C engine, so the `iphone_data/` analysis tooling keeps its object API.
+  - `solver/server.py` — stdlib HTTP server exposing `/api/game/*`; the browser
+    (`public/index.html`) plays the **same C engine** over HTTP (no JS rules engine).
+  There is no second port and no `game.js` anymore. The regression gate is
+  `solver/validate_fast.py` (board/deal/battle invariants over 1000 seeds + frozen
+  golden-seed game outcomes).
 - Two things were recalibrated from live play: the deal (every faction totals 20, 4
   fixed templates) and battle. BATTLE is the **power-ratio** model (fit from ~3300
-  live battles, see rl/BATTLE_FUNCTION.md): per round the attacker wins w.p.
+  live battles, see solver/BATTLE_FUNCTION.md): per round the attacker wins w.p.
   `a^0.62/(a^0.62 + 0.93·d^0.62)`; a capture needs the attacker to keep an occupier
   (node→a-1 ≥1, never 0), a repel gutts the defender to `max(0,d0-a0+1)` (can be 0).
-  q is truncated to 1e-6 for JS↔Py parity; `ATTACKER_WIN_P` is legacy/unused.
-- Build + drive: `cc -O3 -ffast-math -shared -fPIC fast_engine.c -o fast_engine.so`,
-  then `fmcts.py` (or `par_eval.py` for parallel winrate evals). On the iOS-faithful
-  deal, offline self-play winrate is ~91–96%. NOTE: measured LIVE winrate is ~77-81%
-  (last-50 ≈76%, matching the phone's own stats screen) — offline OVER-predicts live,
-  an open gap (likely real iOS bots stronger than best_bot_move; see
-  BATTLE_FUNCTION.md §4 + memories sim-vs-real-deal-imbalance,
+- Build + drive: `cc -O3 -ffast-math -shared -fPIC solver/fast_engine.c -o
+  solver/fast_engine.so`, then `solver/fmcts.py` (or `solver/par_eval.py` for
+  parallel winrate evals), or `solver/server.py` to play in a browser. On the
+  iOS-faithful deal, offline self-play winrate is ~91–96%. NOTE: measured LIVE
+  winrate is ~77-81% (last-50 ≈76%, matching the phone's own stats screen) — offline
+  OVER-predicts live, an open gap (likely real iOS bots stronger than best_bot_move;
+  see BATTLE_FUNCTION.md §4 + memories sim-vs-real-deal-imbalance,
   sim-vs-real-battle-mismatch). Don't quote 88-92% as the live number.
 
 ## Driving the real iOS app
-- `rl/iphone_data/` captures/parses/taps the real app via macOS iPhone Mirroring.
+- `solver/iphone_data/` captures/parses/taps the real app via macOS iPhone Mirroring.
 - `series.py` runs a series of live games with the C-UCT engine and logs a rich
   JSONL (full trajectory + per-move win expectation + algo config). It never
   surrenders (see policy above).

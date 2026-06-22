@@ -91,10 +91,14 @@ On a bot's turn, repeatedly:
 
 ## 8. Architecture
 
-- **Server**: Node.js, standard library only (no build step, no deps). In-memory games keyed
-  by `gameId`. Seedable RNG for reproducible games/tests.
-- **Frontend**: single static `index.html` + vanilla JS canvas/SVG render. Thin: it only
-  draws server state and posts actions. No game logic client-side.
+- **Engine**: a single C implementation (`solver/fast_engine.c`) of all rules + board
+  generation + the C-UCT search. This is the source of truth; there is no separate
+  JS rules engine (`game.js` was retired).
+- **Server**: `solver/server.py` — Python standard library only (`http.server`, no deps),
+  a thin client that drives the C engine via ctypes (`fastnw.py`). In-memory games keyed
+  by `gameId`; seeded mulberry32 per game for reproducibility.
+- **Frontend**: single static `public/index.html` + vanilla JS canvas render. Thin: it
+  only draws server state and posts actions. No game logic client-side.
 
 ### HTTP API
 

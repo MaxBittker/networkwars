@@ -37,7 +37,23 @@ def corrected_resolve_battle(state, from_id, to_id):
         return True
     frm.strength = 1; to.strength = max(0, d0 - a0 + 1)
     return False
-nw.resolve_battle = corrected_resolve_battle
+
+
+# Bots run in C now, so monkeypatching nw.resolve_battle is a no-op; replay the bot
+# turn in pure Python with the baseline policy + the corrected battle above.
+def run_bot_turn(state, faction):
+    if nw.counts(state)[faction] == 0:
+        return
+    g = 0
+    while g < 1000:
+        g += 1
+        mv = nw.best_bot_move(state, faction)
+        if mv is None:
+            break
+        corrected_resolve_battle(state, mv[0], mv[1])
+        if nw.check_winner(state) is not None:
+            return
+    nw.reinforce(state, faction)
 
 
 def mulberry(seed):
@@ -71,7 +87,7 @@ def sim_once(board, seed):
     st_.rng = mulberry(seed)
     nw.reinforce(st_, HUMAN)
     for b in BOTS:
-        nw.run_bot_turn(st_, b)
+        run_bot_turn(st_, b)
     return {n.id: (n.owner, n.strength) for n in st_.nodes}
 
 

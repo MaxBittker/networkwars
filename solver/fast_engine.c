@@ -1,15 +1,20 @@
-/* fast_engine.c — Network Wars hot path in C (ctypes).
+/* fast_engine.c — Network Wars engine + C-UCT search (the single source of truth).
  *
- * Faithful port of network_wars.py mechanics: resolve_battle, best_bot_move,
- * run_bot_turn, reinforce, check_winner, rollout_to_terminal, end_turn.
+ * One implementation of the whole game: board generation + deal, the four
+ * deterministic bots, the power-ratio battle, reinforcement, win check, and an
+ * open-loop PUCT/MCTS player for RED. Python (fastnw.py) and the browser
+ * (solver/server.py) are thin clients over this; there is no second port.
  *
- * Topology (adjacency, coords) is fixed per game and set once via set_topology.
- * Board state = owner[N] (0=red,1..4=bots), strength[N]. Functions mutate the
- * caller-provided arrays in place.
+ * Board state = owner[N] (0=red, 1..4=bots), strength[N]; functions mutate the
+ * caller-provided int arrays in place. Topology (adjacency) is set per game via
+ * set_topology() — or built in C by new_game(), which also fills owner/strength.
  *
- * Two RNG sources:
- *   - mulberry32 (set_rng_mb32): used ONLY for parity validation vs Python.
- *   - private splitmix64 (sim_rng): seed-free dice for MCTS rollouts/transitions.
+ * Two RNG sources, selected by the RNG function pointer:
+ *   - mulberry32 (set_rng_mb32): the real seeded game stream — bit-identical to
+ *     the old network_wars.py / game.js mulberry32. Used for board-gen and for
+ *     playing out the real iOS-faithful game.
+ *   - splitmix64 (set_sim_seed): a private, seed-free stream for MCTS rollouts so
+ *     the search never sees the real game's dice (no seed exploitation).
  *
  * Compile: cc -O3 -ffast-math -shared -fPIC fast_engine.c -o fast_engine.so
  */
@@ -22,10 +27,9 @@
 #define NF 5            /* factions: 0=red, 1..4 bots */
 #define WIN_NODES 24
 #define MAX_TURNS 300
-#define ATTACKER_WIN_P 0.60
-/* Power-ratio (fitted iOS) battle: per round attacker wins w.p.
- *   q(a,d) = a^PR_K / (a^PR_K + PR_C0 * d^PR_K)   instead of a fixed p.
- * Fitted from ~650 live battles (iphone_data/battle_model.py). */
+/* Power-ratio (fitted iOS) battle: per round the attacker wins w.p.
+ *   q(a,d) = a^PR_K / (a^PR_K + PR_C0 * d^PR_K)
+ * Fit from ~3300 live battles (see solver/BATTLE_FUNCTION.md). */
 #define PR_K  0.62
 #define PR_C0 0.93
 static inline double pr_q(int a, int d) {
@@ -42,8 +46,6 @@ static int ADJ[MAXN * 8];
 
 static void build_cap_tables(void);   /* fwd decl */
 static void reinforce(int *owner, int *strength, int faction);  /* fwd decl */
-static double heur_value(const int *owner, const int *strength, int turns);  /* fwd decl */
-static int value_greedy_move(const int *owner, const int *strength, int turns);  /* fwd decl */
 
 void set_topology(int n, const int *adj_off, const int *adj_list) {
     N = n;
@@ -53,9 +55,10 @@ void set_topology(int n, const int *adj_off, const int *adj_list) {
     build_cap_tables();
 }
 
-/* ---- mulberry32 (parity only) ---- */
+/* ---- mulberry32 (real seeded game stream; bit-identical to the old JS/Py) ---- */
 static uint32_t MB = 0;
 void set_rng_mb32(uint32_t seed) { MB = seed; }
+uint32_t get_rng_mb32(void) { return MB; }   /* read the stream position back out */
 static double mb32(void) {
     MB = (MB + 0x6D2B79F5u);
     uint32_t t = (MB ^ (MB >> 15)) * (MB | 1u);
@@ -63,7 +66,7 @@ static double mb32(void) {
     return (double)((t ^ (t >> 14))) / 4294967296.0;
 }
 
-/* ---- private seed-free rng (splitmix64) ---- */
+/* ---- private seed-free rng (splitmix64) for MCTS rollouts ---- */
 static uint64_t SM = 0x12345678ULL;
 void set_sim_seed(uint64_t s) { SM = s; }
 static inline double sm_rand(void) {
@@ -75,10 +78,207 @@ static inline double sm_rand(void) {
     return (double)(z >> 11) * (1.0 / 9007199254740992.0); /* 53-bit */
 }
 
-/* function pointer to the active rng (so parity tests can force mb32) */
+/* active rng: mb32 for the real game, sm_rand for search rollouts. */
 static double (*RNG)(void) = sm_rand;
 void use_mb32_rng(void) { RNG = mb32; }
 void use_sim_rng(void) { RNG = sm_rand; }
+
+/* ---- board generation (mulberry32; bit-identical to the old Python/JS) ----
+ * 6x7 king-adjacency lattice -> connectivity-preserving vertex removal to 30
+ * nodes -> clustered ownership growth -> the iOS deal (every faction totals 20,
+ * one of 4 fixed templates). Consumes the mb32 stream in the exact same order as
+ * network_wars.build_board, so new_game(seed) reproduces that board bit-for-bit
+ * and leaves MB advanced for the real-game battle stream that follows. */
+#define GRID_ROWS 7
+#define GRID_COLS 6
+#define CELLS (GRID_ROWS * GRID_COLS)   /* 42 */
+#define TARGET_NODES 30
+#define OWNER_SCATTER 0.6
+
+/* 4 fixed deal templates (6 per-faction strengths summing to 20) + cumulative prob */
+static const int DEAL_TMPL[4][6] = {
+    {1, 1, 1, 5, 6, 6},
+    {1, 1, 1, 1, 8, 8},
+    {1, 1, 4, 4, 5, 5},
+    {1, 3, 4, 4, 4, 4},
+};
+static const double DEAL_CUM[4] = {0.385, 0.712, 0.934, 1.0};  /* 0.385,+0.327,+0.222,+0.066 */
+
+/* Fisher-Yates over the mb32 stream, matching Python's shuffle() exactly. */
+static void bg_shuffle(int *a, int n) {
+    for (int i = n - 1; i > 0; i--) {
+        int j = (int)(mb32() * (i + 1));
+        int t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+}
+
+/* DFS connectivity over the live grid cells, excluding `excluded`. */
+static int bg_still_connected(const int *al, const int gadj[][8], const int *gdeg,
+                              int nalive, int excluded) {
+    int start = -1;
+    for (int g = 0; g < CELLS; g++) if (al[g] && g != excluded) { start = g; break; }
+    if (start < 0) return 0;
+    int seen[CELLS]; for (int i = 0; i < CELLS; i++) seen[i] = 0;
+    int stack[CELLS], top = 0, cnt = 0;
+    stack[top++] = start; seen[start] = 1;
+    while (top > 0) {
+        int g = stack[--top]; cnt++;
+        for (int k = 0; k < gdeg[g]; k++) {
+            int nb = gadj[g][k];
+            if (nb != excluded && al[nb] && !seen[nb]) { seen[nb] = 1; stack[top++] = nb; }
+        }
+    }
+    return cnt == nalive - 1;
+}
+
+/* Build a fresh game from `seed`. Fills owner[N], strength[N], x[N], y[N] and sets
+ * the engine topology (ADJ/ADJ_OFF). Switches the active RNG to mb32 (seeded) so
+ * the caller can play out the real seeded game. Returns N (= 30). */
+int new_game(uint32_t seed, int *owner, int *strength, int *x, int *y) {
+    MB = seed;            /* seed the real mulberry32 stream */
+    RNG = mb32;
+
+    /* grid king-lattice adjacency, append order identical to network_wars */
+    int gadj[CELLS][8], gdeg[CELLS];
+    for (int i = 0; i < CELLS; i++) gdeg[i] = 0;
+    #define GLINK(u, v) do { gadj[u][gdeg[u]++] = (v); gadj[v][gdeg[v]++] = (u); } while (0)
+    for (int r = 0; r < GRID_ROWS; r++) {
+        for (int c = 0; c < GRID_COLS; c++) {
+            int a = r * GRID_COLS + c;
+            if (c + 1 < GRID_COLS) GLINK(a, r * GRID_COLS + (c + 1));
+            if (r + 1 < GRID_ROWS) {
+                GLINK(a, (r + 1) * GRID_COLS + c);
+                if (c - 1 >= 0)        GLINK(a, (r + 1) * GRID_COLS + (c - 1));
+                if (c + 1 < GRID_COLS) GLINK(a, (r + 1) * GRID_COLS + (c + 1));
+            }
+        }
+    }
+    #undef GLINK
+
+    /* remove random vertices, keeping the rest connected, down to TARGET_NODES */
+    int al[CELLS]; for (int i = 0; i < CELLS; i++) al[i] = 1;
+    int nalive = CELLS;
+    while (nalive > TARGET_NODES) {
+        int cand[CELLS], m = 0;
+        for (int i = 0; i < CELLS; i++) if (al[i]) cand[m++] = i;   /* ascending */
+        bg_shuffle(cand, m);
+        int removed = 0;
+        for (int ci = 0; ci < m; ci++) {
+            int gid = cand[ci];
+            if (bg_still_connected(al, gadj, gdeg, nalive, gid)) {
+                al[gid] = 0; nalive--; removed = 1; break;
+            }
+        }
+        if (!removed) break;
+    }
+
+    /* reindex survivors to 0..N-1 (ascending), carry grid coords */
+    int surv[CELLS], newid[CELLS];
+    for (int i = 0; i < CELLS; i++) newid[i] = -1;
+    int n = 0;
+    for (int g = 0; g < CELLS; g++) if (al[g]) { surv[n] = g; newid[g] = n; n++; }
+    N = n;
+    for (int i = 0; i < N; i++) { x[i] = surv[i] % GRID_COLS; y[i] = surv[i] / GRID_COLS; }
+
+    /* adjacency in network_wars link order: survivors ascending x neighbor order,
+     * deduped; for each new link append both directions. */
+    int tadj[MAXN][16], tdeg[MAXN];
+    for (int i = 0; i < N; i++) tdeg[i] = 0;
+    static char seenlink[MAXN][MAXN];
+    for (int i = 0; i < N; i++) for (int j = 0; j < N; j++) seenlink[i][j] = 0;
+    for (int si = 0; si < N; si++) {
+        int g = surv[si], a = si;
+        for (int k = 0; k < gdeg[g]; k++) {
+            int nb = gadj[g][k];
+            if (!al[nb]) continue;
+            int b = newid[nb];
+            int lo = a < b ? a : b, hi = a < b ? b : a;
+            if (seenlink[lo][hi]) continue;
+            seenlink[lo][hi] = 1;
+            tadj[lo][tdeg[lo]++] = hi;
+            tadj[hi][tdeg[hi]++] = lo;
+        }
+    }
+    int off = 0;
+    for (int i = 0; i < N; i++) {
+        ADJ_OFF[i] = off;
+        for (int k = 0; k < tdeg[i]; k++) ADJ[off++] = tadj[i][k];
+    }
+    ADJ_OFF[N] = off;
+    build_cap_tables();
+
+    /* ownership: clustered territorial growth (OWNER_SEEDS=1, OWNER_SCATTER) */
+    int own[MAXN]; for (int i = 0; i < N; i++) own[i] = -1;
+    int cnt[NF]; for (int f = 0; f < NF; f++) cnt[f] = 0;
+    int pool[MAXN]; for (int i = 0; i < N; i++) pool[i] = i;
+    bg_shuffle(pool, N);
+    int p = 0;
+    for (int f = 0; f < NF; f++) { own[pool[p++]] = f; cnt[f]++; }   /* one seed per faction */
+    int guard = 0;
+    for (;;) {
+        int need = 0; for (int f = 0; f < NF; f++) if (cnt[f] < 6) need = 1;
+        if (!need || guard++ >= 10000) break;
+        int forder[NF] = {0, 1, 2, 3, 4};
+        bg_shuffle(forder, NF);
+        for (int fi = 0; fi < NF; fi++) {
+            int f = forder[fi];
+            if (cnt[f] >= 6) continue;
+            int freebuf[MAXN], nfree = 0;
+            for (int i = 0; i < N; i++) if (own[i] == -1) freebuf[nfree++] = i;
+            int pick;
+            if (mb32() < OWNER_SCATTER) {
+                pick = freebuf[(int)(mb32() * nfree)];
+            } else {
+                int border[MAXN], nb = 0;
+                for (int i = 0; i < N; i++) {
+                    if (own[i] != f) continue;
+                    for (int k = ADJ_OFF[i]; k < ADJ_OFF[i+1]; k++) {
+                        int nbn = ADJ[k];
+                        if (own[nbn] != -1) continue;
+                        int dup = 0; for (int t = 0; t < nb; t++) if (border[t] == nbn) { dup = 1; break; }
+                        if (!dup) border[nb++] = nbn;
+                    }
+                }
+                pick = nb > 0 ? border[(int)(mb32() * nb)] : freebuf[(int)(mb32() * nfree)];
+            }
+            own[pick] = f; cnt[f]++;
+        }
+    }
+
+    /* iOS deal: each faction's 6 nodes get a shuffled template summing to 20 */
+    for (int i = 0; i < N; i++) strength[i] = 1;
+    for (int f = 0; f < NF; f++) {
+        int owned[MAXN], no = 0;
+        for (int i = 0; i < N; i++) if (own[i] == f) owned[no++] = i;   /* ascending id */
+        double r = mb32();
+        int ti = 3; for (int t = 0; t < 4; t++) if (r < DEAL_CUM[t]) { ti = t; break; }
+        int vals[6]; for (int j = 0; j < 6; j++) vals[j] = DEAL_TMPL[ti][j];
+        bg_shuffle(vals, 6);
+        for (int j = 0; j < no && j < 6; j++) strength[owned[j]] = vals[j];
+    }
+
+    for (int i = 0; i < N; i++) owner[i] = own[i];
+    return N;
+}
+
+/* dump the current adjacency (CSR) for clients/parity tests; returns N. */
+int get_adj(int *out_off, int *out_list) {
+    for (int i = 0; i <= N; i++) out_off[i] = ADJ_OFF[i];
+    int tot = ADJ_OFF[N];
+    for (int i = 0; i < tot; i++) out_list[i] = ADJ[i];
+    return N;
+}
+
+/* emit undirected links as (a,b) pairs with a<b into out[2*L]; returns L. */
+int get_links(int *out) {
+    int L = 0;
+    for (int i = 0; i < N; i++)
+        for (int k = ADJ_OFF[i]; k < ADJ_OFF[i+1]; k++) {
+            int j = ADJ[k];
+            if (i < j) { out[2*L] = i; out[2*L+1] = j; L++; }
+        }
+    return L;
+}
 
 /* ---- core mechanics ---- */
 static inline void counts(const int *owner, int *c) {
@@ -106,6 +306,7 @@ static double CAPES[MAXS][MAXS];
 static int CAP_READY = 0;
 
 static void build_cap_tables(void) {
+    if (CAP_READY) return;   /* depends only on pr_q; build once */
     for (int a = 0; a < MAXS; a++) {
         CAPP[a][0] = (a >= 1) ? 1.0 : 0.0;
         CAPES[a][0] = (a >= 1) ? (double)(a - 1) : 0.0;
@@ -116,7 +317,6 @@ static void build_cap_tables(void) {
     }
     for (int a = 2; a < MAXS; a++) {
         for (int d = 1; d < MAXS; d++) {
-            /* per-round odds depend on current (a,d) for the power-ratio model */
             double p = pr_q(a, d), q = 1.0 - p;
             CAPP[a][d]  = p * CAPP[a][d-1]  + q * CAPP[a-1][d];
             CAPES[a][d] = p * CAPES[a][d-1] + q * CAPES[a-1][d];
@@ -140,28 +340,26 @@ static inline double exp_cap_strength(int a, int d) {
     return pp > 0 ? CAPES[a][d] / pp : 0.0;
 }
 
-/* ---- ranked RED policy (C4-tuned), used as a strong rollout policy ---- */
+/* ---- ranked RED policy (C1-tuned), the single rollout policy ----
+ * The tuned C1 weight vector is baked in (it was the best config found; the other
+ * weight sets and the neural/value/safety/ensemble variants were ruled out — see
+ * memory alphago-levers-ruled-out). Order: capture, weakTarget, margin, source,
+ * redAdj, merge, largestTouch, enemyCount, eliminate, exposure, lowChancePenalty,
+ * strongTargetPenalty, threshold. */
 typedef struct {
     double capture, weakTarget, margin, source, redAdj, merge, largestTouch;
     double enemyCount, eliminate, exposure, lowChancePenalty, strongTargetPenalty;
     double threshold;
 } RankWeights;
 
-static RankWeights RW = {  /* C4_RANKED_OPTIONS */
-    .capture=41.626, .weakTarget=16.58, .margin=3.155, .source=9.863,
-    .redAdj=34.636, .merge=75.442, .largestTouch=65.481, .enemyCount=13.635,
-    .eliminate=195.996, .exposure=41.79, .lowChancePenalty=126.886,
-    .strongTargetPenalty=4.498, .threshold=221.259,
+static const RankWeights RW = {  /* C1 */
+    .capture=44.687, .weakTarget=69.885, .margin=9.789, .source=1.754,
+    .redAdj=59.153, .merge=114.472, .largestTouch=77.164, .enemyCount=9.322,
+    .eliminate=0, .exposure=60.487, .lowChancePenalty=140.411,
+    .strongTargetPenalty=0, .threshold=220.775,
 };
 
-void set_ranked_weights(const double *w) {
-    RW.capture=w[0]; RW.weakTarget=w[1]; RW.margin=w[2]; RW.source=w[3];
-    RW.redAdj=w[4]; RW.merge=w[5]; RW.largestTouch=w[6]; RW.enemyCount=w[7];
-    RW.eliminate=w[8]; RW.exposure=w[9]; RW.lowChancePenalty=w[10];
-    RW.strongTargetPenalty=w[11]; RW.threshold=w[12];
-}
-
-/* red component labels: label[i] = component index (-1 if not red), largest id */
+/* red component labels: label[i] = component index (-1 if not red) */
 static int LBL[MAXN];
 static int LBL_SIZE[MAXN];
 static int touch_mark[MAXN];   /* per-call scratch for "touching" set */
@@ -244,122 +442,23 @@ static double ranked_score(const int *owner, const int *strength, const int *c,
     return score;
 }
 
-/* fill acts[]/scores[] for all legal RED actions in legal_red() order (END last,
- * with score = threshold so it competes with attacks). Returns count. */
-static int ranked_fill(const int *owner, const int *strength, int *acts, double *scores) {
+/* best ranked RED move (deterministic argmax); returns frm<<8|to, or A_END. */
+static int ranked_best_move(const int *owner, const int *strength) {
     int c[NF]; counts(owner, c);
     int largest = red_labels(owner);
-    int n = 0;
+    int best_act = A_END;
+    double best = RW.threshold;   /* END competes at the stop threshold */
     for (int i = 0; i < N; i++) {
         if (owner[i] != 0 || strength[i] <= 1) continue;
         for (int k = ADJ_OFF[i]; k < ADJ_OFF[i+1]; k++) {
             int to = ADJ[k];
             if (owner[to] == 0) continue;   /* attack enemies only (RED is owner 0) */
-            acts[n] = (i << 8) | to;
-            scores[n] = ranked_score(owner, strength, c, largest, i, to);
-            n++;
+            double s = ranked_score(owner, strength, c, largest, i, to);
+            if (s > best) { best = s; best_act = (i << 8) | to; }
         }
-    }
-    acts[n] = A_END;
-    scores[n] = RW.threshold;   /* END competes at the stop threshold */
-    n++;
-    return n;
-}
-
-/* rollout temperature: 0 = deterministic argmax; >0 = softmax-sample the move. */
-static double ROLL_TEMP = 0.0;
-void set_roll_temp(double t) { ROLL_TEMP = t; }
-
-/* best/sampled ranked RED move; returns frm<<8|to, or A_END (stop). */
-static int ranked_best_move(const int *owner, const int *strength) {
-    static int acts[MAXCHILD]; static double scores[MAXCHILD];
-    int n = ranked_fill(owner, strength, acts, scores);
-    if (ROLL_TEMP <= 0.0) {
-        int best = n - 1; double bs = scores[n - 1];   /* END default */
-        for (int k = 0; k < n - 1; k++) if (scores[k] > bs) { bs = scores[k]; best = k; }
-        return acts[best];
-    }
-    /* softmax sample (numerically stable). +100000 near-win term still dominates. */
-    double smax = scores[0];
-    for (int k = 1; k < n; k++) if (scores[k] > smax) smax = scores[k];
-    double sum = 0.0;
-    static double w[MAXCHILD];
-    for (int k = 0; k < n; k++) { w[k] = exp((scores[k] - smax) / ROLL_TEMP); sum += w[k]; }
-    double r = RNG() * sum;
-    for (int k = 0; k < n; k++) { r -= w[k]; if (r <= 0.0) return acts[k]; }
-    return acts[n - 1];
-}
-
-/* ---- ensemble of rollout policies (rotate per rollout to cancel bias) ---- */
-static RankWeights ENS[8];
-static int ENS_N = 0;
-void set_ensemble(const double *flat, int k) {   /* flat = k*13 doubles */
-    ENS_N = (k > 8) ? 8 : k;
-    for (int i = 0; i < ENS_N; i++) {
-        const double *w = flat + i * 13;
-        ENS[i].capture=w[0]; ENS[i].weakTarget=w[1]; ENS[i].margin=w[2]; ENS[i].source=w[3];
-        ENS[i].redAdj=w[4]; ENS[i].merge=w[5]; ENS[i].largestTouch=w[6]; ENS[i].enemyCount=w[7];
-        ENS[i].eliminate=w[8]; ENS[i].exposure=w[9]; ENS[i].lowChancePenalty=w[10];
-        ENS[i].strongTargetPenalty=w[11]; ENS[i].threshold=w[12];
-    }
-}
-
-/* ---- safety-aware ranked move (1-ply threat lookahead, ~modalScout) ---- */
-/* RED's total incoming threat = sum over beatable RED border nodes of the
- * attacker's exact capture probability. Lower = safer. */
-static double total_red_threat(const int *owner, const int *strength) {
-    double t = 0.0;
-    for (int n = 0; n < N; n++) {
-        if (owner[n] == 0 || strength[n] <= 1) continue;
-        for (int k = ADJ_OFF[n]; k < ADJ_OFF[n+1]; k++) {
-            int j = ADJ[k];
-            if (owner[j] == 0 && strength[n] > strength[j])
-                t += capture_prob(strength[n], strength[j]);
-        }
-    }
-    return t;
-}
-
-static double SAFETY_W = 45.0;      /* weight on threat reduction after the move */
-static double REDGAIN_W = 28.0;     /* weight on capturing a node */
-void set_safety_params(double sw, double rg) { SAFETY_W = sw; REDGAIN_W = rg; }
-
-/* score each ranked move by ranked_score + SAFETY_W*(threat reduction after the
- * move's expected outcome + RED reinforce) + REDGAIN_W*(captured?). */
-static int safety_best_move(const int *owner, const int *strength) {
-    static int acts[MAXCHILD]; static double sc[MAXCHILD];
-    int n = ranked_fill(owner, strength, acts, sc);
-    int bo[MAXN], bs[MAXN];
-    memcpy(bo, owner, N * sizeof(int)); memcpy(bs, strength, N * sizeof(int));
-    reinforce(bo, bs, 0);
-    double base_threat = total_red_threat(bo, bs);
-
-    double best_final = sc[n - 1];   /* END competes at the ranked threshold */
-    int best_act = A_END;
-    int co[MAXN], cs[MAXN];
-    for (int k = 0; k < n - 1; k++) {
-        int frm = acts[k] >> 8, to = acts[k] & 0xFF;
-        double pc = capture_prob(strength[frm], strength[to]);
-        int cap = pc >= 0.5;
-        memcpy(co, owner, N * sizeof(int)); memcpy(cs, strength, N * sizeof(int));
-        cs[frm] = 1;
-        if (cap) { co[to] = 0; cs[to] = (int)(exp_cap_strength(strength[frm], strength[to]) + 0.5); if (cs[to] < 1) cs[to] = 1; }
-        reinforce(co, cs, 0);
-        double thr = total_red_threat(co, cs);
-        double fin = sc[k] + SAFETY_W * (base_threat - thr) + REDGAIN_W * (cap ? 1.0 : 0.0);
-        if (fin > best_final) { best_final = fin; best_act = acts[k]; }
     }
     return best_act;
 }
-
-/* RED rollout policy: 0 = greedy bot-style, 1 = ranked, 2 = safety-aware ranked. */
-static int RED_ROLLOUT_POLICY = 1;
-void set_red_rollout_policy(int p) { RED_ROLLOUT_POLICY = p; }
-
-/* heuristic priors: softmax of ranked scores as PUCT priors at every node. */
-static int HEUR_PRIORS = 0;
-static double PRIOR_BETA = 0.02;
-void set_heur_priors(int on, double beta) { HEUR_PRIORS = on; PRIOR_BETA = beta; }
 
 /* dice battle, frm attacks to — fitted iOS power-ratio mechanic */
 static void resolve_battle(int *owner, int *strength, int frm, int to) {
@@ -373,11 +472,43 @@ static void resolve_battle(int *owner, int *strength, int frm, int to) {
         owner[to] = owner[frm];
         strength[to] = a - 1;
         strength[frm] = 1;
-    } else {                          /* repel (incl. spent-striker d==0,a==1): no flip */
+    } else {                          /* repel (incl. spent-striker d==0,a==1) */
         strength[frm] = 1;
         int rem = d0 - a0 + 1;        /* defender gutted by the full attacking force */
         strength[to] = rem > 0 ? rem : 0;
     }
+}
+
+/* resolve_battle variant that records the per-round flip sequence + outcome meta,
+ * for the browser battle animation. out_flips[i] = 1 (defender lost a unit) or 0
+ * (attacker lost a unit); *out_len = number of flips. out_meta = {captured,
+ * fromStart, toStart, fromStrength, toStrength}. Uses the active RNG. */
+void resolve_battle_logged(int *owner, int *strength, int frm, int to,
+                           int *out_flips, int *out_len, int *out_meta) {
+    int a = strength[frm], d = strength[to];
+    int a0 = a, d0 = d;
+    int nf = 0;
+    while (a > 1 && d > 0) {
+        if (RNG() < pr_q(a, d)) { d--; out_flips[nf++] = 1; }
+        else { a--; out_flips[nf++] = 0; }
+    }
+    int captured = 0;
+    if (d == 0 && a >= 2) {
+        captured = 1;
+        owner[to] = owner[frm];
+        strength[to] = a - 1;
+        strength[frm] = 1;
+    } else {
+        strength[frm] = 1;
+        int rem = d0 - a0 + 1;
+        strength[to] = rem > 0 ? rem : 0;
+    }
+    *out_len = nf;
+    out_meta[0] = captured;
+    out_meta[1] = a0;
+    out_meta[2] = d0;
+    out_meta[3] = strength[frm];
+    out_meta[4] = strength[to];
 }
 
 /* best_bot_move: return packed (frm<<8|to)+1, or 0 if none.
@@ -481,7 +612,7 @@ void end_turn(int *owner, int *strength) {
     }
 }
 
-/* full greedy playout to terminal; RED plays bot-style. Returns 1 if RED wins.
+/* full playout to terminal; RED plays the ranked C1 policy. Returns 1 if RED wins.
  * Operates on a private copy so the caller's arrays are untouched. */
 int rollout(const int *owner_in, const int *strength_in, int turns) {
     int owner[MAXN], strength[MAXN];
@@ -493,24 +624,11 @@ int rollout(const int *owner_in, const int *strength_in, int turns) {
         if (w != -1) return w == 0;
         counts(owner, c);
         if (c[0] == 0) return 0;
-        /* RED turn (rollout policy: ranked C4 by default, else greedy bot) */
+        /* RED turn (ranked C1 policy) */
         int g = 0;
         while (g < 200) {
-            int mv;
-            if (RED_ROLLOUT_POLICY == 3) {
-                mv = value_greedy_move(owner, strength, turns);
-                if (mv == A_END) break;
-            } else if (RED_ROLLOUT_POLICY == 2) {
-                mv = safety_best_move(owner, strength);
-                if (mv == A_END) break;
-            } else if (RED_ROLLOUT_POLICY == 1) {
-                mv = ranked_best_move(owner, strength);
-                if (mv == A_END) break;
-            } else {
-                mv = best_bot_move(owner, strength, 0);
-                if (mv == 0) break;
-                mv -= 1;
-            }
+            int mv = ranked_best_move(owner, strength);
+            if (mv == A_END) break;
             resolve_battle(owner, strength, mv >> 8, mv & 0xFF);
             if (check_winner(owner) != -1) break;
             g++;
@@ -533,138 +651,11 @@ int rollout(const int *owner_in, const int *strength_in, int turns) {
     }
 }
 
-/* ---- fitted static leaf value (logistic on cheap board features) ----
- * Features (must match gen_value_data.py order): [bias, red_n, red_n-maxEn,
- * red_n-avgEn, redS-maxES, red_big, fracture(red_big-red_n), turns]. */
-static double VALW[8] = {0,0,0,0,0,0,0,0};
-static int VAL_READY = 0;
-static int LEAF_TRUNC = -1;   /* -1 = full rollout to terminal; >=0 = trunc rounds then heur */
-void set_value_weights(const double *w) { for (int i = 0; i < 8; i++) VALW[i] = w[i]; VAL_READY = 1; }
-void set_leaf_trunc(int k) { LEAF_TRUNC = k; }
-
-static int red_largest_comp(const int *owner) {
-    static int seen[MAXN], stk[MAXN];
-    for (int i = 0; i < N; i++) seen[i] = 0;
-    int best = 0;
-    for (int s = 0; s < N; s++) {
-        if (owner[s] != 0 || seen[s]) continue;
-        int top = 0, sz = 0; stk[top++] = s; seen[s] = 1;
-        while (top > 0) {
-            int nid = stk[--top]; sz++;
-            for (int k = ADJ_OFF[nid]; k < ADJ_OFF[nid+1]; k++) {
-                int j = ADJ[k];
-                if (!seen[j] && owner[j] == 0) { seen[j] = 1; stk[top++] = j; }
-            }
-        }
-        if (sz > best) best = sz;
-    }
-    return best;
-}
-
-static double heur_value(const int *owner, const int *strength, int turns) {
-    int c[NF]; counts(owner, c);
-    int red_n = c[0];
-    int max_en = c[1]; for (int f = 2; f < NF; f++) if (c[f] > max_en) max_en = c[f];
-    int sum_en = 0; for (int f = 1; f < NF; f++) sum_en += c[f];
-    int sstr[NF]; for (int f = 0; f < NF; f++) sstr[f] = 0;
-    for (int i = 0; i < N; i++) sstr[owner[i]] += strength[i];
-    int red_s = sstr[0];
-    int max_es = sstr[1]; for (int f = 2; f < NF; f++) if (sstr[f] > max_es) max_es = sstr[f];
-    int red_big = red_largest_comp(owner);
-    double z = VALW[0] + VALW[1]*red_n + VALW[2]*(red_n - max_en)
-             + VALW[3]*(red_n - sum_en/4.0) + VALW[4]*(red_s - max_es)
-             + VALW[5]*red_big + VALW[6]*(red_big - red_n) + VALW[7]*turns;
-    if (z > 40) z = 40; else if (z < -40) z = -40;
-    return 1.0 / (1.0 + exp(-z));
-}
-
-/* value-greedy RED rollout move (policy 3): pick the attack maximizing the fitted
- * value of the (probability-weighted expected) resulting board; A_END if ending
- * the turn is best. Uses the calibrated leaf value as the rollout policy. */
-static int value_greedy_move(const int *owner, const int *strength, int turns) {
-    if (!VAL_READY) return A_END;
-    double best = heur_value(owner, strength, turns);   /* value of ending the turn */
-    int best_mv = A_END;
-    int oc[MAXN], sc[MAXN];
-    for (int i = 0; i < N; i++) {
-        if (owner[i] != 0 || strength[i] <= 1) continue;
-        int a = strength[i];
-        for (int k = ADJ_OFF[i]; k < ADJ_OFF[i+1]; k++) {
-            int j = ADJ[k];
-            if (owner[j] == 0) continue;                /* skip own / empty */
-            int d = strength[j];
-            double pc = capture_prob(a, d);
-            /* capture outcome */
-            memcpy(oc, owner, N * sizeof(int)); memcpy(sc, strength, N * sizeof(int));
-            int es = (int)(exp_cap_strength(a, d) + 0.5); if (es < 0) es = 0;
-            oc[j] = 0; sc[j] = es; sc[i] = 1;
-            double vmove = heur_value(oc, sc, turns);
-            if (pc < 0.999) {
-                /* fail outcome: attacker spent to 1, defender roughly holds */
-                memcpy(sc, strength, N * sizeof(int)); sc[i] = 1;
-                double vfail = heur_value(owner, sc, turns);
-                vmove = pc * vmove + (1.0 - pc) * vfail;
-            }
-            if (vmove > best) { best = vmove; best_mv = (i << 8) | j; }
-        }
-    }
-    return best_mv;
-}
-
-/* truncated rollout: play up to LEAF_TRUNC red-turn cycles, then return the
- * heuristic value if still live (else the terminal 0/1). LEAF_TRUNC<0 or no
- * fitted value -> behaves exactly like rollout(). */
-double rollout_v(const int *owner_in, const int *strength_in, int turns) {
-    if (LEAF_TRUNC < 0 || !VAL_READY) return (double)rollout(owner_in, strength_in, turns);
-    int owner[MAXN], strength[MAXN];
-    memcpy(owner, owner_in, N * sizeof(int));
-    memcpy(strength, strength_in, N * sizeof(int));
-    int c[NF];
-    int rounds = 0;
-    for (;;) {
-        int w = check_winner(owner); if (w != -1) return w == 0 ? 1.0 : 0.0;
-        counts(owner, c); if (c[0] == 0) return 0.0;
-        if (rounds >= LEAF_TRUNC) return heur_value(owner, strength, turns);
-        int g = 0;
-        while (g < 200) {
-            int mv;
-            if (RED_ROLLOUT_POLICY == 3) { mv = value_greedy_move(owner, strength, turns); if (mv == A_END) break; }
-            else if (RED_ROLLOUT_POLICY == 2) { mv = safety_best_move(owner, strength); if (mv == A_END) break; }
-            else if (RED_ROLLOUT_POLICY == 1) { mv = ranked_best_move(owner, strength); if (mv == A_END) break; }
-            else { mv = best_bot_move(owner, strength, 0); if (mv == 0) break; mv -= 1; }
-            resolve_battle(owner, strength, mv >> 8, mv & 0xFF);
-            if (check_winner(owner) != -1) break;
-            g++;
-        }
-        w = check_winner(owner); if (w != -1) return w == 0 ? 1.0 : 0.0;
-        reinforce(owner, strength, 0);
-        w = check_winner(owner); if (w != -1) return w == 0 ? 1.0 : 0.0;
-        for (int b = 1; b <= 4; b++) { run_bot_turn(owner, strength, b); if (check_winner(owner) != -1) break; }
-        w = check_winner(owner); if (w != -1) return w == 0 ? 1.0 : 0.0;
-        turns++; rounds++;
-        if (turns > MAX_TURNS) return heur_value(owner, strength, turns);
-    }
-}
-
-/* average of `nroll` independent rollouts from this board (variance reduction
- * for a value estimate). Each rollout uses the private sim rng. */
-double rollout_avg(const int *owner_in, const int *strength_in, int turns, int nroll) {
-    int wins = 0;
-    for (int r = 0; r < nroll; r++) wins += rollout(owner_in, strength_in, turns);
-    return (double)wins / (double)nroll;
-}
-
 /* ===================== open-loop PUCT MCTS (pure UCT + rollout) ===========
  * Single-agent stochastic planning: bots fold into end_turn, dice are the only
- * randomness (private sim rng, re-sampled from root each simulation). Mirrors
- * mcts.py:mcts_search exactly (FPU = parent value, rollout leaf, uniform priors
- * unless root priors supplied). Actions: attack = frm*64+to, END = 4096.
+ * randomness (private sim rng, re-sampled from root each simulation). Uniform
+ * priors, rollout leaf. Actions: attack = frm<<8|to, END = A_END.
  */
-#include <stdlib.h>
-#include <math.h>
-
-#define PRI_END 16192       /* root_pri[] slot for END_TURN (attacks use frm<<8|to < 16192) */
-
 typedef struct {
     int n_children;
     int child_off;     /* index into edge pools */
@@ -722,7 +713,7 @@ static int new_node(void) {
 }
 
 /* apply one RED action to (owner,strength); returns: 0 continue, 1 terminal.
- * sets *winner (0=red wins,1=loss) when terminal. mutates turns via *pturns. */
+ * sets *winner (1=red wins, 0=loss) when terminal. mutates turns via *pturns. */
 static int apply_red(int *owner, int *strength, int act, int *pturns, int *winner) {
     if (act == A_END) {
         end_turn(owner, strength);
@@ -734,7 +725,6 @@ static int apply_red(int *owner, int *strength, int act, int *pturns, int *winne
         return 0;
     } else {
         int frm = act >> 8, to = act & 0xFF;
-        /* legality already guaranteed by enumeration; resolve */
         resolve_battle(owner, strength, frm, to);
         int w = check_winner(owner);
         int c[NF]; counts(owner, c);
@@ -743,15 +733,13 @@ static int apply_red(int *owner, int *strength, int act, int *pturns, int *winne
     }
 }
 
-/* root_priors: optional length-(MAXN*64+1)-ish sparse not feasible; instead pass
- * priors indexed by action via a callback is overkill. We accept NULL (uniform)
- * or a dense array `pri` of length 4097 mapping action->prior (caller fills only
- * legal entries; we renormalize over legal). nroll = rollouts per leaf. */
+/* Run the C UCT search from (owner_in, strength_in). Reports the root's legal
+ * children: out_acts[k] (frm<<8|to, or A_END), out_visits[k], out_q[k] (backed-up
+ * RED win-prob = winexp). Returns child count, or -1 on pool alloc failure.
+ * nroll = rollouts averaged per leaf. */
 int uct_search(const int *owner_in, const int *strength_in, int root_turns,
                int sims, double c_puct, int nroll,
-               const double *root_pri, int *out_acts, int *out_visits,
-               double *out_q) {
-    /* size pools to the sim budget */
+               int *out_acts, int *out_visits, double *out_q) {
     long ncap = (long)sims * 24 + 4096;
     long ecap = ncap * 40;
     if (!ensure_pools(ncap, ecap)) return -1;
@@ -766,57 +754,31 @@ int uct_search(const int *owner_in, const int *strength_in, int root_turns,
         memcpy(strength, strength_in, N * sizeof(int));
         int turns = root_turns;
         int cur = root;
-        /* path of (node, edge-index) for backup */
         static int path_eidx[16384]; int plen = 0;
         int leaf_value_set = 0; double leaf_value = 0.0;
 
         for (;;) {
             if (plen >= 16384) { leaf_value = NODES[cur].v; leaf_value_set = 1; break; }
             MNode *node = &NODES[cur];
-            /* terminal node: a prior sim's stochastic battle reached a winner here
-             * and cached a terminal child (n_children=0, child_off=-1). A later sim
-             * whose dice DON'T end the game can walk into this same child; it must be
-             * treated as a leaf, never run through select (off=child_off+0=-1 would
-             * read E_*[-1] just below the edge pool -> SIGSEGV). */
+            /* terminal node cached by a prior sim: treat as leaf (never select). */
             if (node->terminal) { leaf_value = node->v; leaf_value_set = 1; break; }
             if (!node->expanded) {
-                static double hscore[MAXCHILD];
-                int nc;
-                if (HEUR_PRIORS) nc = ranked_fill(owner, strength, legal, hscore);
-                else             nc = legal_red(owner, strength, legal);
+                int nc = legal_red(owner, strength, legal);
                 if (next_edge + nc > EDGE_CAP) { leaf_value = node->v; leaf_value_set = 1; break; }
                 node->child_off = (int)next_edge;
                 node->n_children = nc;
                 next_edge += nc;
-                /* priors: heuristic softmax (every node), root_pri (root only), or uniform */
-                double smax = -1e30;
-                if (HEUR_PRIORS) for (int k = 0; k < nc; k++) if (hscore[k] > smax) smax = hscore[k];
-                double psum = 0.0;
                 for (int k = 0; k < nc; k++) {
                     int off = node->child_off + k;
                     E_ACT[off] = legal[k];
                     E_CHILD[off] = -1;
                     E_N[off] = 0;
                     E_W[off] = 0.0;
-                    double p;
-                    if (HEUR_PRIORS) {
-                        p = exp(PRIOR_BETA * (hscore[k] - smax));
-                    } else if (root_pri && cur == root) {
-                        int idx = (legal[k] == A_END) ? PRI_END : legal[k];
-                        p = root_pri[idx];
-                    } else {
-                        p = 1.0 / nc;
-                    }
-                    E_P[off] = p;
-                    psum += p;
+                    E_P[off] = 1.0 / nc;     /* uniform priors */
                 }
-                if (psum > 0) for (int k = 0; k < nc; k++) E_P[node->child_off + k] /= psum;
-                /* leaf eval = rollout average (rotate ensemble policies if set) */
+                /* leaf eval = rollout average */
                 double v = 0.0;
-                for (int r = 0; r < nroll; r++) {
-                    if (ENS_N > 0) RW = ENS[r % ENS_N];
-                    v += rollout_v(owner, strength, turns);
-                }
+                for (int r = 0; r < nroll; r++) v += rollout(owner, strength, turns);
                 v /= (double)nroll;
                 node->expanded = 1;
                 node->v = v;
@@ -843,7 +805,6 @@ int uct_search(const int *owner_in, const int *strength_in, int root_turns,
             int term = apply_red(owner, strength, act, &turns, &winner);
             if (term) {
                 leaf_value = winner ? 1.0 : 0.0; leaf_value_set = 1;
-                /* mark child terminal so it isn't re-expanded */
                 if (E_CHILD[off] < 0) {
                     int cn = new_node();
                     if (cn >= 0) { NODES[cn].expanded = 1; NODES[cn].terminal = 1; NODES[cn].v = leaf_value; E_CHILD[off] = cn; }
@@ -867,20 +828,19 @@ int uct_search(const int *owner_in, const int *strength_in, int root_turns,
         }
     }
 
-    /* report root children visit counts */
+    /* report root children visit counts + backed-up Q */
     MNode *rn = &NODES[root];
     int nc = rn->n_children;
     for (int k = 0; k < nc; k++) {
         int off = rn->child_off + k;
         out_acts[k] = E_ACT[off];
         out_visits[k] = E_N[off];
-        /* per-child Q = backed-up mean value = RED win-prob estimate for this move */
         if (out_q) out_q[k] = (E_N[off] > 0) ? (E_W[off] / E_N[off]) : rn->v;
     }
     return nc;
 }
 
-/* expose primitives for parity testing under a chosen rng */
+/* expose primitives for the Python client + parity/regression testing */
 void ext_resolve_battle(int *owner, int *strength, int frm, int to) {
     resolve_battle(owner, strength, frm, to);
 }

@@ -371,10 +371,9 @@ def main():
 
     import sys
     sys.path.insert(0, os.path.dirname(HERE))
-    from fmcts import WSETS
     config = {
         'engine': 'fast_c_uct', 'neural_net': False, 'sims': args.sims,
-        'wset': args.wset, 'ranked_weights': WSETS[args.wset],
+        'wset': args.wset, 'ranked_weights': 'C1 (baked into fast_engine.c)',
         'c_puct': args.c_puct, 'nroll': args.nroll, 'priors': 'uniform',
         'rollout_policy': 'ranked_C1', 'win_nodes': WIN_NODES,
         'max_rounds': args.max_rounds, 'max_attacks': args.max_attacks,

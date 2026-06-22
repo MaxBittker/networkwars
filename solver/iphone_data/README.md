@@ -19,24 +19,22 @@ acted on with synthetic taps.
 | `ocrserve.swift`/`ocrserve` | persistent Vision OCR: reads image paths on stdin, keeps Vision warm (~70ms/call vs ~240ms). `parse.py` uses this; falls back to `ocr`. |
 | `nwcap.sh` | `shot <file>` / `tap <lx> <ly>` (logical = capture px / 2) / `info`. |
 | `parse.py` | screenshot → state JSON: nodes `{id,col,row,owner,strength,px,py}`, counts, grid. Self-calibrating digit OCR (Vision + template-match fallback). |
-| `nwmove.js` | state JSON → one best RED move via `mcts.js` (rebuilds adjacency from grid coords = 8-connectivity). |
-| `nwmove_nn.py` | state JSON → one best RED move via the neural PUCT MCTS (`mcts.py` + `sl_cnn.pt`). One-shot CLI; loads the model each call. |
-| `nwserver.py` | **persistent** neural-MCTS server (model loaded once) + **live dashboard**. `POST /move`, `GET /state`, dashboard at `/`. |
-| `play.py` | full game driver: capture→parse→mcts→tap loop, diff-settle validation, game-over detection. `--engine nn` auto-starts `nwserver.py`. |
+| `nwmove_fast.py` | state JSON → one best RED move via the C-UCT search (`fast_engine.so` via `fastnw`). One-shot CLI; emits `winexp` + top candidates. |
+| `play.py` | full game driver: capture→parse→C-UCT move→tap loop, diff-settle validation, game-over detection. |
+| `series.py` | run N live games end-to-end with the C-UCT engine; logs rich JSONL + telemetry to `dashserver.py`. Never surrenders. |
+| `dashserver.py` | live dashboard: receives per-move telemetry from `series.py`, renders board + winexp + search-tree. |
 
 ## Usage
 ```bash
 ./nwcap.sh shot board.png
 ../.venv/bin/python parse.py board.png            # -> state JSON
-node nwmove.js state.json strong                  # -> {"action":"attack","from":..,"to":..,"fromPx":..}
+../.venv/bin/python nwmove_fast.py state.json --sims 8000   # -> {"action":"attack",...,"winexp":..}
 
-# play a full game with the JS flat MCTS:
-../.venv/bin/python play.py --max-rounds 30 --rollout strong
+# play a full game with the C-UCT engine:
+../.venv/bin/python play.py --max-rounds 30 --sims 8000
 
-# play with the neural MCTS (sl_cnn.pt) + live dashboard (opens a persistent server):
-../.venv/bin/python play.py --engine nn --sims 100 --max-rounds 30
-#   -> prints a dashboard URL (http://127.0.0.1:8777/) showing the model's board
-#      view, the MCTS search-tree visit bars, and estimated win-rate over time.
+# run a live series with the dashboard:
+../.venv/bin/python series.py --games 20 --sims 8000
 ```
 
 **Performance** (the phone, not the AI, is the bottleneck — search is ~40ms/move):

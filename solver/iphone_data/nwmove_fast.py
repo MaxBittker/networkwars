@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """Bridge: parsed screenshot state -> ONE best RED move via the FAST C UCT.
 
-Runs the C open-loop PUCT search (fast_engine.so via fastnw) with the tuned
-ranked rollout policy and NO neural net (pure MCTS). The ~78-80% seed-free config.
+Runs the C open-loop PUCT search (fast_engine.so via fastnw): pure MCTS with the
+baked-in ranked C1 rollout policy and no neural net.
 
 Reads a state JSON (from parse.py) on argv[1]. Builds adjacency = 8-connectivity
 among surviving grid cells (the engine's lattice), runs the C UCT search, and
 reports RED's single best action:
   {"action":"attack","from":id,"to":id,"fromPx":[x,y],"toPx":[x,y]}  or  {"action":"stop"}
 
-Usage: nwmove_fast.py state.json [--sims 8000] [--wset C1] [--c-puct 2.5]
-                       [--nroll 1] [--policy 1] [--turns N]
+Usage: nwmove_fast.py state.json [--sims 8000] [--c-puct 2.5] [--nroll 1] [--turns N]
 """
 import argparse
 import json
@@ -19,13 +18,11 @@ import sys
 
 import numpy as np
 
-RL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, RL_DIR)
+SOLVER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, SOLVER_DIR)
 
-import network_wars as nw
-from network_wars import HUMAN, State, Node as GNode
+from network_wars import State, Node as GNode
 import fastnw
-from fmcts import WSETS
 
 
 def build_state(js):
@@ -41,8 +38,6 @@ def build_state(js):
                 adj[j].append(i)
     s = State()
     s.nodes, s.adj, s.links = nodes, adj, []
-    s.rng = None
-    s.policy_rng = None
     return s
 
 
@@ -52,8 +47,8 @@ def main():
     ap.add_argument('--sims', type=int, default=8000)
     ap.add_argument('--c-puct', type=float, default=2.5)
     ap.add_argument('--nroll', type=int, default=1)
-    ap.add_argument('--wset', default='C1')
-    ap.add_argument('--policy', type=int, default=1)
+    ap.add_argument('--wset', default='C1', help='accepted for back-compat; ignored (C1 baked in)')
+    ap.add_argument('--policy', type=int, default=1, help='accepted for back-compat; ignored')
     ap.add_argument('--turns', type=int, default=1)
     ap.add_argument('--sim-seed', type=int, default=0x12345678)
     args = ap.parse_args()
@@ -62,19 +57,13 @@ def main():
     px = {n['id']: [n['px'], n['py']] for n in js['nodes']}
     state = build_state(js)
 
-    # configure the C search exactly like fmcts best config (ranked rollout, no net)
+    # pure C-UCT with the baked-in ranked C1 rollout policy (no neural net)
     fastnw.set_topology(state)
-    fastnw.set_red_rollout_policy(args.policy)
-    if args.wset in WSETS:
-        fastnw.set_ranked_weights(WSETS[args.wset])
-    fastnw.set_heur_priors(0)            # pure UCT: uniform priors
-    fastnw.set_roll_temp(0.0)
-    fastnw.set_ensemble([])
     fastnw.use_sim(args.sim_seed)        # private seed-free sim rng (no seed exploitation)
 
     owner, strength = fastnw.board_arrays(state)
     acts, visits, q = fastnw.uct_search(owner, strength, args.turns, args.sims,
-                                        args.c_puct, args.nroll, None, return_q=True)
+                                        args.c_puct, args.nroll, return_q=True)
     if len(acts) == 0:
         print(json.dumps({'action': 'stop', 'winexp': None}))
         return
