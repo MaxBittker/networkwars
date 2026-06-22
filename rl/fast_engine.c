@@ -22,7 +22,7 @@
 #define NF 5            /* factions: 0=red, 1..4 bots */
 #define WIN_NODES 24
 #define MAX_TURNS 300
-#define ATTACKER_WIN_P 0.55
+#define ATTACKER_WIN_P 0.60
 #define A_END (-1)          /* action sentinel: distinct from any frm<<8|to (>=0) */
 #define MAXCHILD 512        /* max legal RED actions at one node */
 

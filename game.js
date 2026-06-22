@@ -12,7 +12,7 @@ const GRID_ROWS = 7;       // real iOS app uses a 6-wide x 7-tall grid (measured
 const GRID_COLS = 6;       // 42 grid cells...
 const TARGET_NODES = 30;   // ...minus 12 random vertices = 30 nodes, 6 per faction
 const WIN_NODES = 24;
-const ATTACKER_WIN_P = 0.55;
+const ATTACKER_WIN_P = 0.60;
 
 // --- seeded RNG (mulberry32) -----------------------------------------------
 function makeRng(seed) {
@@ -37,6 +37,27 @@ function shuffle(arr, rng) {
 // does not scatter ownership uniformly). Seeded territorial growth with scatter.
 const OWNER_SEEDS = 1;       // initial seeds per faction
 const OWNER_SCATTER = 0.6;   // P(a growth step jumps to a random free node => new cluster)
+
+// Initial deal: the real iOS app gives EVERY faction a total strength of exactly 20,
+// drawn as one of 4 fixed 6-node templates (frequencies measured over 96 live games).
+// This replaces the old i.i.d. (50%->1 else 4-8) deal, whose per-faction totals swung
+// wildly (spread ~15 vs the real ~0) — the main sim-vs-reality gap. Kept in sync with
+// rl/network_wars.py IOS_DEAL_TEMPLATES.
+const IOS_DEAL_TEMPLATES = [   // [6 per-faction strengths summing to 20, probability]
+  [[1, 1, 1, 5, 6, 6], 0.385],
+  [[1, 1, 1, 1, 8, 8], 0.327],
+  [[1, 1, 4, 4, 5, 5], 0.222],
+  [[1, 3, 4, 4, 4, 4], 0.066],
+];
+function pickIosTemplate(rng) {
+  const r = rng();
+  let acc = 0;
+  for (const [tmpl, prob] of IOS_DEAL_TEMPLATES) {
+    acc += prob;
+    if (r < acc) return tmpl;
+  }
+  return IOS_DEAL_TEMPLATES[IOS_DEAL_TEMPLATES.length - 1][0];
+}
 function assignOwnership(nodes, adj, rng) {
   const N = nodes.length;
   const ids = Array.from({ length: N }, (_, i) => i);
@@ -148,16 +169,14 @@ function buildBoard(rng) {
   // node (starting a new cluster). Tuned to the real distribution (n=3 openings).
   assignOwnership(nodes, adj, rng);
 
-  // initial strengths: measured from the real app — a bimodal distribution, not 1..5.
-  // ~half the nodes start at 1; the rest cluster in 4..8 (mean ~6). Observed sample
-  // (2 openings, 60 nodes): {1:31, 4:2, 5:9, 6:12, 8:6}. Model: 50% -> 1, else 4..8.
-  // Then guarantee every faction can move on turn 1.
-  for (const n of nodes) n.strength = rng() < 0.5 ? 1 : 4 + Math.floor(rng() * 5);
+  // iOS deal: each faction's 6 nodes get one of 4 fixed templates (each sums to 20),
+  // shuffled across that faction's nodes -> every faction starts with equal total
+  // strength (the real spread~0 balance). Every template includes nodes >1, so each
+  // faction can always move on turn 1 (no separate guarantee needed).
   for (const f of FACTIONS) {
     const owned = nodes.filter(n => n.owner === f);
-    if (owned.every(n => n.strength <= 1)) {
-      owned[Math.floor(rng() * owned.length)].strength = 2;
-    }
+    const vals = shuffle(pickIosTemplate(rng).slice(), rng);
+    owned.forEach((n, i) => { n.strength = vals[i]; });
   }
 
   return { nodes, links, adj };

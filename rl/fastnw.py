@@ -11,7 +11,8 @@ import numpy as np
 
 import network_wars as nw
 
-_SO = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fast_engine.so')
+_SO = os.environ.get('NW_ENGINE_SO') or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'fast_engine.so')
 _lib = ctypes.CDLL(_SO)
 
 _i32p = ctypes.POINTER(ctypes.c_int)

@@ -77,63 +77,69 @@ def publish_move(t):
 
 
 DASHBOARD = r"""<!doctype html><html><head><meta charset=utf-8>
-<title>Network Wars — pure C-UCT (b8k) series</title>
+<title>Network Wars — C-UCT</title>
 <style>
- body{margin:0;background:#0c0f17;color:#dce3f0;font:13px/1.4 -apple-system,Menlo,monospace}
- h2{font-size:13px;margin:0 0 8px;color:#8aa0c8;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
- .wrap{display:grid;grid-template-columns:460px 1fr;gap:18px;padding:18px;max-width:1240px}
- .card{background:#141926;border:1px solid #222a3d;border-radius:10px;padding:14px}
- .board{display:grid;gap:5px}
- .cell{aspect-ratio:1;border-radius:8px;display:flex;align-items:center;justify-content:center;
-   font-weight:700;font-size:15px;color:#fff;position:relative;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
- .empty{background:#0e1220;box-shadow:none}
- .src{outline:3px solid #fff;outline-offset:-3px}
- .dst{outline:3px dashed #fff;outline-offset:-3px}
+ body{margin:0;background:#d9d9d9;color:#1e1e1e;
+   font:12px/1.35 "Segoe UI","Noto Sans","Helvetica Neue",Arial,sans-serif}
+ .wrap{display:grid;grid-template-columns:440px 1fr;gap:10px;padding:10px;max-width:1180px}
+ /* QGroupBox: 1px frame with the title notched onto the top border */
+ .gb{position:relative;background:#efefef;border:1px solid #a0a0a0;border-radius:3px;
+   margin-top:9px;padding:16px 10px 10px}
+ .gb>.t{position:absolute;top:-8px;left:9px;padding:0 4px;background:#efefef;
+   color:#3a3a3a;font-weight:600;font-size:11px}
+ .board{display:grid;gap:3px}
+ .cell{aspect-ratio:1;border:1px solid #888;display:flex;align-items:center;justify-content:center;
+   font-weight:600;font-size:14px;color:#fff;position:relative;
+   text-shadow:0 1px 1px rgba(0,0,0,.45)}
+ .empty{background:#cfcfcf;border-color:#bcbcbc;box-shadow:inset 1px 1px 2px rgba(0,0,0,.12)}
+ .src{outline:2px solid #1e1e1e;outline-offset:-2px}
+ .dst{outline:2px dashed #1e1e1e;outline-offset:-2px}
  .bars div{margin:3px 0}
- .bar{height:20px;border-radius:4px;background:#2a3550;position:relative;overflow:hidden}
- .barfill{height:100%;background:linear-gradient(90deg,#3b6fe0,#6f9bff)}
- .barlbl{position:absolute;left:7px;top:2px;font-size:11px;color:#fff;text-shadow:0 1px 2px #000;white-space:nowrap}
- .barnum{position:absolute;right:7px;top:2px;font-size:11px;color:#cfe}
- .big{font-size:34px;font-weight:700}
- .row{display:flex;gap:14px;align-items:baseline}
- .muted{color:#6b7a99}
- .counts span{display:inline-block;margin-right:10px;font-weight:700}
- .tally{display:flex;gap:22px;align-items:baseline}
- .tally .big{font-size:40px}
- .win{color:#39b54a}.loss{color:#e0473b}
+ .bar{height:18px;background:#c4c4c4;border:1px solid #9a9a9a;border-radius:2px;
+   position:relative;overflow:hidden}
+ .barfill{height:100%;background:linear-gradient(#5ba3d9,#3a86c8)}
+ .barlbl{position:absolute;left:6px;top:2px;font-size:11px;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.6);white-space:nowrap}
+ .barnum{position:absolute;right:6px;top:2px;font-size:11px;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.6)}
+ .big{font-size:30px;font-weight:600;font-variant-numeric:tabular-nums}
+ .row{display:flex;gap:12px;align-items:baseline}
+ .muted{color:#5a5a5a}
+ .counts span{display:inline-block;margin-right:10px;font-weight:600}
+ .tally{display:flex;gap:18px;align-items:baseline}
+ .tally .big{font-size:36px}
+ .win{color:#2e8b30}.loss{color:#c0392b}
+ img{border:1px solid #a0a0a0}
 </style></head><body>
 <div class=wrap>
  <div>
-  <div class=card><h2>Parsed (left) &nbsp;vs&nbsp; screenshot (right)</h2>
-   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start">
+  <div class=gb><span class=t>Board</span>
+   <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:start">
     <div id=board class=board></div>
-    <img id=shot style="width:100%;border-radius:6px;display:block" />
+    <img id=shot style="width:100%;display:block" />
    </div>
-   <div class=counts id=counts style=margin-top:10px></div>
-   <div class=muted id=phase style=margin-top:6px></div>
-   <div class=muted style=margin-top:2px>left=AI's reading · right=phone · settled-frame mismatch = bad read</div>
+   <div class=counts id=counts style=margin-top:8px></div>
+   <div class=muted id=phase style=margin-top:4px></div>
   </div>
- </div>
- <div>
-  <div class=card><h2>Driver stage</h2>
-   <div class=row><div class=big id=stage style=font-size:22px>—</div>
-     <div class=big id=stageT style="font-size:30px;font-variant-numeric:tabular-nums">—</div></div>
+  <div class=gb><span class=t>Stage</span>
+   <div class=row><div class=big id=stage style=font-size:20px>—</div>
+     <div class=big id=stageT style="font-size:26px">—</div></div>
    <div class=muted id=stagehint style=margin-top:2px></div>
   </div>
-  <div class=card style=margin-top:18px><h2>Series tally — pure C-UCT, 16000 sims</h2>
+  <div class=gb><span class=t>Series</span>
    <div class=tally><div class=big id=wr>—</div>
      <div><div id=tally class=muted></div><div id=cfg class=muted></div></div></div>
   </div>
-  <div class=card style=margin-top:18px><h2>RED win % — calibrated value-leaf (this game)</h2>
+ </div>
+ <div>
+  <div class=gb><span class=t>RED win %</span>
    <div class=row><div class=big id=val>—</div><div class=muted id=valsub></div></div>
    <div class=muted style="margin:4px 0" id=vallegend></div>
    <div id=chart></div>
   </div>
-  <div class=card style=margin-top:18px><h2>Color power over time (sum of node strength)</h2>
+  <div class=gb><span class=t>Color power</span>
    <div class=row id=pwrlegend style=margin-bottom:6px></div>
    <div id=pwrchart></div>
   </div>
-  <div class=card style=margin-top:18px><h2>Search tree — candidate moves (visits)</h2>
+  <div class=gb><span class=t>Search tree</span>
    <div class=muted id=treemeta style=margin-bottom:8px></div>
    <div class=bars id=bars></div>
   </div>
@@ -196,8 +202,8 @@ async function tick(){
    (s.value!=null?('MCTS Q '+(s.value*100).toFixed(1)+'%  ·  '):'')
    +'RED nodes: '+(s.counts?.red??'?')+'  ·  '+h.length+' moves';
  document.getElementById('vallegend').innerHTML=
-   '<span style="color:#6fd0ff">━ value-leaf (calibrated)</span>'
-   +' &nbsp; <span style="color:#6f9bff;opacity:.6">━ MCTS Q</span>';
+   '<span style="color:#2a6db0">━ value-leaf</span>'
+   +' &nbsp; <span style="color:#7aa6d0">━ MCTS Q</span>';
  const sv=document.getElementById('chart');
  if(h.length>1){
   const W=700,H=140,n=h.length;
@@ -210,13 +216,13 @@ async function tick(){
     return {line:pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' '),pts:pts};};
   const fp=path(fit), mp=path(d=>d.value);
   const area='M'+fp.pts[0][0].toFixed(1)+' '+H+' '+fp.pts.map(p=>'L'+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ')+' L'+W+' '+H+' Z';
-  const grid=v=>'<line x1="0" y1="'+Y(v).toFixed(1)+'" x2="'+W+'" y2="'+Y(v).toFixed(1)+'" stroke="#2a3550" stroke-dasharray="4"/><text x="4" y="'+(Y(v)-3).toFixed(1)+'" fill="#6b7a99" font-size="11">'+(v*100).toFixed(0)+'%</text>';
+  const grid=v=>'<line x1="0" y1="'+Y(v).toFixed(1)+'" x2="'+W+'" y2="'+Y(v).toFixed(1)+'" stroke="#c4c4c4" stroke-dasharray="4"/><text x="4" y="'+(Y(v)-3).toFixed(1)+'" fill="#707070" font-size="11">'+(v*100).toFixed(0)+'%</text>';
   let gl='';[0.5,Math.round(lo*100)/100,Math.round(hi*100)/100].forEach(v=>{if(v>lo&&v<hi)gl+=grid(v)});
   sv.innerHTML='<svg width="100%" height="140" viewBox="0 0 700 140" preserveAspectRatio="none">'
-   +gl+'<path d="'+area+'" fill="rgba(111,208,255,.12)"/>'
-   +'<path d="'+mp.line+'" fill="none" stroke="#6f9bff" stroke-width="1.5" stroke-opacity="0.55"/>'
-   +'<path d="'+fp.line+'" fill="none" stroke="#6fd0ff" stroke-width="2"/>'
-   +fp.pts.map(p=>'<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.5" fill="#6fd0ff"/>').join('')
+   +gl+'<path d="'+area+'" fill="rgba(42,109,176,.10)"/>'
+   +'<path d="'+mp.line+'" fill="none" stroke="#7aa6d0" stroke-width="1.5"/>'
+   +'<path d="'+fp.line+'" fill="none" stroke="#2a6db0" stroke-width="2"/>'
+   +fp.pts.map(p=>'<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.5" fill="#2a6db0"/>').join('')
    +'</svg>';
  }
  // color power over time (stacked bar, one segment per faction per step)
@@ -238,7 +244,7 @@ async function tick(){
    });
   });
   const Y=v=>H-v/hi*H;
-  const grid=v=>'<line x1="0" y1="'+Y(v).toFixed(1)+'" x2="'+W+'" y2="'+Y(v).toFixed(1)+'" stroke="#2a3550" stroke-dasharray="4"/><text x="4" y="'+(Y(v)-3).toFixed(1)+'" fill="#6b7a99" font-size="11">'+v+'</text>';
+  const grid=v=>'<line x1="0" y1="'+Y(v).toFixed(1)+'" x2="'+W+'" y2="'+Y(v).toFixed(1)+'" stroke="#c4c4c4" stroke-dasharray="4"/><text x="4" y="'+(Y(v)-3).toFixed(1)+'" fill="#707070" font-size="11">'+v+'</text>';
   let gl='';[hi,Math.round(hi/2)].forEach(v=>{if(v>0)gl+=grid(v)});
   pc.innerHTML='<svg width="100%" height="140" viewBox="0 0 700 140" preserveAspectRatio="none">'+rects+gl+'</svg>';
   document.getElementById('pwrlegend').innerHTML=cols.map(k=>{
@@ -249,11 +255,11 @@ async function tick(){
  // search tree bars
  const bars=document.getElementById('bars'),t=s.top||[];
  const mx=Math.max(1,...t.map(x=>x.visits));
- document.getElementById('treemeta').textContent=t.length?('total visits: '+s.total_visits+'  (chosen = top bar)'):'(end turn — no search)';
+ document.getElementById('treemeta').textContent=t.length?(s.total_visits+' visits'):'end turn';
  bars.innerHTML=t.map((x,i)=>{
   const w=(x.visits/mx*100).toFixed(1);
   const q=x.q==null?'':(x.q*100).toFixed(0)+'% Q';
-  return '<div><div class=bar><div class=barfill style="width:'+w+'%;'+(i==0?'background:linear-gradient(90deg,#39b54a,#7fe08a)':'')+'"></div>'
+  return '<div><div class=bar><div class=barfill style="width:'+w+'%;'+(i==0?'background:linear-gradient(#5dbf5f,#2e8b30)':'')+'"></div>'
    +'<span class=barlbl>'+x.label+'</span><span class=barnum>'+x.visits+'  '+q+'</span></div></div>';
  }).join('');
 }

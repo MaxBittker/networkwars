@@ -34,11 +34,5 @@ c/nw_agg
 # compiled C hot-path shared lib (built from rl/fast_engine.c)
 rl/fast_engine.so
 
-# runtime window-bounds cache (machine/session-specific; self-heals)
-rl/iphone_data/.wincache
-
-# per-seed experiment output — regenerable via rl/per_seed.py
-rl/psresults/
-
 # Claude Code worktree scaffolding
 .claude/

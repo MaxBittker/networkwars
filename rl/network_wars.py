@@ -1,9 +1,14 @@
-"""Network Wars — Python port of game.js + a Gymnasium env for PufferLib.
+"""Network Wars — sim of the real iOS app + a Gymnasium env for PufferLib.
 
-The engine half of this file is a line-for-line port of ../game.js. It consumes
-the seeded mulberry32 RNG in exactly the same order as the JS engine, so a game
-played from the same seed produces an identical board, identical battles, and an
-identical winner (verified by verify_port.py against a JS trace dump).
+The engine models the REAL iOS game (the source of truth), which is what we play
+against and train for. Topology (6x7 king-adjacency lattice), reinforcement, and
+the four bots' targeting are game.js mechanics that were verified to match iOS.
+Two things were re-calibrated from live play and intentionally DIVERGE from game.js
+(so verify_port.py against the JS trace no longer applies):
+  - DEAL: every faction starts with total strength exactly 20, drawn as one of 4
+    fixed templates (IOS_DEAL_TEMPLATES) — not game.js's i.i.d. 50%->1/else-4-8.
+  - BATTLE: ATTACKER_WIN_P = 0.60 (measured), not 0.55.
+See memories sim-vs-real-deal-imbalance and sim-vs-real-battle-mismatch.
 
 The env half exposes RED's turn as a Gymnasium env:
   observation: 36 grid cells x 7 features + 6 globals + 289-bit legal-action mask
@@ -23,9 +28,34 @@ GRID_ROWS = 7       # real iOS app uses a 6-wide x 7-tall grid (measured via mir
 GRID_COLS = 6
 TARGET_NODES = 30
 WIN_NODES = 24
-ATTACKER_WIN_P = 0.55
+# Per-round attacker-win probability. Measured from 1629 live iOS battles (MLE ~0.60);
+# see memory sim-vs-real-battle-mismatch. (The old game.js value was 0.55.)
+ATTACKER_WIN_P = 0.60
 
-MAX_TURNS = 300  # same draw/loss cutoff as sim.js
+MAX_TURNS = 300  # draw/loss cutoff
+
+# Initial deal: the real iOS app gives EVERY faction a total strength of exactly 20,
+# drawn as one of 4 fixed 6-node templates (frequencies measured over 96 live games;
+# see memory sim-vs-real-deal-imbalance). This is the source of truth — it replaces
+# game.js's i.i.d. (50%->1 else 4-8) deal, whose per-faction totals swung wildly
+# (spread ~15 vs the real ~0), which was the main sim-vs-reality gap.
+IOS_DEAL_TEMPLATES = [   # (6 per-faction strengths summing to 20, probability)
+    ((1, 1, 1, 5, 6, 6), 0.385),
+    ((1, 1, 1, 1, 8, 8), 0.327),
+    ((1, 1, 4, 4, 5, 5), 0.222),
+    ((1, 3, 4, 4, 4, 4), 0.066),
+]
+
+
+def _pick_ios_template(rng):
+    """Weighted pick of a per-faction strength template using the seeded rng."""
+    r = rng()
+    acc = 0.0
+    for tmpl, prob in IOS_DEAL_TEMPLATES:
+        acc += prob
+        if r < acc:
+            return tmpl
+    return IOS_DEAL_TEMPLATES[-1][0]
 
 M32 = 0xFFFFFFFF
 
@@ -189,14 +219,15 @@ def build_board(rng):
     # not a uniform scatter.
     assign_ownership(nodes, adj, rng)
 
-    # bimodal initial strengths (match game.js): 50% -> 1, else 4..8.
-    # JS: rng() < 0.5 ? 1 : 4 + floor(rng()*5)  — second rng() only in the else.
-    for n in nodes:
-        n.strength = 1 if rng() < 0.5 else 4 + int(rng() * 5)
+    # iOS deal: each faction's 6 nodes get one of 4 fixed templates (each sums to
+    # 20), shuffled across that faction's nodes -> every faction starts with equal
+    # total strength (the real spread~0 balance).
     for f in FACTIONS:
         owned = [n for n in nodes if n.owner == f]
-        if all(n.strength <= 1 for n in owned):
-            owned[int(rng() * len(owned))].strength = 2
+        vals = list(_pick_ios_template(rng))
+        shuffle(vals, rng)
+        for n, s in zip(owned, vals):
+            n.strength = s
 
     state = State()
     state.nodes, state.links, state.adj = nodes, links, adj

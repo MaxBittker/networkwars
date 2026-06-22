@@ -1,9 +1,13 @@
-"""Verify the Python engine port against the JS engine.
+"""JS<->Python engine parity check.
+
+game.js and network_wars.py both model the real iOS app (the source of truth):
+they share the iOS deal (every faction totals 20, 4 fixed templates) and battle
+(ATTACKER_WIN_P=0.60), so this check should PASS bit-for-bit. The iOS recalibration
+was ported into game.js too, restoring full parity. See memories
+sim-vs-real-deal-imbalance and sim-vs-real-battle-mismatch.
 
 Runs `node verify_dump.js` (200 games each for safeExpand and randomAll) and
-replays the same seeds in Python. Every game must end with the same winner,
-turn count, and final node counts — this exercises the RNG, board generation,
-battle resolution, reinforcements, and all four bots end to end.
+replays the same seeds in Python.
 """
 
 import json
