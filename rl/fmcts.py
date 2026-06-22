@@ -7,7 +7,7 @@ the true one — no seed exploitation (search never sees the game seed).
 
 Build the engine first:
     cc -O3 -ffast-math -shared -fPIC fast_engine.c -o fast_engine.so
-Best config (see rl/ALPHAGO.md): ranked C1 weights, c_puct=2.5, sims=1600-3200.
+Best config: ranked C1 weights, c_puct=2.5, sims=1600-3200.
     uv run python fmcts.py --games 120 --sims 3200 --wset C1 --c-puct 2.5
 """
 import argparse

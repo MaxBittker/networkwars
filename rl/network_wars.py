@@ -1,26 +1,18 @@
-"""Network Wars — sim of the real iOS app + a Gymnasium env for PufferLib.
+"""Network Wars — readable Python engine for the real iOS app (the source of truth).
 
-The engine models the REAL iOS game (the source of truth), which is what we play
-against and train for. Topology (6x7 king-adjacency lattice), reinforcement, and
-the four bots' targeting are game.js mechanics that were verified to match iOS.
-Two things were re-calibrated from live play and intentionally DIVERGE from game.js
-(so verify_port.py against the JS trace no longer applies):
+This is the reference spec the C hot-path (fast_engine.c) is validated against
+(validate_fast.py) and that fmcts.py uses to play the real seeded game while it
+plans with the C UCT search. Topology (6x7 king-adjacency lattice), reinforcement,
+and the four bots' targeting are game.js mechanics that were verified to match iOS.
+Two things were re-calibrated from live play and intentionally DIVERGE from game.js:
   - DEAL: every faction starts with total strength exactly 20, drawn as one of 4
     fixed templates (IOS_DEAL_TEMPLATES) — not game.js's i.i.d. 50%->1/else-4-8.
-  - BATTLE: ATTACKER_WIN_P = 0.60 (measured), not 0.55.
+  - BATTLE: power-ratio per-round dice (see _battle_q / rl/BATTLE_FUNCTION.md),
+    not the legacy constant-p iterated Bernoulli.
 See memories sim-vs-real-deal-imbalance and sim-vs-real-battle-mismatch.
-
-The env half exposes RED's turn as a Gymnasium env:
-  observation: 36 grid cells x 7 features + 6 globals + 289-bit legal-action mask
-  action:      Discrete(289) = 36 cells x 8 directions, plus action 288 = end turn
-One env step is one attack (a full battle) or an end-turn (which runs RED's
-reinforcements and all four bot turns).
 """
 
 import math
-
-import numpy as np
-import gymnasium
 
 FACTIONS = ['red', 'green', 'yellow', 'blue', 'purple']
 BOTS = ['green', 'yellow', 'blue', 'purple']
@@ -431,133 +423,3 @@ def random_all(state):
         m = moves[int(state.policy_rng() * len(moves))]
         resolve_battle(state, m[0], m[1])
         moves = legal_moves(state, HUMAN)
-
-
-# --- Gymnasium env --------------------------------------------------------------
-# 8 lattice directions as (dy, dx); a cell at (y, x) can be linked to (y+dy, x+dx)
-DIRS = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, -1), (1, 1), (-1, -1), (-1, 1)]
-N_CELLS = GRID_ROWS * GRID_COLS          # 36
-N_ACTIONS = N_CELLS * len(DIRS) + 1      # 289; last = end turn
-END_TURN = N_ACTIONS - 1
-N_CELL_FEATS = 8                         # 5 owner one-hot + strength + exists + in-largest-comp
-N_GLOBALS = 12                           # 5 counts + turn + 5 largest-comp sizes + red border size
-OBS_DIM = N_CELLS * N_CELL_FEATS + N_GLOBALS + N_ACTIONS
-
-FACTION_IDX = {f: i for i, f in enumerate(FACTIONS)}
-STRENGTH_NORM = 30.0
-SHAPING = 0.03  # reward per net RED node gained/lost in a step
-
-
-class NetworkWarsEnv(gymnasium.Env):
-    """RED's seat in Network Wars. One step = one attack or end-turn."""
-
-    def __init__(self, seed=None, fixed_seed=None):
-        self.observation_space = gymnasium.spaces.Box(
-            low=0.0, high=1.0, shape=(OBS_DIM,), dtype=np.float32)
-        self.action_space = gymnasium.spaces.Discrete(N_ACTIONS)
-        self.render_mode = None
-        self.fixed_seed = fixed_seed  # play this exact game seed every episode
-        self._seed_rng = np.random.default_rng(seed)
-        self.state = None
-        self.turns = 0
-
-    def _game_seed(self):
-        if self.fixed_seed is not None:
-            return self.fixed_seed
-        return int(self._seed_rng.integers(1, 2**31 - 1))
-
-    def _obs(self):
-        obs = np.zeros(OBS_DIM, dtype=np.float32)
-        state = self.state
-
-        # largest connected component per faction (drives reinforcements)
-        comp_size = dict.fromkeys(FACTIONS, 0)
-        in_largest = set()
-        red_border = 0
-        for f in FACTIONS:
-            comps = components_of(state, f)
-            if not comps:
-                continue
-            largest = max(comps, key=len)
-            comp_size[f] = len(largest)
-            in_largest.update(largest)
-            if f == HUMAN:
-                red_border = sum(
-                    1 for nid in largest
-                    if any(state.nodes[nb].owner != f for nb in state.adj[nid]))
-
-        for n in state.nodes:
-            base = (n.y * GRID_COLS + n.x) * N_CELL_FEATS
-            obs[base + FACTION_IDX[n.owner]] = 1.0
-            obs[base + 5] = min(n.strength, STRENGTH_NORM) / STRENGTH_NORM
-            obs[base + 6] = 1.0
-            obs[base + 7] = 1.0 if n.id in in_largest else 0.0
-        g = N_CELLS * N_CELL_FEATS
-        c = counts(state)
-        for i, f in enumerate(FACTIONS):
-            obs[g + i] = c[f] / 30.0
-            obs[g + 6 + i] = comp_size[f] / 30.0
-        obs[g + 5] = self.turns / MAX_TURNS
-        obs[g + 11] = min(red_border, 12) / 12.0
-        # legal action mask
-        m = g + N_GLOBALS
-        for frm, to in legal_moves(state, HUMAN):
-            a, b = state.nodes[frm], state.nodes[to]
-            d = DIRS.index((b.y - a.y, b.x - a.x))
-            obs[m + (a.y * GRID_COLS + a.x) * len(DIRS) + d] = 1.0
-        obs[m + END_TURN] = 1.0
-        return obs
-
-    def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
-        if seed is not None:
-            self._seed_rng = np.random.default_rng(seed)
-        self.state = make_game(self._game_seed())
-        self.turns = 1
-        return self._obs(), {}
-
-    def _decode(self, action):
-        cell, d = divmod(int(action), len(DIRS))
-        y, x = divmod(cell, GRID_COLS)
-        dy, dx = DIRS[d]
-        frm = to = None
-        for n in self.state.nodes:
-            if n.y == y and n.x == x:
-                frm = n
-            elif n.y == y + dy and n.x == x + dx:
-                to = n
-        return frm, to
-
-    def step(self, action):
-        state = self.state
-        action = int(action)
-        red_before = counts(state)[HUMAN]
-
-        if action == END_TURN:
-            reinforce(state, HUMAN)
-            if not check_winner(state):
-                for bot in BOTS:
-                    run_bot_turn(state, bot)
-                    if check_winner(state):
-                        break
-            self.turns += 1
-        else:
-            frm, to = self._decode(action)
-            if (frm is not None and to is not None and frm.owner == HUMAN
-                    and frm.strength > 1 and to.owner != HUMAN
-                    and to.id in state.adj[frm.id]):
-                resolve_battle(state, frm.id, to.id)
-            # illegal actions can't be sampled (masked); treat as no-op if forced
-
-        red_after = counts(state)[HUMAN]
-        reward = SHAPING * (red_after - red_before)
-
-        winner = check_winner(state)
-        terminated = winner is not None or red_after == 0
-        truncated = not terminated and self.turns > MAX_TURNS
-        info = {}
-        if terminated or truncated:
-            won = winner == HUMAN
-            reward += 1.0 if won else -1.0
-            info = {'score': 1.0 if won else 0.0, 'game_turns': self.turns}
-        return self._obs(), reward, terminated, truncated, info

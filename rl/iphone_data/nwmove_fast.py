@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Bridge: parsed screenshot state -> ONE best RED move via the FAST C UCT.
 
-Counterpart to nwmove.js / nwmove_nn.py, but runs the C open-loop PUCT search
-(fast_engine.so via fastnw) with the tuned ranked rollout policy and NO neural
-net (pure MCTS). This is the ~78-80% seed-free config from rl/ALPHAGO.md.
+Runs the C open-loop PUCT search (fast_engine.so via fastnw) with the tuned
+ranked rollout policy and NO neural net (pure MCTS). The ~78-80% seed-free config.
 
 Reads a state JSON (from parse.py) on argv[1]. Builds adjacency = 8-connectivity
 among surviving grid cells (the engine's lattice), runs the C UCT search, and

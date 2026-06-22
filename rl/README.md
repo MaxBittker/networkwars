@@ -1,69 +1,45 @@
-# Network Wars — search & learning for RED
+# Network Wars — search subproject (pure MCTS for RED)
 
-Everything here plays **RED against the four fixed deterministic bots** — the
-only matchup the game has. The shared foundation is `network_wars.py`, a Python
-port of `../game.js` with bit-identical RNG (mulberry32), verified game-for-game
-against the JS engine (`verify_port.py`, 400/400), so every win rate below is
-directly comparable to `node ../sim.js`.
+Everything here plays **RED against the four fixed deterministic bots** — the only
+matchup the game has. The strongest player is a **pure C-UCT MCTS** (no neural
+net, no seed/RNG exploitation): offline self-play winrate is ~91–96% on the
+iOS-faithful deal; measured **live** winrate is ~77–81% (see `IOS_CALIBRATION.md`
+and `BATTLE_FUNCTION.md` for the sim-vs-real gap).
 
-Board rules match the iOS app as of 2026-06-19: a **7×6 (42-cell) lattice**,
-**bimodal** initial strengths (50%→1, else 4..8), **clustered** ownership. One
-step = one battle; observation is a 42-cell grid + globals + a 337-bit legal-move
-mask (`OBS_DIM 685`).
+## The engine (one spec, two implementations, kept in parity)
 
-## Two approaches
+- **`network_wars.py`** — the readable Python engine. The source-of-truth spec:
+  topology (6×7 king-adjacency lattice), the iOS deal (every faction totals 20, 4
+  fixed templates), reinforcement, the four bots, and the power-ratio battle
+  (`BATTLE_FUNCTION.md`). bit-identical RNG (mulberry32).
+- **`fast_engine.c` → `fast_engine.so` (via `fastnw.py`)** — the C hot path: the
+  same rules plus the UCT tree search, ~1000× faster, used for all real search.
+- **Parity gates:** `validate_fast.py` (C ↔ Python, bit-exact), `verify_port.py`
+  + `verify_dump.js` (Python ↔ `../game.js`, the browser-playable JS engine).
 
-### 1. Multi-turn UCT MCTS, seed-free — **~80%** (current best)
-
-A heuristic-rollout UCT search over RED's action sequence, with a STOP edge that
-runs all four bots so the tree spans many turns. No neural net, **no seed/RNG
-exploitation** (search rollouts use a private RNG independent of the game seed).
-This is the strongest player and the headline result.
-
-- **`../c/`** — standalone from-scratch C engine + search, ~1000× the JS engine,
-  ~78–80% on held-out seeds. See `../c/README.md` for the design, fairness
-  argument, and tuned config.
-- **`fast_engine.c` + `fastnw.py` + `fmcts.py`** — the same hot path as a ctypes
-  shared lib driving the Python engine, used to tune the ranked-rollout weight
-  sets. `fmcts.py` plans with the C UCT search but applies moves to the *real*
-  seeded Python game, so outcomes are genuine.
-
-  ```sh
-  cc -O3 -ffast-math -shared -fPIC fast_engine.c -o fast_engine.so
-  uv run python fmcts.py --games 120 --sims 3200 --wset C1 --c-puct 2.5
-  ```
-
-### 2. Learned policy+value MCTS (AlphaZero-style) — ~57%
-
-Distill the modalScout heuristic into a CNN, then guide PUCT MCTS with it and
-push further with self-play. Beats the heuristic but plateaus well below the
-seed-free UCT search above. Full pipeline, results, and lessons in
-**`ALPHAGO.md`**.
-
-- `policy_cnn.py` — CNN policy/value net (masks illegal actions in `forward`).
-- `dump_expert.js` → `replay_expert.py` → `train_sl.py` — distill modalScout
-  into `sl_cnn.pt` (SL step).
-- `mcts.py` — open-loop PUCT MCTS over the net (leaves = value head, no rollouts).
-- `selfplay.py` → `train_az.py` — AlphaZero self-play iterations.
-- `gen_data.py` / `train_value.py` — optional calibrated win-probability value
-  head (BCE-fine-tuned).
-- `evaluate.py` — fixed-seed win-rate harness (also provides the `_EnvShim`
-  shared by the scripts above).
-
-## Reproduce
+## Run it
 
 ```sh
-uv sync
-uv run python verify_port.py        # engine parity vs JS (optional)
-# strongest player (also runnable standalone from ../c/):
 cc -O3 -ffast-math -shared -fPIC fast_engine.c -o fast_engine.so
-uv run python fmcts.py --games 120 --sims 3200 --wset C1 --c-puct 2.5
-# learned-net line — see ALPHAGO.md for the SL + self-play steps.
+uv run python fmcts.py --games 120 --sims 3200 --wset C1 --c-puct 2.5   # one process
+uv run python par_eval.py --games 1000 --sims 8000 --workers 9          # parallel winrate
 ```
 
-Pinned deps: pufferlib 3.0.0 requires `numpy<2`, and its prebuilt C advantage
-kernel on macOS matches `torch==2.10.0` exactly (other torch versions fail with
-missing-symbol errors at import). Managed with `uv` (`pyproject.toml`/`uv.lock`).
+- **`fmcts.py`** — plans with the C UCT search but applies each move to the *real*
+  seeded Python game, so outcomes are genuine (the search never sees the game
+  seed). Best config: ranked **C1** weights, `c_puct=2.5`, `sims=1600–3200`.
+- **`par_eval.py`** — splits seeds across processes for fast winrate evals.
+- **`gen_value_data.py` + `value_leaf_w.npy`** — a fitted (AUC ~0.96) static
+  leaf-value logistic; drives the live dashboard's calibrated win% readout
+  (`iphone_data/nwmove_fast.py`).
 
-Regenerable artifacts (`*.pt`, `*.npy`, `*.log`, `expert.jsonl`, `fast_engine.so`)
-are gitignored — rebuild them from the steps above.
+A standalone from-scratch C variant of the same idea lives in **`../c/`**.
+
+## Driving the real iOS app
+
+`iphone_data/` captures/parses/taps the real app via macOS iPhone Mirroring and
+runs live game series with the C-UCT engine. See `iphone_data/README.md`.
+
+Deps are managed with `uv` (`pyproject.toml` / `uv.lock`); the only runtime
+dependency is `numpy<2`. `fast_engine.so` is gitignored — rebuild with the `cc`
+line above.

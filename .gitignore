@@ -10,11 +10,10 @@ __pycache__/
 /rl/resources
 /rl/iphone_data/resources
 
-# RL training artifacts — regenerable from the pipeline in rl/ALPHAGO.md
+# Generated/regenerable artifacts (fitted weights, logs)
 rl/*.npy
 rl/*.log
 rl/*.pt
-rl/expert.jsonl
 
 # iPhone-capture artifacts — screenshots/captures are debug output;
 # ocr/tap/wininfo are binaries built from the *.swift sources via build.sh

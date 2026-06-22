@@ -1,9 +1,7 @@
 [project]
-name = "network-wars-rl"
+name = "network-wars"
 version = "0.1.0"
-requires-python = "==3.12.*"
+requires-python = ">=3.10"
 dependencies = [
     "numpy<2",
-    "pufferlib==3.0.0",
-    "torch==2.10.0",
 ]

@@ -31,6 +31,43 @@ def boards_match(state, owner, strength):
     return True
 
 
+def py_greedy_rollout(state, turns):
+    """Python mirror of C rollout() with RED_ROLLOUT_POLICY=0 (greedy bot-style):
+    RED attacks via best_bot_move to exhaustion, reinforce(RED), then the 4 bots.
+    Returns True iff RED wins. Used to validate fastnw.rollout bit-for-bit."""
+    while True:
+        w = nw.check_winner(state)
+        if w is not None:
+            return w == nw.HUMAN
+        if nw.counts(state)[nw.HUMAN] == 0:
+            return False
+        g = 0
+        while g < 200:
+            mv = nw.best_bot_move(state, nw.HUMAN)
+            if mv is None:
+                break
+            resolve_battle(state, mv[0], mv[1])
+            if nw.check_winner(state) is not None:
+                break
+            g += 1
+        if nw.check_winner(state) is not None:
+            return nw.check_winner(state) == nw.HUMAN
+        reinforce(state, nw.HUMAN)
+        if nw.check_winner(state) is not None:
+            return nw.check_winner(state) == nw.HUMAN
+        for bot in nw.BOTS:
+            run_bot_turn(state, bot)
+            if nw.check_winner(state) is not None:
+                break
+        if nw.check_winner(state) is not None:
+            return nw.check_winner(state) == nw.HUMAN
+        turns += 1
+        if turns > nw.MAX_TURNS:
+            c = nw.counts(state)
+            mx = max(c[f] for f in nw.BOTS)
+            return c[nw.HUMAN] > mx
+
+
 def main():
     nseeds = int(sys.argv[1]) if len(sys.argv) > 1 else 200
     rng_seed_base = 0xABCDEF
@@ -70,10 +107,8 @@ def main():
         # ---- full greedy playout parity (RED plays bot-style), shared rng ----
         for k in range(3):
             vseed = (rng_seed_base * 7 + seed * 101 + k) & nw.M32
-            # python rollout_to_terminal expects a state w/ .rng
-            from mcts import rollout_to_terminal
             py = py_state_from(owner0, strength0, ref, make_rng(vseed))
-            py_res = rollout_to_terminal(py, 1)
+            py_res = py_greedy_rollout(py, 1)
             o = owner0.copy(); st = strength0.copy()
             fastnw.use_mb32(vseed)
             c_res = fastnw.rollout(o, st, 1)
