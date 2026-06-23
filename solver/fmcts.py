@@ -31,6 +31,10 @@ def play_game(seed, sims, c_puct=2.5, nroll=1, sim_seed=0x12345678,
         w = check_winner(state)
         if w is not None or counts(state)[HUMAN] == 0:
             break
+        # Real game mutations switch the C engine to the real mb32 dice stream.
+        # Reset before every search so offline eval matches the live nwmove_fast
+        # subprocess path and never plans with the real game's future dice.
+        fastnw.use_sim(sim_seed)
         owner, strength = fastnw.board_arrays(state)
         acts, visits = fastnw.uct_search(owner, strength, turns, sims, c_puct, nroll)
         action = -1 if len(acts) == 0 else int(acts[int(np.argmax(visits))])

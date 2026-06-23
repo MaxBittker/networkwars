@@ -21,6 +21,9 @@ ORACLE row = baseline policy scored against a HELD-OUT baseline sample instead o
 reality -> the irreducible dice floor (best any policy could score if baseline were
 the true bot).
 
+This tests only strict-downhill policies, matching the observed iOS rule that
+bots do not attack equal/uphill targets.
+
 Usage: python bot_policy_fit.py [--ksim 50] [--max-round 6] [--workers 9]
 """
 import argparse, json, math, os, sys
@@ -115,16 +118,14 @@ def _is_red(t):
 POLICIES = {
     # name: (threshold, rank)  -- baseline = shipped best_bot_move
     'baseline_strict':   (1,  lambda n, t, m: (t.strength, -n.strength, n.id, t.id)),
-    'equal':             (0,  lambda n, t, m: (t.strength, -n.strength, n.id, t.id)),
-    'uphill1':           (-1, lambda n, t, m: (t.strength, -n.strength, n.id, t.id)),
     # selection variants (strict threshold, isolate target/source choice)
     'strict_maxmargin':  (1,  lambda n, t, m: (-m, t.strength, n.id, t.id)),
+    'strict_maxmargin_strongsrc': (1, lambda n, t, m: (-m, -n.strength, t.strength, n.id, t.id)),
+    'strict_ratio':      (1,  lambda n, t, m: (-(n.strength / max(1, t.strength)), t.strength, -n.strength, n.id, t.id)),
     'strict_minmargin':  (1,  lambda n, t, m: (m, t.strength, n.id, t.id)),
     'strict_weaksrc':    (1,  lambda n, t, m: (t.strength,  n.strength, n.id, t.id)),
+    'strict_low_target_id': (1, lambda n, t, m: (t.strength, t.id, -n.strength, n.id)),
     'strict_preferred_red': (1, lambda n, t, m: (_is_red(t), t.strength, -n.strength, n.id, t.id)),
-    # combined: aggressive threshold + prefer-red focus
-    'equal_preferred_red': (0, lambda n, t, m: (_is_red(t), t.strength, -n.strength, n.id, t.id)),
-    'equal_maxmargin':   (0,  lambda n, t, m: (-m, t.strength, n.id, t.id)),
 }
 
 
@@ -149,6 +150,14 @@ def sim_phase(board, policy_fn, seed):
     return {n.id: n.owner for n in st.nodes}
 
 
+def stable_hash(text):
+    h = 2166136261
+    for ch in text:
+        h ^= ord(ch)
+        h = (h * 16777619) & 0xFFFFFFFF
+    return h
+
+
 def score_chunk(arg):
     items, names, ksim = arg
     # accumulators per policy
@@ -160,7 +169,8 @@ def score_chunk(arg):
             pol = make_policy(*POLICIES[nm])
             dist = {nid: Counter() for nid in actual}
             for k in range(ksim):
-                res = sim_phase(board, pol, 0x9E3779B9 ^ (k * 2654435761) ^ hash(nm) & 0xFFFFFFFF)
+                seed = 0x9E3779B9 ^ (k * 2654435761) ^ stable_hash(nm)
+                res = sim_phase(board, pol, seed & 0xFFFFFFFF)
                 for nid, ow in res.items():
                     dist[nid][ow] += 1
             a = acc[nm]

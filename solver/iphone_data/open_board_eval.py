@@ -66,6 +66,10 @@ def run_chunk(arg):
             for _ in range(6000):
                 if check_winner(st) is not None or counts(st)[HUMAN] == 0:
                     break
+                # resolve_battle/run_bot_turn switch the active C RNG to mb32.
+                # The live move subprocess resets to private sim dice for every
+                # search; do the same here to avoid future-dice leakage.
+                fastnw.use_sim(0x12345678 ^ sd)
                 owner, strength = fastnw.board_arrays(st)
                 acts, visits = fastnw.uct_search(owner, strength, turns, sims, c_puct, 1)
                 action = -1 if len(acts) == 0 else int(acts[int(np.argmax(visits))])

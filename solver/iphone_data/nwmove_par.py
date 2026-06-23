@@ -7,9 +7,9 @@ games.
 Root parallelization: K worker processes each run an INDEPENDENT full search with
 a distinct sim-seed (the engine's search RNG is a per-process splitmix64 global,
 so forked children are independent). We sum per-action visit counts across workers
-and visit-weight the per-action Q. Effective search ≈ K * --sims sims of work
-(an ensemble — stronger than a single --sims search, though not identical to a
-single K*--sims search since the trees aren't shared).
+and visit-weight the per-action Q. Effective search is roughly K * --sims sims
+of work, though not identical to a single K*--sims search since the trees are not
+shared.
 
 Output JSON is byte-compatible with nwmove_fast.py (action/from/to/fromPx/toPx/
 winexp/visits/moveVisits/top) so play.py.mcts_move can call it unchanged, plus
@@ -35,6 +35,7 @@ import fastnw
 # Module globals captured by fork() before the Pool is created — workers read
 # these directly so we never re-pickle the board per task.
 _G = {}
+BOT_POLICY_CHOICES = tuple(fastnw.BOT_POLICY_MODES.keys())
 
 
 def build_state(js):
@@ -53,10 +54,12 @@ def build_state(js):
     return s
 
 
-def _worker(seed):
+def _worker(task):
     """One independent search with its own sim-seed. Topology is inherited from
     the parent via fork; we only re-seed the search RNG. Returns (acts, visits, q)
     as plain lists so they pickle back cheaply."""
+    seed, policy, eps = task
+    fastnw.set_bot_policy(policy, eps)
     fastnw.use_sim(seed)
     acts, visits, q = fastnw.uct_search(
         _G['owner'], _G['strength'], _G['turns'], _G['sims'],
@@ -75,6 +78,9 @@ def main():
     ap.add_argument('--policy', type=int, default=1, help='back-compat; ignored')
     ap.add_argument('--turns', type=int, default=1)
     ap.add_argument('--sim-seed', type=int, default=0x12345678)
+    ap.add_argument('--bot-policy', choices=BOT_POLICY_CHOICES,
+                    default='baseline')
+    ap.add_argument('--bot-eps', type=float, default=0.0)
     args = ap.parse_args()
 
     js = json.load(open(args.state))
@@ -88,19 +94,24 @@ def main():
               c_puct=args.c_puct, nroll=args.nroll)
 
     # Distinct sim-seed per worker (splitmix64 mixes well, but spread them anyway).
-    seeds = [(args.sim_seed + i * 0x9E3779B1) & 0xFFFFFFFFFFFFFFFF
-             for i in range(args.workers)]
+    tasks = [
+        ((args.sim_seed + i * 0x9E3779B1) & 0xFFFFFFFFFFFFFFFF,
+         args.bot_policy, args.bot_eps)
+        for i in range(args.workers)
+    ]
 
     # fork: children share the already-loaded .so + topology (fast, no re-import).
     # We have no threads, so fork is safe here despite macOS defaulting to spawn.
     ctx = mp.get_context('fork')
     with ctx.Pool(args.workers) as pool:
-        results = pool.map(_worker, seeds)
+        results = pool.map(_worker, tasks)
 
     # Aggregate by action id: sum visits, visit-weight Q.
     agg_v, agg_qw = {}, {}
     for acts, visits, q in results:
         for a, v, qq in zip(acts, visits, q):
+            if v <= 0:
+                continue
             agg_v[a] = agg_v.get(a, 0) + v
             agg_qw[a] = agg_qw.get(a, 0.0) + v * qq
     if not agg_v:
@@ -135,7 +146,8 @@ def main():
     eff = args.sims * args.workers
     if best == -1:
         print(json.dumps({'action': 'stop', 'winexp': winexp, 'visits': tv,
-                          'top': top, 'effSims': eff, 'workers': args.workers}))
+                          'top': top, 'effSims': eff, 'workers': args.workers,
+                          'botPolicy': args.bot_policy, 'botEps': args.bot_eps}))
         return
     frm, to = best >> 8, best & 0xFF
     print(json.dumps({
@@ -143,6 +155,7 @@ def main():
         'fromPx': px[frm], 'toPx': px[to],
         'winexp': winexp, 'visits': tv, 'moveVisits': agg_v[best], 'top': top,
         'effSims': eff, 'workers': args.workers,
+        'botPolicy': args.bot_policy, 'botEps': args.bot_eps,
     }))
 
 

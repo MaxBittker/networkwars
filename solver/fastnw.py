@@ -53,10 +53,32 @@ _lib.ext_best_bot_move.argtypes = [_i32p, _i32p, ctypes.c_int]
 _lib.ext_best_bot_move.restype = ctypes.c_int
 _lib.ext_check_winner.argtypes = [_i32p]
 _lib.ext_check_winner.restype = ctypes.c_int
+_lib.set_bot_policy.argtypes = [ctypes.c_int, ctypes.c_double]
 
 
 def _p(a):
     return a.ctypes.data_as(_i32p)
+
+
+BOT_POLICY_MODES = {
+    'baseline': 0,
+    'id_tie': 1,
+    'weakest_tie': 2,
+    'margin_tie': 3,
+}
+
+
+def set_bot_policy(mode='baseline', eps=0.0):
+    """Set bot move stochasticity for search/sim.
+
+    mode='baseline' keeps the original deterministic weakest-target policy.
+    mode='id_tie' randomizes only final id ties after weakest target + strongest source.
+    mode='weakest_tie' randomizes among attacks against the weakest strict-legal targets.
+    mode='margin_tie' randomizes among attacks with the highest strength differential.
+    """
+    if isinstance(mode, str):
+        mode = BOT_POLICY_MODES[mode]
+    _lib.set_bot_policy(int(mode), float(eps))
 
 
 # ---- topology ---------------------------------------------------------------

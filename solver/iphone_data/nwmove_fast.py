@@ -24,6 +24,8 @@ sys.path.insert(0, SOLVER_DIR)
 from network_wars import State, Node as GNode
 import fastnw
 
+BOT_POLICY_CHOICES = tuple(fastnw.BOT_POLICY_MODES.keys())
+
 
 def build_state(js):
     """network_wars.State from a parsed iOS board JSON (8-connectivity lattice)."""
@@ -51,6 +53,9 @@ def main():
     ap.add_argument('--policy', type=int, default=1, help='accepted for back-compat; ignored')
     ap.add_argument('--turns', type=int, default=1)
     ap.add_argument('--sim-seed', type=int, default=0x12345678)
+    ap.add_argument('--bot-policy', choices=BOT_POLICY_CHOICES,
+                    default='baseline')
+    ap.add_argument('--bot-eps', type=float, default=0.0)
     args = ap.parse_args()
 
     js = json.load(open(args.state))
@@ -59,8 +64,8 @@ def main():
 
     # pure C-UCT with the baked-in ranked C1 rollout policy (no neural net)
     fastnw.set_topology(state)
+    fastnw.set_bot_policy(args.bot_policy, args.bot_eps)
     fastnw.use_sim(args.sim_seed)        # private seed-free sim rng (no seed exploitation)
-
     owner, strength = fastnw.board_arrays(state)
     acts, visits, q = fastnw.uct_search(owner, strength, args.turns, args.sims,
                                         args.c_puct, args.nroll, return_q=True)
@@ -97,13 +102,15 @@ def main():
 
     if action == -1:                     # END_TURN won the search
         print(json.dumps({'action': 'stop', 'winexp': winexp,
-                          'visits': tv, 'top': top}))
+                          'visits': tv, 'top': top,
+                          'botPolicy': args.bot_policy, 'botEps': args.bot_eps}))
         return
     frm, to = action >> 8, action & 0xFF
     print(json.dumps({
         'action': 'attack', 'from': frm, 'to': to,
         'fromPx': px[frm], 'toPx': px[to],
         'winexp': winexp, 'visits': tv, 'moveVisits': int(visits[best]), 'top': top,
+        'botPolicy': args.bot_policy, 'botEps': args.bot_eps,
     }))
 
 

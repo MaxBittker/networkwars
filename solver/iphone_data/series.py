@@ -251,7 +251,8 @@ def play_one_game(args, gi):
             stage(f'searching · game {gi + 1} round {rnd + 1} move {a + 1}')
             mv = PL.mcts_move(st, args.rollout, engine='fast', sims=args.sims,
                               turns=rnd + 1, wset=args.wset, c_puct=args.c_puct,
-                              nroll=args.nroll, workers=args.workers)
+                              nroll=args.nroll, workers=args.workers,
+                              bot_policy=args.bot_policy, bot_eps=args.bot_eps)
             publish_move(st, mv, rnd + 1, shot=cur_shot)
             if mv.get('action') == 'stop':
                 turn['moves'].append({'action': 'stop', 'winexp': mv.get('winexp'),
@@ -259,19 +260,32 @@ def play_one_game(args, gi):
                 break
             fx, fy = mv['fromPx']; tx, ty = mv['toPx']
             cb = dict(st['counts'])
-            # tap_fast (cached bounds, no per-tap activate/sleep) — ~0.97s/move vs
-            # ~2.9s for double full-tap. Reliable because IM is pinned+frontmost by
-            # the per-round PL.place() above and we never steal focus mid-turn; a
-            # rare focus-drift miss is caught below (no_change_miss -> PL.place() +
-            # re-search same board). Measured 0/10 miss live at these sleeps.
-            PL.tap_fast(round(fx / 2), round(fy / 2)); time.sleep(0.25)
-            PL.tap_fast(round(tx / 2), round(ty / 2)); time.sleep(0.30)
-            stage(f'reading board after attack · game {gi + 1} round {rnd + 1}')
-            st2, fp2 = PL.capture_state(f'g{gi}_r{rnd}_a{a}')
+            # First try the fast cached taps. If the board fingerprint is unchanged,
+            # retry the same chosen attack with full taps that refresh/focus the
+            # iPhone Mirroring window. A stale selected source may require one full
+            # pair to clear selection and a second pair to apply the attack.
+            tap_retries = 0
+            while True:
+                if tap_retries == 0:
+                    PL.tap_fast(round(fx / 2), round(fy / 2)); time.sleep(0.25)
+                    PL.tap_fast(round(tx / 2), round(ty / 2)); time.sleep(0.30)
+                    tag = f'g{gi}_r{rnd}_a{a}'
+                else:
+                    PL.place()
+                    PL.tap(round(fx / 2), round(fy / 2)); time.sleep(0.35)
+                    PL.tap(round(tx / 2), round(ty / 2)); time.sleep(0.45)
+                    tag = f'g{gi}_r{rnd}_a{a}_retry{tap_retries}'
+                stage(f'reading board after attack · game {gi + 1} round {rnd + 1}')
+                st2, fp2 = PL.capture_state(tag)
+                if st2 == 'over' or fp2 is None or fp2 != fp or tap_retries >= 2:
+                    break
+                tap_retries += 1
             move_rec = {'from': mv['from'], 'to': mv['to'],
                         'winexp': mv.get('winexp'),
                         'visits': mv.get('visits'), 'moveVisits': mv.get('moveVisits'),
                         'counts_before': cb}
+            if tap_retries:
+                move_rec['tapRetries'] = tap_retries
             if st2 == 'over':
                 move_rec['result'] = 'game_over_modal'
                 turn['moves'].append(move_rec)
@@ -371,6 +385,11 @@ def main():
     ap.add_argument('--max-rounds', type=int, default=80,   # high: let games finish naturally
                     help='hard cap only; games are expected to reach a natural win/loss')
     ap.add_argument('--max-attacks', type=int, default=14)
+    ap.add_argument('--bot-policy', choices=PL.BOT_POLICY_CHOICES,
+                    default='baseline',
+                    help='bot model used inside search rollouts/tree')
+    ap.add_argument('--bot-eps', type=float, default=0.0,
+                    help='probability of using the non-baseline bot move in search')
     ap.add_argument('--out', default=os.path.join(RUNS, 'series_b8k.jsonl'))
     ap.add_argument('--start-index', type=int, default=0)
     args = ap.parse_args()
@@ -381,10 +400,12 @@ def main():
         'engine': 'fast_c_uct', 'neural_net': False, 'sims': args.sims,
         'wset': args.wset, 'ranked_weights': 'C1 (baked into fast_engine.c)',
         'c_puct': args.c_puct, 'nroll': args.nroll, 'priors': 'uniform',
-        'workers': args.workers, 'effective_sims': args.sims * args.workers,
+        'workers': args.workers,
+        'effective_sims': args.sims * args.workers,
         'search': 'root_parallel' if args.workers > 1 else 'single',
         'rollout_policy': 'ranked_C1', 'win_nodes': WIN_NODES,
         'max_rounds': args.max_rounds, 'max_attacks': args.max_attacks,
+        'bot_policy': args.bot_policy, 'bot_eps': args.bot_eps,
         'engine_build': 'fast_engine.so (-O3 -ffast-math)', 'role': 'red',
         'winexp_def': 'backed-up Q of the chosen root child = RED win-prob estimate',
         'seed_exploitation': False, 'never_surrender': True,
@@ -411,7 +432,9 @@ def main():
             rec = play_one_game(args, gi)
             rec['type'] = 'game'
             rec['config_ref'] = {'sims': args.sims, 'wset': args.wset,
-                                 'c_puct': args.c_puct, 'engine': 'fast_c_uct'}
+                                 'c_puct': args.c_puct, 'engine': 'fast_c_uct',
+                                 'bot_policy': args.bot_policy,
+                                 'bot_eps': args.bot_eps}
             fout.write(json.dumps(rec) + '\n')
 
             r = rec['result']

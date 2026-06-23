@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
-"""WHAT are the real iOS bots doing that best_bot_move doesn't?
+"""Where do real iOS bot phases diverge from best_bot_move simulations?
 
 For each early-round transition we have red_post (board after red's attacks, with
 strengths) and the actual next board (after the real bot phase). We:
   1. find every red node that a BOT captured in reality, and
-  2. classify HOW, by the situation at red_post:
+  2. classify the red_post situation around each captured node:
        greedy-legal : some bot neighbor had STRICTLY-greater strength
                       -> best_bot_move would take it too (not "extra").
        equal-only   : strongest bot neighbor EQUALED the red node's strength
-                      -> best_bot_move SKIPS (needs strictly >), real bot took it.
+                      -> best_bot_move skips a direct head-on attack.
        weaker-only  : strongest bot neighbor was WEAKER than the red node
-                      -> real bot attacked uphill, or chained/softened across the turn.
+                      -> only explainable after chained/softened states, OCR error,
+                         different battle survivors, or an illegal direct attack.
        no-bot-nbr   : no bot neighbor at all at red_post -> only reachable via a
                       chain (a bot captured an adjacent node first, then this).
   3. also Monte-Carlo the sim bot phase and report, per class, how often the SIM
      actually took that same node (to confirm "equal/weaker/no-nbr" are the ones
      the sim under-takes).
 
-equal-only / weaker-only / no-bot-nbr captures are concrete examples of real bots
-punishing harder than our greedy strictly-stronger model.
+Important: these are post-phase classifications, not direct observations of a bot's
+chosen attack. Equal/weaker/no-neighbor captures are ambiguous because earlier
+battles in the same bot phase can soften or expose nodes. The current active model
+therefore treats them as divergence evidence, not proof of equal/uphill attacks.
 
 Usage: python bot_behavior_diff.py [--max-round 2] [--ksim 80]
 """
@@ -177,9 +180,9 @@ def main():
         if cls[c]:
             sr = st.mean(sim_rate_by_cls[c]) * 100
             print(f"{c:<14}{cls[c]:>5}{cls[c]/tot*100:>7.0f}%{sr:>14.0f}%")
-    print("\n  greedy-legal: best_bot_move takes it too (not extra).")
-    print("  equal-only/weaker-only/no-bot-nbr: real bot took a node best_bot_move would NOT")
-    print("  attack head-on; low sim-took% = the sim under-captures these = harder real punishment.\n")
+    print("\n  greedy-legal: best_bot_move can attack it directly from red_post.")
+    print("  equal-only/weaker-only/no-bot-nbr: post-phase divergence classes, not direct")
+    print("  evidence of illegal attacks; low sim-took% means the sim under-captures these states.\n")
     for c in ['equal-only', 'weaker-only', 'no-bot-nbr']:
         if examples[c]:
             print(f"examples [{c}]:")

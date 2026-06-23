@@ -341,11 +341,9 @@ static inline double exp_cap_strength(int a, int d) {
 }
 
 /* ---- ranked RED policy (C1-tuned), the single rollout policy ----
- * The tuned C1 weight vector is baked in (it was the best config found; the other
- * weight sets and the neural/value/safety/ensemble variants were ruled out — see
- * memory alphago-levers-ruled-out). Order: capture, weakTarget, margin, source,
- * redAdj, merge, largestTouch, enemyCount, eliminate, exposure, lowChancePenalty,
- * strongTargetPenalty, threshold. */
+ * The tuned C1 weight vector is baked in. Order: capture, weakTarget, margin,
+ * source, redAdj, merge, largestTouch, enemyCount, eliminate, exposure,
+ * lowChancePenalty, strongTargetPenalty, threshold. */
 typedef struct {
     double capture, weakTarget, margin, source, redAdj, merge, largestTouch;
     double enemyCount, eliminate, exposure, lowChancePenalty, strongTargetPenalty;
@@ -358,6 +356,21 @@ static const RankWeights RW = {  /* C1 */
     .eliminate=0, .exposure=60.487, .lowChancePenalty=140.411,
     .strongTargetPenalty=0, .threshold=220.775,
 };
+
+/* Bot policy calibration. Default mode=0/eps=0 preserves the original iOS model:
+ * deterministically choose weakest strict-legal target. Modes 1-3 are strict
+ * downhill stochastic tie-break probes: final id tie, weakest-target tie, and
+ * max-margin tie. */
+static int BOT_POLICY_MODE = 0;
+static double BOT_POLICY_EPS = 0.0;
+
+void set_bot_policy(int mode, double eps) {
+    if (mode < 0 || mode > 3) mode = 0;
+    if (eps < 0.0) eps = 0.0;
+    if (eps > 1.0) eps = 1.0;
+    BOT_POLICY_MODE = mode;
+    BOT_POLICY_EPS = eps;
+}
 
 /* red component labels: label[i] = component index (-1 if not red) */
 static int LBL[MAXN];
@@ -512,9 +525,11 @@ void resolve_battle_logged(int *owner, int *strength, int frm, int to,
 }
 
 /* best_bot_move: return packed (frm<<8|to)+1, or 0 if none.
- * tie-break: weakest defender; then strongest attacker; then lowest frm; lowest to. */
+ * Baseline tie-break: weakest defender; then strongest attacker; then lowest frm;
+ * lowest to. Optional stochastic modes are runtime-settable via set_bot_policy. */
 static int best_bot_move(const int *owner, const int *strength, int faction) {
     int bf=-1, bt=-1, bfs=0, bts=0; int found=0;
+    int rf[MAXN * 8], rt[MAXN * 8], rn=0;
     for (int i = 0; i < N; i++) {
         if (owner[i] != faction || strength[i] <= 1) continue;
         int si = strength[i];
@@ -522,6 +537,7 @@ static int best_bot_move(const int *owner, const int *strength, int faction) {
             int j = ADJ[k];
             if (owner[j] == faction || strength[j] >= si) continue;
             int dj = strength[j];
+            if (rn < MAXN * 8) { rf[rn] = i; rt[rn] = j; rn++; }
             int better = 0;
             if (!found) better = 1;
             else if (dj < bts) better = 1;
@@ -529,6 +545,31 @@ static int best_bot_move(const int *owner, const int *strength, int faction) {
             else if (dj == bts && si == bfs && i < bf) better = 1;
             else if (dj == bts && si == bfs && i == bf && j < bt) better = 1;
             if (better) { bf=i; bt=j; bfs=si; bts=dj; found=1; }
+        }
+    }
+    if (!found) return 0;
+    if (BOT_POLICY_MODE > 0 && BOT_POLICY_EPS > 0.0 && rn > 1 && RNG() < BOT_POLICY_EPS) {
+        int pf[MAXN * 8], pt[MAXN * 8], pn = 0;
+        int max_margin = -9999;
+        if (BOT_POLICY_MODE == 3) {
+            for (int r = 0; r < rn; r++) {
+                int m = strength[rf[r]] - strength[rt[r]];
+                if (m > max_margin) max_margin = m;
+            }
+        }
+        for (int r = 0; r < rn; r++) {
+            int fs = strength[rf[r]], ts = strength[rt[r]];
+            int ok = 0;
+            if (BOT_POLICY_MODE == 1) ok = (ts == bts && fs == bfs);
+            else if (BOT_POLICY_MODE == 2) ok = (ts == bts);
+            else if (BOT_POLICY_MODE == 3) ok = (fs - ts == max_margin);
+            if (ok && pn < MAXN * 8) { pf[pn] = rf[r]; pt[pn] = rt[r]; pn++; }
+        }
+        if (pn > 1) {
+            int r = (int)(RNG() * pn);
+            if (r < 0) r = 0;
+            if (r >= pn) r = pn - 1;
+            return ((pf[r] << 8) | pt[r]) + 1;
         }
     }
     return found ? ((bf << 8) | bt) + 1 : 0;

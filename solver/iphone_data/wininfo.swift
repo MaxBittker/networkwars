@@ -15,6 +15,20 @@ for w in wl {
   let name  = w[kCGWindowName as String] as? String ?? ""
   if owner.contains("iPhone Mirroring") && name == "iPhone Mirroring" { exact = w; break }
 }
+if exact == nil {
+  for w in wl {
+    let owner = w[kCGWindowOwnerName as String] as? String ?? ""
+    guard owner.contains("iPhone Mirroring"), let b = bounds(w) else { continue }
+    if b.2 == 318 && b.3 == 701 { exact = w; break }
+  }
+}
+if exact == nil {
+  for w in wl {
+    let owner = w[kCGWindowOwnerName as String] as? String ?? ""
+    guard owner.contains("iPhone Mirroring"), let b = bounds(w) else { continue }
+    if b.2 > 200 && b.3 > 400 { exact = w; break }
+  }
+}
 if let w = exact, let n = w[kCGWindowNumber as String] as? Int, let b = bounds(w) {
   print("\(n) \(b.0) \(b.1) \(b.2) \(b.3)")
 }

@@ -23,9 +23,10 @@ cached_win() {               # cached bounds; fall back to live + populate cache
 }
 
 pin() {                      # activate + reposition fully on-screen
-  osascript -e 'tell application "iPhone Mirroring" to activate' >/dev/null 2>&1
-  osascript -e 'tell application "System Events" to tell process "iPhone Mirroring" to set position of (first window whose size is {318, 701}) to {120, 100}' >/dev/null 2>&1
-  sleep 0.5
+  # System Events window queries can hang when iPhone Mirroring is reconnecting.
+  # Keep this path non-blocking; wininfo supplies the current CG window bounds.
+  open -a "iPhone Mirroring" >/dev/null 2>&1 || true
+  sleep 0.2
 }
 
 case "$1" in
