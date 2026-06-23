@@ -246,11 +246,12 @@ def play_one_game(args, gi):
 
         misses = 0
         over_mid = False
+        PL.place()   # focus+pin IM once per round; the attack taps below use tap_fast
         for a in range(args.max_attacks):
             stage(f'searching · game {gi + 1} round {rnd + 1} move {a + 1}')
             mv = PL.mcts_move(st, args.rollout, engine='fast', sims=args.sims,
                               turns=rnd + 1, wset=args.wset, c_puct=args.c_puct,
-                              nroll=args.nroll)
+                              nroll=args.nroll, workers=args.workers)
             publish_move(st, mv, rnd + 1, shot=cur_shot)
             if mv.get('action') == 'stop':
                 turn['moves'].append({'action': 'stop', 'winexp': mv.get('winexp'),
@@ -258,10 +259,13 @@ def play_one_game(args, gi):
                 break
             fx, fy = mv['fromPx']; tx, ty = mv['toPx']
             cb = dict(st['counts'])
-            # full tap() re-activates iPhone Mirroring each time — taps land reliably
-            # even after focus changes (tap_fast missed and froze the board mid-series)
-            PL.tap(round(fx / 2), round(fy / 2)); time.sleep(0.3)
-            PL.tap(round(tx / 2), round(ty / 2)); time.sleep(0.4)
+            # tap_fast (cached bounds, no per-tap activate/sleep) — ~0.97s/move vs
+            # ~2.9s for double full-tap. Reliable because IM is pinned+frontmost by
+            # the per-round PL.place() above and we never steal focus mid-turn; a
+            # rare focus-drift miss is caught below (no_change_miss -> PL.place() +
+            # re-search same board). Measured 0/10 miss live at these sleeps.
+            PL.tap_fast(round(fx / 2), round(fy / 2)); time.sleep(0.25)
+            PL.tap_fast(round(tx / 2), round(ty / 2)); time.sleep(0.30)
             stage(f'reading board after attack · game {gi + 1} round {rnd + 1}')
             st2, fp2 = PL.capture_state(f'g{gi}_r{rnd}_a{a}')
             move_rec = {'from': mv['from'], 'to': mv['to'],
@@ -361,6 +365,8 @@ def main():
     ap.add_argument('--wset', default='C1')
     ap.add_argument('--c-puct', type=float, default=2.5)
     ap.add_argument('--nroll', type=int, default=1)
+    ap.add_argument('--workers', type=int, default=1,
+                    help='>1 = root-parallel search (effective sims ~= workers*sims)')
     ap.add_argument('--rollout', default='strong')   # unused by fast engine; kept for mcts_move sig
     ap.add_argument('--max-rounds', type=int, default=80,   # high: let games finish naturally
                     help='hard cap only; games are expected to reach a natural win/loss')
@@ -375,6 +381,8 @@ def main():
         'engine': 'fast_c_uct', 'neural_net': False, 'sims': args.sims,
         'wset': args.wset, 'ranked_weights': 'C1 (baked into fast_engine.c)',
         'c_puct': args.c_puct, 'nroll': args.nroll, 'priors': 'uniform',
+        'workers': args.workers, 'effective_sims': args.sims * args.workers,
+        'search': 'root_parallel' if args.workers > 1 else 'single',
         'rollout_policy': 'ranked_C1', 'win_nodes': WIN_NODES,
         'max_rounds': args.max_rounds, 'max_attacks': args.max_attacks,
         'engine_build': 'fast_engine.so (-O3 -ffast-math)', 'role': 'red',

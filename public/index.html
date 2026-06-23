@@ -287,10 +287,15 @@ document.getElementById('m-yes').onclick = () => { hideModal(); newGame(); };
 document.getElementById('m-no').onclick = () => { hideModal(); };
 
 async function newGame() {
-  const res = await api('/api/game', 'POST', {});
+  // ?load=<file> loads a saved board (e.g. a recorded position) instead of a fresh deal.
+  const load = new URLSearchParams(location.search).get('load');
+  const res = load
+    ? await api('/load?file=' + encodeURIComponent(load), 'GET')
+    : await api('/api/game', 'POST', {});
+  if (res.error) { setStatus('Load failed: ' + res.error); return; }
   setState(res);
   resize();
-  setStatus('New game. Select a red node (strength > 1) to attack.');
+  setStatus(load ? `Loaded board "${load}". Your move.` : 'New game. Select a red node (strength > 1) to attack.');
 }
 
 window.addEventListener('resize', resize);

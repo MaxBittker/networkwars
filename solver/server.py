@@ -202,6 +202,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(503, {'error': 'no clean board parse (lock the phone, retry)'})
             else:
                 self._send(200, view(game_from_board(board)))
+        elif path == '/load':
+            # Load a saved board JSON ({nodes:[{id,x,y,owner,strength}]}) into a new
+            # game — e.g. a recorded position from a live game's trajectory. The file
+            # is a basename resolved under iphone_data/ (no path traversal).
+            from urllib.parse import parse_qs, urlparse
+            name = (parse_qs(urlparse(self.path).query).get('file') or [''])[0]
+            name = os.path.basename(name)
+            fp = os.path.join(HERE, 'iphone_data', name)
+            if not name or not os.path.exists(fp):
+                self._send(404, {'error': f'no such board file: {name}'}); return
+            try:
+                board = json.load(open(fp))['nodes']
+                self._send(200, view(game_from_board(board)))
+            except Exception as e:
+                self._send(500, {'error': f'load error: {e}'})
         elif path.startswith('/api/game/'):
             gid = path[len('/api/game/'):]
             g = GAMES.get(gid)

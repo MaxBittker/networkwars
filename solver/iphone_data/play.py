@@ -174,18 +174,28 @@ PYTHON = os.path.join(os.path.dirname(HERE), '.venv', 'bin', 'python')
 
 
 def mcts_move(st, rollout, engine='fast', sims=8000, turns=1,
-              wset='C1', c_puct=2.5, nroll=1):
+              wset='C1', c_puct=2.5, nroll=1, workers=1):
     """Pure C-UCT move (fast_engine.so, no net) — the ~78-80% config. The `rollout`
-    and `engine` args are vestigial (kept for the call signature)."""
+    and `engine` args are vestigial (kept for the call signature).
+
+    workers>1 → root-parallel search (nwmove_par.py): K fork-workers each run a
+    full `sims`-sim search, visits summed → ~K*sims effective sims. The phone is
+    the bottleneck so this buys DEPTH at ~same wall-clock, not faster games."""
     tmp = os.path.join(CAP, '_state.json')
     with open(tmp, 'w') as f:
         json.dump(st, f)
+    if workers > 1:
+        script = os.path.join(HERE, 'nwmove_par.py')
+        extra = ['--workers', str(workers)]
+    else:
+        script = os.path.join(HERE, 'nwmove_fast.py')
+        extra = []
     # retry: a transient empty stdout (subprocess hiccup) must NOT be misread as
     # 'stop' — that silently passes the turn and can stall a whole game.
     for attempt in range(3):
-        r = sh(PYTHON, os.path.join(HERE, 'nwmove_fast.py'), tmp,
+        r = sh(PYTHON, script, tmp,
                '--sims', str(sims), '--turns', str(turns), '--wset', wset,
-               '--c-puct', str(c_puct), '--nroll', str(nroll))
+               '--c-puct', str(c_puct), '--nroll', str(nroll), *extra)
         line = r.stdout.strip().split('\n')[-1] if r.stdout.strip() else ''
         if line:
             try:
@@ -194,7 +204,7 @@ def mcts_move(st, rollout, engine='fast', sims=8000, turns=1,
                 line = ''
         if attempt < 2:
             time.sleep(0.4)
-    print('  nwmove_fast empty after retries; stderr:', r.stderr[-200:])
+    print(f'  {os.path.basename(script)} empty after retries; stderr:', r.stderr[-200:])
     return {'action': 'stop'}
 
 

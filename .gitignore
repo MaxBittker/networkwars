@@ -22,8 +22,14 @@ solver/iphone_data/wininfo
 # compiled C engine (built from solver/fast_engine.c)
 solver/fast_engine.so
 
-# generated HTML (regenerable from gen_botdiff_html.py)
+# generated HTML galleries (regenerable from their *.py generators)
 solver/iphone_data/botdiff.html
+solver/iphone_data/ocr_audit.html
+solver/iphone_data/digit_grids.html
+solver/iphone_data/digit_grids_hi.html
+
+# recorded scratch board snapshots (g* filenames are overwritten across runs)
+solver/iphone_data/g[0-9]*.json
 
 # iPhone-Mirroring window-geometry cache (machine-local)
 solver/iphone_data/.wincache
