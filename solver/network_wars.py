@@ -27,10 +27,10 @@ M32 = 0xFFFFFFFF
 # The iOS deal templates (each faction's 6 strengths sum to 20), kept here for
 # reference/analysis; the authoritative copy that drives play is in fast_engine.c.
 IOS_DEAL_TEMPLATES = [
-    ((1, 1, 1, 5, 6, 6), 0.385),
-    ((1, 1, 1, 1, 8, 8), 0.327),
-    ((1, 1, 4, 4, 5, 5), 0.222),
-    ((1, 3, 4, 4, 4, 4), 0.066),
+    ((1, 1, 1, 5, 6, 6), 0.392),
+    ((1, 1, 1, 1, 8, 8), 0.330),
+    ((1, 1, 4, 4, 5, 5), 0.201),
+    ((1, 3, 4, 4, 4, 4), 0.077),
 ]
 
 
