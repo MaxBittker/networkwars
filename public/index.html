@@ -469,6 +469,14 @@ function drawWinGraph() {
   }
 }
 
+// one of 8 compass arrows for the on-board direction of an attack (screen y grows downward)
+const DIR_ARROWS = ['→','↗','↑','↖','←','↙','↓','↘'];
+function dirArrow(f, t) {
+  const a = Math.atan2(-(t.y - f.y), t.x - f.x);   // up is positive
+  const idx = ((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8;
+  return DIR_ARROWS[idx];
+}
+
 function renderAI() {
   const wp = document.getElementById('winpct');
   const sg = document.getElementById('sugg');
@@ -496,7 +504,7 @@ function renderAI() {
     } else {
       const f = state.nodes[m.from], t = state.nodes[m.to];
       if (!f || !t) return;          // stale suggestion from a superseded board — skip, never crash
-      label = `${pip(f.owner, f.strength)}<span class="arrow">→</span>${pip(t.owner, t.strength)}`
+      label = `${pip(f.owner, f.strength)}<span class="arrow">${dirArrow(f, t)}</span>${pip(t.owner, t.strength)}`
             + `<span class="lbl"></span>`;
     }
     row.innerHTML = `<span class="rk">${i+1}</span>${label}`
