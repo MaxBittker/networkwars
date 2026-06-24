@@ -254,6 +254,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, open(INDEX, 'rb').read(), 'text/html')
             except FileNotFoundError:
                 self._send(500, '<h1>public/index.html not found</h1>', 'text/html')
+        elif path.endswith('.js') or path.endswith('.wasm'):
+            # Serve the WASM engine + worker assets out of public/ (basename only, no
+            # traversal). The browser now runs the C engine in-process, so these are
+            # what actually make play work; the /api/game routes below are legacy.
+            fp = os.path.join(ROOT, 'public', os.path.basename(path))
+            ctype = 'application/wasm' if path.endswith('.wasm') else 'text/javascript'
+            try:
+                self._send(200, open(fp, 'rb').read(), ctype)
+            except FileNotFoundError:
+                self._send(404, {'error': f'no such asset: {path}'})
         elif path == '/grab':
             try:
                 board = grab_board()

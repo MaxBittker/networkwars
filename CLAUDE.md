@@ -19,11 +19,23 @@
   - `solver/fastnw.py` — ctypes client (marshals int32 arrays; implements no rules).
   - `solver/network_wars.py` — a readable State/Node shim that delegates every rule
     to the C engine, so the `iphone_data/` analysis tooling keeps its object API.
-  - `solver/server.py` — stdlib HTTP server exposing `/api/game/*`; the browser
-    (`public/index.html`) plays the **same C engine** over HTTP (no JS rules engine).
-  There is no second port and no `game.js` anymore. The regression gate is
-  `solver/validate_fast.py` (board/deal/battle invariants over 1000 seeds + frozen
-  golden-seed game outcomes).
+  - `public/` — the **self-contained WASM frontend**: `fast_engine.c` is compiled to
+    WASM (`public/fast_engine.js`, single-file ESM, wasm embedded) and runs IN THE
+    BROWSER inside a Web Worker. `public/fastnw.js` is the JS marshalling layer (port
+    of `fastnw.py`); `public/engine.worker.js` is the game/orchestration layer (port
+    of `server.py`'s handlers) — it holds game state and speaks the same `/api/game/*`
+    contract via postMessage, so `index.html` needs no server to play. Search (6000
+    sims, ~170 ms) runs in the worker so the UI never blocks.
+  - `solver/server.py` — now OPTIONAL: it serves `public/` static assets and the
+    legacy `/api/game/*` (no longer used by the browser), and is only needed for the
+    iOS `/grab` and `/load` workflow (live iPhone Mirroring). Pure offline play needs
+    no Python — serve `public/` with any static server (`cd public && python3 -m
+    http.server`) or open via the server.
+  There is no JS rules engine — board-gen, bots, battle, reinforce, and search are all
+  the one C source. Regression gates: `solver/validate_fast.py` (native, board/deal/
+  battle invariants over 1000 seeds + frozen golden-seed outcomes) and
+  `solver/validate_wasm.py` (WASM board-gen BIT-PARITY vs native over 1000 seeds +
+  structural/battle invariants + determinism, via `solver/wasm_gate.mjs` in node).
 - Two things were recalibrated from live play: the deal (every faction totals 20, 4
   fixed templates) and battle. BATTLE is the **single-shot power-ratio** model
   (re-fit 2026-06-23 from 7,222 live red battles, see solver/BATTLE_FUNCTION.md §6):
@@ -35,9 +47,13 @@
   node's **weakest reachable target**, ties broken at random (matches observed iOS
   bot ordering); then reinforces its largest component's border. The RNG is seeded
   per game so outcomes stay reproducible (golden-seed gate holds).
-- Build + drive: `cc -O3 -ffast-math -shared -fPIC solver/fast_engine.c -o
+- Build + drive: native `cc -O3 -ffast-math -shared -fPIC solver/fast_engine.c -o
   solver/fast_engine.so`, then `solver/fmcts.py` (or `solver/par_eval.py` for
-  parallel winrate evals), or `solver/server.py` to play in a browser. On the
+  parallel winrate evals), or `solver/server.py` to play in a browser. WASM build (for
+  the in-browser engine; NOTE: **no `-ffast-math`** — it breaks cross-arch board-gen
+  bit-parity, and the search doesn't need it): run `solver/build_wasm.sh` (emcc
+  single-file ESM → `public/fast_engine.js`), then validate with `python3
+  solver/validate_wasm.py`. On the
   iOS-faithful deal, offline self-play winrate is ~91–96%. NOTE: measured LIVE
   winrate is ~77-81% (last-50 ≈76%, matching the phone's own stats screen) — offline
   OVER-predicts live, an open gap (likely real iOS bots stronger than best_bot_move;

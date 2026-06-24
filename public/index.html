@@ -56,8 +56,10 @@
 
   /* AI suggestions panel */
   #ai { padding:4px 12px 2px; }
-  #ai-head { display:flex; align-items:center; justify-content:flex-end;
+  #ai-head { display:flex; align-items:center; justify-content:space-between;
     font-size:12px; letter-spacing:.04em; text-transform:uppercase; margin-bottom:5px; }
+  #record { font-weight:700; font-size:12px; color:#8fcfb8; letter-spacing:.02em; }
+  #record.off { visibility:hidden; }
   #winpct { font-weight:800; font-size:14px; color:#bfe; }
   #winbar { height:5px; border-radius:3px; background:rgba(255,255,255,.06); overflow:hidden; margin-bottom:7px; }
   #winbar > i { display:block; height:100%; width:0;
@@ -105,6 +107,7 @@
       <div id="menu" title="Menu"><span></span><span></span><span></span></div>
       <div id="menupop">
         <div class="mi" id="mi-new">New Game</div>
+        <div class="mi" id="mi-auto">Autoplay</div>
         <div class="div"></div>
         <div class="lbl">Animation speed</div>
         <div class="mi sp" data-speed="instant">Instant</div>
@@ -119,7 +122,7 @@
   <div id="board"><canvas id="cv"></canvas></div>
 
   <div id="ai">
-    <div id="ai-head"><span id="winpct">—</span></div>
+    <div id="ai-head"><span id="record" class="off"></span><span id="winpct">—</span></div>
     <div id="winbar"><i></i></div>
     <div id="sugg"></div>
   </div>
@@ -157,6 +160,9 @@ let battle = null;          // {from,to} highlighted during a fight
 let inputLocked = false;
 let animBoard = null;       // mutable node copy used while animating bot turns
 let reinforceFlash = null;  // Set(nodeId) briefly highlighted on a reinforce step
+let autoplay = false;       // self-play loop: agent plays its top move, no animation
+let autoplayRunning = false;
+const record = { w: 0, l: 0 };  // autoplay win/loss tally (this session)
 
 let suggestions = [];       // ranked top moves from the C-UCT search
 let bestMove = null;        // {from,to,action,q} — #1, drawn as a soft halo
@@ -165,10 +171,39 @@ let searching = false;
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// The C engine now runs IN THE BROWSER as WASM inside a Web Worker (search never
+// blocks the UI). engine.worker.js is a port of solver/server.py — it speaks the
+// exact same /api/game/* contract, so the rest of this file is unchanged: api()
+// just posts to the worker instead of fetching an HTTP server.
+const worker = new Worker('engine.worker.js', { type: 'module' });
+const _pending = new Map();
+let _msgId = 0;
+worker.onmessage = (e) => {
+  const { id, result } = e.data;
+  const r = _pending.get(id);
+  if (r) { _pending.delete(id); r(result); }
+};
+function workerCall(path, method, body) {
+  return new Promise((resolve) => {
+    const id = ++_msgId; _pending.set(id, resolve);
+    worker.postMessage({ id, path, method, body });
+  });
+}
+
 async function api(path, method='GET', body) {
-  const r = await fetch(path, { method, headers:{'Content-Type':'application/json'},
-    body: body ? JSON.stringify(body) : undefined });
-  return r.json();
+  // Core play (new game / attack / end-turn / search / surrender) + re-homing a
+  // loaded board all run in the WASM worker — fully offline, no server needed.
+  if (path.startsWith('/api/game') || path.startsWith('/load-board'))
+    return workerCall(path, method, body);
+  // /load and /grab are the optional iOS workflow: they need solver/server.py
+  // running. Best-effort fetch; offline they just fail with a friendly error.
+  try {
+    const r = await fetch(path, { method, headers:{'Content-Type':'application/json'},
+      body: body ? JSON.stringify(body) : undefined });
+    return r.json();
+  } catch (_) {
+    return { error: 'this board source needs solver/server.py running' };
+  }
 }
 
 function indexMoves() {
@@ -187,6 +222,7 @@ function setState(s) {
   indexMoves();
   renderHeader();
   draw();
+  if (autoplay) return;          // the autoplay loop owns search + W/L + restart
   if (s.over) { suggestions = []; bestMove = null; renderAI(); showModal(); return; }
   requestSearch();
 }
@@ -220,6 +256,66 @@ async function requestSearch() {
   renderAI();
   startHaloPulse();
   draw();
+}
+
+// ---- autoplay: agent self-plays its top move at full search strength, no animation,
+// back-to-back, tallying W/L. A live winrate measurement of our best agent. ----
+function updateRecord() {
+  const el = document.getElementById('record');
+  const n = record.w + record.l;
+  el.classList.toggle('off', !autoplay && n === 0);
+  el.textContent = n ? `${record.w}W–${record.l}L · ${Math.round(100 * record.w / n)}%` : 'Autoplay…';
+}
+
+function setAutoplay(on) {
+  autoplay = on;
+  document.getElementById('mi-auto').classList.toggle('sel', on);
+  updateRecord();
+  if (on) autoplayLoop();        // toggling off is observed by the loop between moves
+}
+
+async function autoplayLoop() {
+  if (autoplayRunning) return;   // single loop at a time
+  autoplayRunning = true;
+  inputLocked = true;
+  hideModal();
+  try {
+    while (autoplay) {
+      if (!state || state.over) {                 // need a live game to play
+        const fresh = await api('/api/game', 'POST', {});
+        if (!autoplay) break;
+        setState(fresh); resize();                // setState is autoplay-guarded
+      }
+      while (autoplay && state && !state.over) {   // play one game to terminal
+        const s = await api(`/api/game/${state.id}/search`, 'POST', { sims: SIMS });
+        if (!autoplay) break;
+        suggestions = s.top || [];
+        bestMove = (s.best && s.best.action !== -1)
+          ? { from: s.best.from, to: s.best.to, q: s.best.q } : null;
+        state._winexp = s.winexp; renderAI(); draw();    // live view of the agent's pick
+        const b = s.best;
+        const res = (!b || b.action === -1)
+          ? await api(`/api/game/${state.id}/end-turn`, 'POST')
+          : await api(`/api/game/${state.id}/attack`, 'POST', { from: b.from, to: b.to });
+        if (!autoplay) break;
+        state = res; indexMoves(); renderHeader(); draw();
+      }
+      if (autoplay && state && state.over) {
+        if (state.youWon) record.w++; else record.l++;
+        updateRecord();
+        setStatus(`Autoplay: ${record.w}W–${record.l}L (${state.youWon ? 'won' : 'lost'})`);
+        await sleep(300);                          // let the terminal board register
+      }
+    }
+  } finally {
+    autoplayRunning = false;
+    inputLocked = false;
+    updateRecord();
+    if (!autoplay && state) {                      // hand control back cleanly
+      if (state.over) { suggestions = []; bestMove = null; renderAI(); showModal(); }
+      else requestSearch();
+    }
+  }
 }
 
 function pip(owner, strength) {
@@ -340,8 +436,9 @@ function draw() {
   if (bestMove && !battle) {
     for (const id of [bestMove.from, bestMove.to]) {
       const p = pos[id];
-      const rr = layout.r * (1.5 + 0.18 * pulse);
-      const g = ctx.createRadialGradient(p.x, p.y, layout.r*0.7, p.x, p.y, rr);
+      const r0 = Math.max(0, layout.r * 0.7);          // guard degenerate (0-size) layout
+      const rr = Math.max(r0, layout.r * (1.5 + 0.18 * pulse));
+      const g = ctx.createRadialGradient(p.x, p.y, r0, p.x, p.y, rr);
       g.addColorStop(0, `rgba(255,211,107,${0.30 + 0.18*pulse})`);
       g.addColorStop(1, 'rgba(255,211,107,0)');
       ctx.fillStyle = g;
@@ -554,9 +651,13 @@ function setSpeed(s) {
 document.getElementById('menu').onclick = () => menupop.classList.toggle('show');
 document.getElementById('mi-new').onclick = () => {
   menupop.classList.remove('show');
+  if (autoplay) setAutoplay(false);              // a manual new game stops autoplay
   if (inputLocked) return;
   if (state && !state.over && !confirm('Start a new game?')) return;
   newGame();
+};
+document.getElementById('mi-auto').onclick = () => {
+  setAutoplay(!autoplay);                         // leave menu open so the check shows
 };
 document.querySelectorAll('#menupop .sp').forEach(el => {
   el.onclick = () => setSpeed(el.dataset.speed);   // leave menu open so the check is visible
@@ -577,9 +678,15 @@ document.getElementById('m-no').onclick = () => { hideModal(); };
 
 async function newGame() {
   const load = new URLSearchParams(location.search).get('load');
-  const res = load
-    ? await api('/load?file=' + encodeURIComponent(load), 'GET')
-    : await api('/api/game', 'POST', {});
+  let res;
+  if (load) {
+    // Fetch the saved board from the optional server, then re-home it into the WASM
+    // worker so the in-browser engine owns the game for every subsequent move.
+    const board = await api('/load?file=' + encodeURIComponent(load), 'GET');
+    res = board.error ? board : await api('/load-board', 'POST', { nodes: board.nodes });
+  } else {
+    res = await api('/api/game', 'POST', {});
+  }
   if (res.error) { setStatus('Load failed: ' + res.error); return; }
   setState(res);
   resize();
