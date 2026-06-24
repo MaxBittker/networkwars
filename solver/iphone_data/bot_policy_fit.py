@@ -116,8 +116,11 @@ def _is_red(t):
 
 
 POLICIES = {
-    # name: (threshold, rank)  -- baseline = shipped best_bot_move
+    # name: (threshold, rank)  -- baseline = OLD best_bot_move (weakest target first)
     'baseline_strict':   (1,  lambda n, t, m: (t.strength, -n.strength, n.id, t.id)),
+    # attacker_first = NOW-SHIPPED ordering: strongest source node first, then its
+    # weakest reachable target (max's observed iOS rule; 7->6 before 5->1).
+    'attacker_first':    (1,  lambda n, t, m: (-n.strength, t.strength, n.id, t.id)),
     # selection variants (strict threshold, isolate target/source choice)
     'strict_maxmargin':  (1,  lambda n, t, m: (-m, t.strength, n.id, t.id)),
     'strict_maxmargin_strongsrc': (1, lambda n, t, m: (-m, -n.strength, t.strength, n.id, t.id)),
