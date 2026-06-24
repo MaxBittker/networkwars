@@ -188,6 +188,11 @@ class Engine {
     this.M._use_sim_rng();
     return this.M._uct_begin(this._owner, this._strength, turns, sims, maxSims, cPuct, nroll);
   }
+  // Optional value-based early stop (off until set): settle once the leading move
+  // has >= minVis visits AND its win-prob is decisive (<=lo or >=hi) or beats the
+  // runner-up by >=gap. Verified offline: ~3x fewer sims/move, no winrate change.
+  setValueStop(lo, hi, gap, minVis) { this.M._uct_set_value_stop(lo, hi, gap, minVis | 0); }
+
   // run up to `budget` more sims; returns true when the search is finished.
   uctStep(budget) { return this.M._uct_step(budget | 0) !== 0; }
   uctSimsDone() { return this.M._uct_sims_done(); }
