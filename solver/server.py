@@ -140,6 +140,30 @@ def do_end_turn(g):
     return out
 
 
+def do_search(g, sims=5000, c_puct=2.5, nroll=1, sim_seed=0x12345678):
+    """Run the SAME C-UCT MCTS the sim/phone driver uses, for RED's current turn.
+
+    Returns the search's win expectation (backed-up Q of the best move) and the
+    ranked top moves. Rolls out on the private sim stream (never touches g['mb'],
+    the real game dice), so calling this can't leak future dice into play."""
+    _select(g)
+    fastnw.use_sim(sim_seed)
+    acts, visits, q = fastnw.uct_search(g['owner'], g['strength'], g['turn'],
+                                        sims, c_puct, nroll, return_q=True)
+    if len(acts) == 0:
+        return {'winexp': None, 'visits': 0, 'top': [], 'best': None}
+    order = sorted(range(len(acts)), key=lambda k: -int(visits[k]))
+    tv = int(visits.sum())
+    top = []
+    for k in order:
+        a = int(acts[k])
+        frm, to = (None, None) if a == -1 else (a >> 8, a & 0xFF)
+        top.append({'action': a, 'from': frm, 'to': to, 'visits': int(visits[k]),
+                    'frac': (int(visits[k]) / tv) if tv else 0.0, 'q': float(q[k])})
+    best = top[0]
+    return {'winexp': best['q'], 'visits': tv, 'top': top[:8], 'best': best}
+
+
 def do_surrender(g):
     g['over'] = True
     g['redResigned'] = True
@@ -239,6 +263,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, do_attack(g, int(b['from']), int(b['to']))); return
             if action == 'end-turn':
                 self._send(200, do_end_turn(g)); return
+            if action == 'search':
+                b = self._body()
+                self._send(200, do_search(g, int(b.get('sims', 6000)))); return
             if action == 'surrender':
                 self._send(200, do_surrender(g)); return
         self._send(404, {})

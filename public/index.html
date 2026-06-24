@@ -7,60 +7,133 @@
 <style>
   :root {
     --red:#ff4d5e; --green:#36d39a; --yellow:#f5c542; --blue:#4d8bff; --purple:#a96bff;
+    --teal:#5fd0d6; --ink:#06140f;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin:0; height:100%; background:#05140f; color:#cfe; font-family: -apple-system, Segoe UI, Roboto, sans-serif; overflow:hidden; }
-  #app { display:flex; flex-direction:column; height:100%; max-width:800px; margin:0 auto; }
-  header { display:flex; justify-content:center; gap:10px; padding:10px; }
-  .chip { width:46px; height:46px; border-radius:50%; display:flex; align-items:center; justify-content:center;
-    font-weight:700; font-size:18px; border:2px solid; background:#05140f; }
-  .chip.cur { box-shadow:0 0 14px 3px currentColor; }
+  html, body { margin:0; height:100%; background:#04100c; color:#cfe;
+    font-family: -apple-system, "SF Pro Display", Segoe UI, Roboto, sans-serif; overflow:hidden; }
+  /* phone-shaped column with the real game's bottom-up green glow */
+  #app { display:flex; flex-direction:column; height:100%; max-width:440px; margin:0 auto;
+    position:relative;
+    background:
+      radial-gradient(120% 70% at 50% 118%, rgba(40,180,120,.30), transparent 60%),
+      radial-gradient(100% 60% at 50% -10%, rgba(40,120,90,.12), transparent 60%),
+      #04100c; }
+
+  /* top bar: menu + faction count chips */
+  header { display:flex; align-items:center; gap:8px; padding:12px 14px 6px; }
+  #menu { width:30px; height:30px; flex:0 0 auto; display:flex; flex-direction:column;
+    justify-content:center; gap:5px; cursor:pointer; opacity:.85; padding:3px; }
+  #menu span { height:2.5px; background:#bfe; border-radius:2px; }
+  #menu:active { opacity:.5; }
+  #chips { flex:1; display:flex; justify-content:center; gap:12px; }
+  .chip { position:relative; width:40px; height:40px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    font-weight:800; font-size:16px; color:#fff;
+    border:2.5px solid currentColor; background:rgba(0,0,0,.55); }
   .chip.red{color:var(--red)} .chip.green{color:var(--green)} .chip.yellow{color:var(--yellow)}
   .chip.blue{color:var(--blue)} .chip.purple{color:var(--purple)}
-  .chip span { color:#fff; }
-  #board { flex:1; position:relative; }
+  .chip { box-shadow:0 0 10px -1px currentColor, inset 0 0 6px -2px currentColor; }
+  .chip.cur { box-shadow:0 0 0 2px #fff, 0 0 16px 1px currentColor; }
+  .chip.dead { opacity:.28; filter:grayscale(.4); }
+  .chip b { color:#fff; }
+
+  #board { flex:1; position:relative; min-height:0; }
   canvas { width:100%; height:100%; display:block; touch-action:none; }
-  footer { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; font-size:18px; }
-  .btn { color:#7fd6ff; font-weight:600; cursor:pointer; user-select:none; padding:6px 4px; }
-  .btn:active { opacity:.6; }
-  #status { color:#9fb; font-size:13px; flex:1; text-align:center; }
-  #modal { position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.6); }
+
+  /* AI suggestions panel */
+  #ai { padding:4px 12px 2px; }
+  #ai-head { display:flex; align-items:center; justify-content:flex-end;
+    font-size:12px; letter-spacing:.04em; text-transform:uppercase; margin-bottom:5px; }
+  #winpct { font-weight:800; font-size:14px; color:#bfe; }
+  #winbar { height:5px; border-radius:3px; background:rgba(255,255,255,.06); overflow:hidden; margin-bottom:7px; }
+  #winbar > i { display:block; height:100%; width:0;
+    background:linear-gradient(90deg, rgba(255,77,94,.45), rgba(245,197,66,.45)); transition:width .35s ease; }
+  /* fixed height = 8 rows (the server caps top moves at 8) so the board never
+     re-layouts when the suggestion count changes */
+  #sugg { display:flex; flex-direction:column; gap:4px; height:284px; overflow:hidden; }
+  .sg { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:9px;
+    background:rgba(255,255,255,.035); cursor:pointer; font-size:13px; }
+  .sg:active { background:rgba(255,255,255,.10); }
+  .sg.top { background:rgba(255,211,107,.10); box-shadow:inset 0 0 0 1px rgba(255,211,107,.35); }
+  .sg .rk { width:14px; color:#7fb6a6; font-weight:700; text-align:center; font-size:11px; }
+  .pip { width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-weight:800; font-size:11px; color:#fff; border:2px solid currentColor; background:rgba(0,0,0,.5);
+    box-shadow:0 0 7px -1px currentColor; flex:0 0 auto; }
+  .pip.red{color:var(--red)} .pip.green{color:var(--green)} .pip.yellow{color:var(--yellow)}
+  .pip.blue{color:var(--blue)} .pip.purple{color:var(--purple)}
+  .sg .arrow { color:#6fae9e; font-weight:700; }
+  .sg .lbl { flex:1; color:#cfe; }
+  .sg .q { font-weight:800; color:#e9f7f0; min-width:42px; text-align:right; }
+  .sg .bar { width:46px; height:4px; border-radius:2px; background:rgba(255,255,255,.10); overflow:hidden; flex:0 0 auto; }
+  .sg .bar > i { display:block; height:100%; background:#5fd0d6; }
+  .sg.muted { opacity:.55; font-style:italic; }
+
+  footer { display:flex; justify-content:space-between; align-items:center;
+    padding:10px 22px calc(10px + env(safe-area-inset-bottom)); font-size:16px; }
+  .act { color:var(--teal); font-weight:700; cursor:pointer; user-select:none; padding:6px 2px; }
+  .act:active { opacity:.55; }
+  .act.off { opacity:.3; pointer-events:none; }
+  #status { color:#8fcfb8; font-size:12px; flex:1; text-align:center; padding:0 8px; }
+
+  #modal { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(0,0,0,.55); backdrop-filter:blur(2px); z-index:5; }
   #modal.show { display:flex; }
-  .dialog { background:#000; border:1px solid #1d3; border-radius:10px; padding:28px 40px; text-align:center; min-width:240px; }
-  .dialog h2 { margin:0 0 6px; font-size:26px; color:#fff; }
-  .dialog p { margin:0 0 18px; color:#cfe; }
-  .dialog .row { display:flex; gap:40px; justify-content:center; }
+  .dialog { background:#020b08; border:1px solid #1c5; border-radius:14px; padding:26px 34px;
+    text-align:center; min-width:250px; box-shadow:0 0 40px -8px rgba(54,211,154,.5); }
+  .dialog h2 { margin:0 0 4px; font-size:25px; color:#fff; }
+  .dialog p { margin:0 0 20px; color:#9fc; font-size:14px; }
+  .dialog .row { display:flex; gap:34px; justify-content:center; }
 </style>
 </head>
 <body>
 <div id="app">
-  <header id="header"></header>
+  <header>
+    <div id="menu" title="New game"><span></span><span></span><span></span></div>
+    <div id="chips"></div>
+  </header>
+
   <div id="board"><canvas id="cv"></canvas></div>
+
+  <div id="ai">
+    <div id="ai-head"><span id="winpct">—</span></div>
+    <div id="winbar"><i></i></div>
+    <div id="sugg"></div>
+  </div>
+
   <footer>
-    <div class="btn" id="surrender">Surrender</div>
-    <div id="status">Select a red node (strength &gt; 1) to attack.</div>
-    <div class="btn" id="endturn">End Turn</div>
+    <div class="act" id="surrender">Surrender</div>
+    <div id="status">Select a red node to attack.</div>
+    <div class="act" id="endturn">End Turn</div>
   </footer>
 </div>
+
 <div id="modal"><div class="dialog">
   <h2 id="m-title">You Won!</h2>
-  <p>Play again?</p>
-  <div class="row"><div class="btn" id="m-no">No</div><div class="btn" id="m-yes">Yes</div></div>
+  <p id="m-sub">Play again?</p>
+  <div class="row"><div class="act" id="m-no">Close</div><div class="act" id="m-yes">New Game</div></div>
 </div></div>
 
 <script>
 const COLORS = { red:'#ff4d5e', green:'#36d39a', yellow:'#f5c542', blue:'#4d8bff', purple:'#a96bff' };
 const ORDER = ['red','green','yellow','blue','purple'];
+const SIMS = 6000;
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
-let state = null;       // latest server view
-let selected = null;    // selected red node id
-let legalSet = new Set();   // "from-to" strings
+
+let state = null;          // latest server view
+let selected = null;       // selected red node id
+let legalSet = new Set();
 let targetsFor = new Map(); // from -> Set(to)
-let overrides = new Map();   // nodeId -> {strength, owner?} shown during battle animation
-let flashId = null;          // node that just lost a coin-flip (brief highlight)
-let battle = null;           // {from,to} kept highlighted for the duration of a fight
-let inputLocked = false;     // block taps/buttons while a battle animates
+let overrides = new Map();  // nodeId -> {strength, owner?} during battle animation
+let flashId = null;
+let battle = null;          // {from,to} highlighted during a fight
+let inputLocked = false;
+
+let suggestions = [];       // ranked top moves from the C-UCT search
+let bestMove = null;        // {from,to,action,q} — #1, drawn as a soft halo
+let searchId = 0;           // cancels stale searches
+let searching = false;
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -79,28 +152,95 @@ function indexMoves() {
   }
 }
 
+// Adopt a fresh server view and (re)plan with the search.
 function setState(s) {
   state = s;
   selected = null;
   indexMoves();
   renderHeader();
   draw();
-  if (s.over) showModal();
+  if (s.over) { suggestions = []; bestMove = null; renderAI(); showModal(); return; }
+  requestSearch();
 }
 
 function renderHeader() {
-  const h = document.getElementById('header');
+  const h = document.getElementById('chips');
   h.innerHTML = '';
   for (const f of ORDER) {
+    const c = state.counts[f];
     const d = document.createElement('div');
-    d.className = 'chip ' + f + (f==='red' ? ' cur' : '');
-    d.innerHTML = '<span>' + state.counts[f] + '</span>';
+    d.className = 'chip ' + f + (f==='red' ? ' cur' : '') + (c===0 ? ' dead' : '');
+    d.innerHTML = '<b>' + c + '</b>';
     h.appendChild(d);
   }
 }
 
-// --- layout ---
-// One uniform scale for both axes (preserve the grid's aspect ratio), centered.
+// ---- AI search + suggestions ----
+async function requestSearch() {
+  if (!state || state.over || inputLocked) return;
+  // Always search even with no attacks available — the search returns END TURN as
+  // the sole suggestion, so the panel still shows the right move.
+  const my = ++searchId;
+  searching = true; renderAI();
+  const res = await api(`/api/game/${state.id}/search`, 'POST', { sims: SIMS });
+  if (my !== searchId) return;            // a newer position superseded this one
+  searching = false;
+  suggestions = res.top || [];
+  bestMove = res.best && res.best.action !== -1
+    ? { from: res.best.from, to: res.best.to, q: res.best.q } : null;
+  state._winexp = res.winexp;
+  renderAI();
+  startHaloPulse();
+  draw();
+}
+
+function pip(owner, strength) {
+  return `<span class="pip ${owner}">${strength}</span>`;
+}
+
+function renderAI() {
+  const wp = document.getElementById('winpct');
+  const wb = document.querySelector('#winbar > i');
+  const sg = document.getElementById('sugg');
+  if (searching && !suggestions.length) {
+    wp.textContent = 'thinking…';
+    sg.innerHTML = '<div class="sg muted">searching…</div>';
+    return;
+  }
+  const w = state && state._winexp != null ? state._winexp : null;
+  wp.textContent = w != null ? `${Math.round(w*100)}% win` : '—';
+  wb.style.width = w != null ? `${Math.max(2, Math.round(w*100))}%` : '0';
+  sg.innerHTML = '';
+  if (!suggestions.length) {
+    sg.innerHTML = '<div class="sg muted">no suggestions</div>';
+    return;
+  }
+  suggestions.forEach((m, i) => {
+    const row = document.createElement('div');
+    row.className = 'sg' + (i===0 ? ' top' : '');
+    let label;
+    if (m.action === -1) {
+      label = `<span class="lbl">End turn</span>`;
+    } else {
+      const f = state.nodes[m.from], t = state.nodes[m.to];
+      label = `${pip(f.owner, f.strength)}<span class="arrow">→</span>${pip(t.owner, t.strength)}`
+            + `<span class="lbl"></span>`;
+    }
+    row.innerHTML = `<span class="rk">${i+1}</span>${label}`
+      + `<span class="bar"><i style="width:${Math.round(m.frac*100)}%"></i></span>`
+      + `<span class="q">${Math.round(m.q*100)}%</span>`;
+    row.onclick = () => playSuggestion(m);
+    sg.appendChild(row);
+  });
+}
+
+async function playSuggestion(m) {
+  if (inputLocked || !state || state.over) return;
+  if (m.action === -1) { endTurn(); return; }
+  await doAttack(m.from, m.to);
+}
+
+// ---- layout ----
 let layout = { r: 20, s: 1, ox: 0, oy: 0 };
 function resize() {
   const dpr = window.devicePixelRatio || 1;
@@ -110,28 +250,34 @@ function resize() {
   if (!state) return;
   const maxX = Math.max(...state.nodes.map(n => n.x)) || 1;
   const maxY = Math.max(...state.nodes.map(n => n.y)) || 1;
-  const pad = 40;
+  const pad = 38;
   const s = Math.min((b.width - pad*2) / maxX, (b.height - pad*2) / maxY);
-  layout = {
-    r: s * 0.30,
-    s,
-    ox: (b.width - maxX * s) / 2,
-    oy: (b.height - maxY * s) / 2,
-  };
+  layout = { r: Math.min(s * 0.34, 26), s,
+    ox: (b.width - maxX * s) / 2, oy: (b.height - maxY * s) / 2 };
   draw();
 }
-function nodePos(n) {
-  return { x: layout.ox + n.x * layout.s, y: layout.oy + n.y * layout.s };
-}
+function nodePos(n) { return { x: layout.ox + n.x * layout.s, y: layout.oy + n.y * layout.s }; }
 
+// flat-top octagon (stop-sign orientation)
 function octagon(x, y, r) {
   ctx.beginPath();
   for (let i = 0; i < 8; i++) {
-    const a = Math.PI/8 + i * Math.PI/4;
+    const a = -Math.PI/2 + Math.PI/8 + i * Math.PI/4;
     const px = x + r * Math.cos(a), py = y + r * Math.sin(a);
     i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
   }
   ctx.closePath();
+}
+
+let haloT0 = 0, haloRAF = 0;
+function startHaloPulse() {
+  if (haloRAF) return;
+  const loop = (t) => {
+    haloRAF = 0;
+    draw();
+    if (bestMove && !battle && !state.over) haloRAF = requestAnimationFrame(loop);
+  };
+  haloRAF = requestAnimationFrame(loop);
 }
 
 function draw() {
@@ -139,6 +285,8 @@ function draw() {
   const b = document.getElementById('board').getBoundingClientRect();
   ctx.clearRect(0, 0, b.width, b.height);
   const pos = state.nodes.map(nodePos);
+  const now = performance.now();
+  const pulse = 0.5 + 0.5 * Math.sin(now / 480);   // 0..1 soft pulse
 
   // links
   for (const [a, c] of state.links) {
@@ -146,13 +294,28 @@ function draw() {
     const hot = inBattle || (selected !== null && (
          (a===selected && targetsFor.get(selected)?.has(c))
       || (c===selected && targetsFor.get(selected)?.has(a))));
+    const isBest = bestMove && !battle && ((a===bestMove.from && c===bestMove.to) || (a===bestMove.to && c===bestMove.from));
     ctx.beginPath();
     ctx.moveTo(pos[a].x, pos[a].y); ctx.lineTo(pos[c].x, pos[c].y);
     if (hot) { ctx.strokeStyle = COLORS.red; ctx.lineWidth = 4; ctx.setLineDash([]); ctx.shadowColor = COLORS.red; ctx.shadowBlur = 10; }
-    else { ctx.strokeStyle = 'rgba(120,200,160,.35)'; ctx.lineWidth = 1.5; ctx.setLineDash([5,5]); ctx.shadowBlur = 0; }
+    else if (isBest) { ctx.strokeStyle = 'rgba(255,211,107,.85)'; ctx.lineWidth = 3; ctx.setLineDash([]); ctx.shadowColor = '#ffd36b'; ctx.shadowBlur = 12; }
+    else { ctx.strokeStyle = 'rgba(120,200,160,.28)'; ctx.lineWidth = 1.5; ctx.setLineDash([4,5]); ctx.shadowBlur = 0; }
     ctx.stroke();
   }
   ctx.setLineDash([]); ctx.shadowBlur = 0;
+
+  // soft AI halo on the #1 recommended from/to (drawn under the nodes)
+  if (bestMove && !battle) {
+    for (const id of [bestMove.from, bestMove.to]) {
+      const p = pos[id];
+      const rr = layout.r * (1.5 + 0.18 * pulse);
+      const g = ctx.createRadialGradient(p.x, p.y, layout.r*0.7, p.x, p.y, rr);
+      g.addColorStop(0, `rgba(255,211,107,${0.30 + 0.18*pulse})`);
+      g.addColorStop(1, 'rgba(255,211,107,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(p.x, p.y, rr, 0, Math.PI*2); ctx.fill();
+    }
+  }
 
   // nodes
   for (const n of state.nodes) {
@@ -166,20 +329,21 @@ function draw() {
     const isSel = n.id === selected || isAtk;
     const isTarget = isDef || (selected !== null && targetsFor.get(selected)?.has(n.id));
     const isFlash = n.id === flashId;
+    // dark fill + glowing colored ring (real-game look)
     ctx.save();
     ctx.shadowColor = col;
-    ctx.shadowBlur = isFlash ? 30 : (isSel ? 26 : (isTarget ? 20 : 12));
+    ctx.shadowBlur = isFlash ? 28 : (isSel ? 22 : (isTarget ? 16 : 11));
     octagon(p.x, p.y, layout.r);
-    ctx.fillStyle = col;
-    ctx.globalAlpha = 0.92;
+    ctx.fillStyle = 'rgba(3,12,9,.92)';
     ctx.fill();
     ctx.restore();
     octagon(p.x, p.y, layout.r);
-    ctx.lineWidth = (isSel || isTarget || isFlash) ? 3 : 1.5;
-    ctx.strokeStyle = (isFlash || isSel) ? '#fff' : (isTarget ? 'rgba(255,255,255,.85)' : 'rgba(255,255,255,.5)');
+    ctx.lineWidth = (isSel || isTarget || isFlash) ? 3.2 : 2.4;
+    ctx.strokeStyle = isFlash ? '#fff' : col;
     ctx.stroke();
+    // number
     ctx.fillStyle = '#fff';
-    ctx.font = `700 ${Math.round(layout.r*1.0)}px -apple-system, sans-serif`;
+    ctx.font = `800 ${Math.round(layout.r*0.95)}px -apple-system, sans-serif`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(strength, p.x, p.y + 1);
   }
@@ -193,7 +357,7 @@ function hitNode(mx, my) {
   return null;
 }
 
-// Replay the server's coin-flip sequence on the two nodes before showing the result.
+// Replay the server's coin-flip sequence before showing the result.
 async function animateBattle(e) {
   const { from, to, fromStart, toStart, flips } = e;
   let a = fromStart, d = toStart;
@@ -202,8 +366,8 @@ async function animateBattle(e) {
   overrides.set(from, { strength: a });
   overrides.set(to, { strength: d });
   draw();
-  await sleep(200);
-  const delay = Math.max(45, Math.min(160, Math.round(900 / Math.max(flips.length, 1))));
+  await sleep(180);
+  const delay = Math.max(45, Math.min(150, Math.round(850 / Math.max(flips.length, 1))));
   for (const f of flips) {
     if (f === 'd') { d--; flashId = to; } else { a--; flashId = from; }
     overrides.set(from, { strength: a });
@@ -216,35 +380,40 @@ async function animateBattle(e) {
     overrides.set(to, { strength: e.toStrength, owner: e.attacker });
     overrides.set(from, { strength: e.fromStrength });
     draw();
-    await sleep(260);
+    await sleep(240);
   }
   overrides.clear();
   battle = null;
+}
+
+async function doAttack(from, to) {
+  selected = null;
+  inputLocked = true;
+  bestMove = null;                 // halo off during the fight
+  setStatus('Attacking…');
+  const res = await api(`/api/game/${state.id}/attack`, 'POST', { from, to });
+  const e = res.log && res.log[0];
+  if (e && e.flips) await animateBattle(e);   // state stays pre-attack during replay
+  state = res; indexMoves(); renderHeader();
+  setStatus(e ? (e.captured ? `Captured node ${e.to}!`
+                            : `Attack on ${e.to} repelled (left ${e.fromStrength}).`) : 'Done.');
+  // keep attacking from the same node if it can still move
+  selected = (!res.over && state.nodes[from].owner === 'red'
+    && state.nodes[from].strength > 1 && targetsFor.has(from)) ? from : null;
+  inputLocked = false;
+  draw();
+  if (state.over) { suggestions = []; bestMove = null; renderAI(); showModal(); }
+  else requestSearch();
 }
 
 async function onTap(mx, my) {
   if (!state || state.over || inputLocked) return;
   const n = hitNode(mx, my);
   if (!n) { selected = null; draw(); return; }
-
   if (selected !== null && targetsFor.get(selected)?.has(n.id)) {
-    const from = selected;
-    selected = null;
-    inputLocked = true;
-    setStatus('Attacking…');
-    const res = await api(`/api/game/${state.id}/attack`, 'POST', { from, to: n.id });
-    const e = res.log && res.log[0];
-    if (e && e.flips) await animateBattle(e);   // state stays pre-attack during replay
-    state = res; indexMoves(); renderHeader();
-    setStatus(e ? (e.captured ? `Captured node ${e.to}!` : `Attack on ${e.to} repelled (left ${e.fromStrength}).`) : 'Done.');
-    // keep attacking from same node if still possible
-    selected = (!res.over && state.nodes[from].owner === 'red' && state.nodes[from].strength > 1 && targetsFor.has(from)) ? from : null;
-    inputLocked = false;
-    draw();
-    if (state.over) showModal();
+    await doAttack(selected, n.id);
     return;
   }
-
   if (n.owner === 'red' && n.strength > 1 && targetsFor.has(n.id)) {
     selected = n.id; setStatus('Tap a highlighted enemy node to attack.');
   } else {
@@ -261,14 +430,16 @@ cv.addEventListener('pointerdown', (ev) => {
   onTap(ev.clientX - b.left, ev.clientY - b.top);
 });
 
-document.getElementById('endturn').onclick = async () => {
+async function endTurn() {
   if (!state || state.over || inputLocked) return;
-  selected = null; setStatus('Bots are moving…');
+  selected = null; bestMove = null; suggestions = []; renderAI();
+  setStatus('Bots are moving…');
   const res = await api(`/api/game/${state.id}/end-turn`, 'POST');
-  setState(res);
   const caps = (res.log||[]).filter(e => e.type==='attack' && e.captured).length;
+  setState(res);
   if (!res.over) setStatus(`Bots finished — ${caps} node(s) changed hands. Your move.`);
-};
+}
+document.getElementById('endturn').onclick = endTurn;
 
 document.getElementById('surrender').onclick = async () => {
   if (!state || state.over || inputLocked) return;
@@ -277,9 +448,16 @@ document.getElementById('surrender').onclick = async () => {
   setState(res);
 };
 
+document.getElementById('menu').onclick = () => {
+  if (inputLocked) return;
+  if (state && !state.over && !confirm('Start a new game?')) return;
+  newGame();
+};
+
 function showModal() {
   const t = document.getElementById('m-title');
   t.textContent = state.youWon ? 'You Won!' : (state.redResigned ? 'You Surrendered' : 'You Lost');
+  document.getElementById('m-sub').textContent = state.youWon ? 'Nicely played.' : 'Play again?';
   document.getElementById('modal').classList.add('show');
 }
 function hideModal() { document.getElementById('modal').classList.remove('show'); }
@@ -287,7 +465,6 @@ document.getElementById('m-yes').onclick = () => { hideModal(); newGame(); };
 document.getElementById('m-no').onclick = () => { hideModal(); };
 
 async function newGame() {
-  // ?load=<file> loads a saved board (e.g. a recorded position) instead of a fresh deal.
   const load = new URLSearchParams(location.search).get('load');
   const res = load
     ? await api('/load?file=' + encodeURIComponent(load), 'GET')
@@ -295,10 +472,14 @@ async function newGame() {
   if (res.error) { setStatus('Load failed: ' + res.error); return; }
   setState(res);
   resize();
-  setStatus(load ? `Loaded board "${load}". Your move.` : 'New game. Select a red node (strength > 1) to attack.');
+  setStatus(load ? `Loaded board "${load}". Your move.` : 'New game. Select a red node to attack.');
 }
 
 window.addEventListener('resize', resize);
+// #board is flex:1 above the variable-height AI panel, so its height changes
+// whenever suggestions load/clear — re-fit the canvas buffer to avoid a squashed
+// (aspect-distorted) board, not just on window resize.
+if (window.ResizeObserver) new ResizeObserver(resize).observe(document.getElementById('board'));
 newGame();
 </script>
 </body>
