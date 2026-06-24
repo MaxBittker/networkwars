@@ -22,11 +22,13 @@ import fastnw
 
 
 def play_game(seed, sims, c_puct=2.5, nroll=1, sim_seed=0x12345678,
-              max_actions=6000):
+              max_actions=6000, max_sims=None):
     state = make_game(seed)
     fastnw.set_topology(state)
     fastnw.use_sim(sim_seed)
     turns = 1
+    total_sims = 0
+    n_moves = 0
     for _ in range(max_actions):
         w = check_winner(state)
         if w is not None or counts(state)[HUMAN] == 0:
@@ -36,7 +38,10 @@ def play_game(seed, sims, c_puct=2.5, nroll=1, sim_seed=0x12345678,
         # subprocess path and never plans with the real game's future dice.
         fastnw.use_sim(sim_seed)
         owner, strength = fastnw.board_arrays(state)
-        acts, visits = fastnw.uct_search(owner, strength, turns, sims, c_puct, nroll)
+        acts, visits = fastnw.uct_search(owner, strength, turns, sims, c_puct,
+                                         nroll, max_sims=max_sims)
+        total_sims += int(visits.sum())   # sum of root visits == sims this search
+        n_moves += 1
         action = -1 if len(acts) == 0 else int(acts[int(np.argmax(visits))])
         # apply to REAL state with REAL rng
         if action == -1:
@@ -63,7 +68,7 @@ def play_game(seed, sims, c_puct=2.5, nroll=1, sim_seed=0x12345678,
                 turns += 1
         if turns > nw.MAX_TURNS:
             break
-    return check_winner(state) == HUMAN, turns
+    return check_winner(state) == HUMAN, turns, total_sims, n_moves
 
 
 def main():
@@ -71,20 +76,36 @@ def main():
     ap.add_argument('--games', type=int, default=120)
     ap.add_argument('--seed-base', type=int, default=1)
     ap.add_argument('--sims', type=int, default=1600)
+    ap.add_argument('--max-sims', type=int, default=None,
+                    help='adaptive ceiling (default = --sims, i.e. fixed budget)')
     ap.add_argument('--c-puct', type=float, default=2.5)
     ap.add_argument('--nroll', type=int, default=1)
+    ap.add_argument('--value-stop', nargs=4, type=float, metavar=('LO','HI','GAP','MINVIS'),
+                    help='enable value-based early stop, e.g. --value-stop 0.03 0.97 0.15 512')
     flags = ap.parse_args()
+
+    if flags.value_stop:
+        lo, hi, gap, minvis = flags.value_stop
+        fastnw.set_value_stop(lo, hi, gap, int(minvis))
 
     t0 = time.time()
     wins = 0
+    tot_sims = 0
+    tot_moves = 0
     for s in range(flags.seed_base, flags.seed_base + flags.games):
-        won, _ = play_game(s, flags.sims, flags.c_puct, flags.nroll)
+        won, _, gs, gm = play_game(s, flags.sims, flags.c_puct, flags.nroll,
+                                   max_sims=flags.max_sims)
+        tot_sims += gs
+        tot_moves += gm
         if won:
             wins += 1
     dt = time.time() - t0
-    print(f'fast-UCT sims={flags.sims} c={flags.c_puct} nroll={flags.nroll} — '
+    vs = f' value-stop={flags.value_stop}' if flags.value_stop else ''
+    print(f'fast-UCT sims={flags.sims} max_sims={flags.max_sims} c={flags.c_puct} '
+          f'nroll={flags.nroll}{vs} — '
           f'{flags.games} games seeds {flags.seed_base}..{flags.seed_base+flags.games-1}')
     print(f'  winrate : {wins/flags.games*100:.1f}%  ({wins}/{flags.games})')
+    print(f'  avg sims/move : {tot_sims/max(1,tot_moves):.0f}  ({tot_moves} moves)')
     print(f'  time    : {dt:.1f}s, {dt/flags.games*1000:.0f} ms/game')
 
 

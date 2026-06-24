@@ -36,7 +36,7 @@ function view(g) {
   const counts = {};
   for (let f = 0; f < 5; f++) counts[FACTIONS[f]] = c[f];
   const legal = E.legalMoves(g.owner, g.strength, g.adj).map(([a, b]) => ({ from: a, to: b }));
-  return { id: g.id, nodes, links: g.links, counts, turn: g.turn, legalMoves: legal,
+  return { id: g.id, seed: g.seed, nodes, links: g.links, counts, turn: g.turn, legalMoves: legal,
     over: g.over, youWon: g.youWon, redResigned: g.redResigned, winner: g.winner };
 }
 
@@ -140,10 +140,9 @@ function doEndTurn(g) {
 // The SAME C-UCT MCTS the sim/phone driver uses, for RED's current turn. Rolls out on
 // the private sim stream (never g.mb, the real game dice), so calling this can't leak
 // future dice into play. Port of server.do_search.
-function doSearch(g, sims = 6000, cPuct = 2.5, nroll = 1, simSeed = 0x12345678) {
-  select(g);
-  E.useSim(simSeed);
-  const { acts, visits, q } = E.uctSearch(g.owner, g.strength, g.turn, sims, cPuct, nroll);
+// Shape a root-children readout (acts/visits/q from the engine) into the ranked
+// {winexp, visits, top, best} the UI speaks — used for both progress + final.
+function buildResult(acts, visits, q) {
   if (acts.length === 0) return { winexp: null, visits: 0, top: [], best: null };
   const order = [...acts.keys()].sort((a, b) => visits[b] - visits[a]);
   let tv = 0; for (const v of visits) tv += v;
@@ -154,8 +153,39 @@ function doSearch(g, sims = 6000, cPuct = 2.5, nroll = 1, simSeed = 0x12345678) 
     top.push({ action: a, from: frm, to, visits: visits[k],
       frac: tv ? visits[k] / tv : 0, q: q[k] });
   }
-  const best = top[0];
-  return { winexp: best.q, visits: tv, top: top.slice(0, 8), best };
+  return { winexp: top[0].q, visits: tv, top: top.slice(0, 8), best: top[0] };
+}
+
+// Adaptive budget: floor `sims`, ceiling `maxSims`. The search runs past the
+// floor only while the top two root moves stay close (it thinks harder exactly
+// when the position is close), and stops once the best move is uncatchable.
+// maxSims ~150k ≈ up to ~4-5s in the worker on a genuinely contested position.
+//
+// Driven in CHUNK-sized steps over a persistent tree (bit-identical to the
+// one-shot uctSearch) so we can post intermediate root stats: with `tag` set, a
+// {type:'progress', tag, result} message is sent after every chunk, letting the
+// page watch the suggestions + win% converge live. The final result is returned
+// normally; it's the threshold-gated answer autoplay commits its move on.
+const SEARCH_CHUNK = 2000;
+function doSearch(g, sims = 2000, cPuct = 2.5, nroll = 1, simSeed = 0x12345678,
+                  maxSims = 150000, tag = null) {
+  select(g);
+  E.useSim(simSeed);
+  E.uctBegin(g.owner, g.strength, g.turn, sims, cPuct, nroll, maxSims);
+  let done = false;
+  while (!done) {
+    done = E.uctStep(SEARCH_CHUNK);
+    if (tag != null) {
+      const r = E.uctReport();
+      const out = buildResult(r.acts, r.visits, r.q);
+      out.sims = E.uctSimsDone(); out.done = done;
+      self.postMessage({ type: 'progress', tag, result: out });
+    }
+  }
+  const r = E.uctReport();
+  const out = buildResult(r.acts, r.visits, r.q);
+  out.sims = E.uctSimsDone(); out.done = true;
+  return out;
 }
 
 function doSurrender(g) {
@@ -182,7 +212,10 @@ function route(path, method, body) {
     if (method === 'GET' && action === '') return view(g);
     if (action === 'attack') return doAttack(g, body.from | 0, body.to | 0);
     if (action === 'end-turn') return doEndTurn(g);
-    if (action === 'search') return doSearch(g, body.sims != null ? body.sims | 0 : 6000);
+    if (action === 'search') return doSearch(g,
+      body.sims != null ? body.sims | 0 : 2000, 2.5, 1, 0x12345678,
+      body.maxSims != null ? body.maxSims | 0 : 150000,
+      body.tag != null ? body.tag : null);
     if (action === 'surrender') return doSurrender(g);
   }
 

@@ -43,7 +43,7 @@ _lib.rollout.restype = ctypes.c_int
 _lib.end_turn.argtypes = [_i32p, _i32p]
 _lib.resolve_battle_logged.argtypes = [_i32p, _i32p, ctypes.c_int, ctypes.c_int,
                                        _i32p, _i32p, _i32p]
-_lib.uct_search.argtypes = [_i32p, _i32p, ctypes.c_int, ctypes.c_int,
+_lib.uct_search.argtypes = [_i32p, _i32p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                             ctypes.c_double, ctypes.c_int, _i32p, _i32p, _dblp]
 _lib.uct_search.restype = ctypes.c_int
 _lib.ext_resolve_battle.argtypes = [_i32p, _i32p, ctypes.c_int, ctypes.c_int]
@@ -53,6 +53,15 @@ _lib.ext_best_bot_move.argtypes = [_i32p, _i32p, ctypes.c_int]
 _lib.ext_best_bot_move.restype = ctypes.c_int
 _lib.ext_check_winner.argtypes = [_i32p]
 _lib.ext_check_winner.restype = ctypes.c_int
+_lib.uct_set_value_stop.argtypes = [ctypes.c_double, ctypes.c_double,
+                                    ctypes.c_double, ctypes.c_int]
+
+
+def set_value_stop(lo=-1.0, hi=2.0, gap=2.0, min_vis=1 << 30):
+    """Enable/configure the optional value-based early stop (default args = OFF).
+    Settle once the leading move has >= min_vis visits AND its RED win-prob is
+    decisive (<= lo or >= hi) or beats the runner-up by >= gap."""
+    _lib.uct_set_value_stop(float(lo), float(hi), float(gap), int(min_vis))
 
 
 def _p(a):
@@ -212,15 +221,23 @@ _out_visits = np.zeros(4096, dtype=np.int32)
 _out_q = np.zeros(4096, dtype=np.float64)
 
 
-def uct_search(owner, strength, turns, sims, c_puct=2.5, nroll=1, return_q=False):
+def uct_search(owner, strength, turns, sims, c_puct=2.5, nroll=1, return_q=False,
+               max_sims=None):
     """Run the C UCT search. Returns (acts, visits) for the root's legal children
     (acts are frm<<8|to, or -1 for END_TURN). With return_q, also returns per-child
     Q (the backed-up RED win-prob estimate = winexp).
 
+    `sims` is the floor (min budget); `max_sims` (default == sims, i.e. fixed
+    budget) is the ceiling. When max_sims > sims the search runs adaptively: it
+    keeps going past `sims` while the top two root moves stay close and stops once
+    the leader is uncatchable (move-identical to running the full ceiling).
+
     Always rolls out on the private sim stream (never the real mb32 game dice), so a
     preceding real-game battle can't leak into the search. Seed it with use_sim()."""
+    if max_sims is None:
+        max_sims = sims
     _lib.use_sim_rng()
-    nc = _lib.uct_search(_p(owner), _p(strength), turns, sims, c_puct, nroll,
+    nc = _lib.uct_search(_p(owner), _p(strength), turns, sims, max_sims, c_puct, nroll,
                          _p(_out_acts), _p(_out_visits),
                          _out_q.ctypes.data_as(_dblp))
     if nc < 0:

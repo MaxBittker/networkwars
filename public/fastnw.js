@@ -161,13 +161,39 @@ class Engine {
   // ---- search ----
   // Always rolls out on the private sim stream (seed it with useSim() first), never
   // the real mb32 game dice, so a preceding real-game battle can't leak into search.
-  uctSearch(owner, strength, turns, sims, cPuct = 2.5, nroll = 1) {
+  // `sims` is the floor; `maxSims` (default == sims => fixed budget) the ceiling.
+  // maxSims > sims runs adaptively: keeps searching while the top two root moves
+  // stay close, stops once the leader is uncatchable (move-identical to full).
+  uctSearch(owner, strength, turns, sims, cPuct = 2.5, nroll = 1, maxSims = null) {
+    if (maxSims == null) maxSims = sims;
     this._put(this._owner, owner);
     this._put(this._strength, strength);
     this.M._use_sim_rng();
-    const nc = this.M._uct_search(this._owner, this._strength, turns, sims, cPuct, nroll,
+    const nc = this.M._uct_search(this._owner, this._strength, turns, sims, maxSims, cPuct, nroll,
       this._acts, this._visits, this._q);
     if (nc < 0) throw new Error('uct_search pool alloc failed');
+    const acts = this._get(this._acts, nc);
+    const visits = this._get(this._visits, nc);
+    const q = this.M.HEAPF64.slice(this._q >> 3, (this._q >> 3) + nc);
+    return { acts, visits, q };
+  }
+
+  // ---- streaming search (persistent tree): begin once, then step/report in a
+  // loop to visualize the root stats converging. Runs to the SAME terminal state
+  // as uctSearch (bit-identical), just observed in chunks. Seed sim with useSim().
+  uctBegin(owner, strength, turns, sims, cPuct = 2.5, nroll = 1, maxSims = null) {
+    if (maxSims == null) maxSims = sims;
+    this._put(this._owner, owner);
+    this._put(this._strength, strength);
+    this.M._use_sim_rng();
+    return this.M._uct_begin(this._owner, this._strength, turns, sims, maxSims, cPuct, nroll);
+  }
+  // run up to `budget` more sims; returns true when the search is finished.
+  uctStep(budget) { return this.M._uct_step(budget | 0) !== 0; }
+  uctSimsDone() { return this.M._uct_sims_done(); }
+  // read current root children (acts/visits/q) without disturbing the tree.
+  uctReport() {
+    const nc = this.M._uct_report(this._acts, this._visits, this._q);
     const acts = this._get(this._acts, nc);
     const visits = this._get(this._visits, nc);
     const q = this.M.HEAPF64.slice(this._q >> 3, (this._q >> 3) + nc);

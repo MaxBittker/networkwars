@@ -37,14 +37,30 @@
  * See solver/BATTLE_FUNCTION.md / iphone_data/refit_emergent.py. */
 #define PR_G  3.40
 #define PR_C  1.26
+/* pow(x, PR_G) lookup for the rollout-hot battle math: x is an integer strength,
+ * so cache x^PR_G for x in [0,PR_TBL). The table is filled from the SAME pow()
+ * call, so pr_powg(x) == pow((double)x, PR_G) bit-for-bit on each arch — battle
+ * outcomes (hence golden seeds + WASM parity) are unchanged; this only removes a
+ * pow() per battle from the inner rollout loop. Strengths >= PR_TBL fall back. */
+#define PR_TBL 1024
+static double PR_POW[PR_TBL];
+static int    PR_POW_READY = 0;
+static inline double pr_powg(int x) {
+    if (__builtin_expect(!PR_POW_READY, 0)) {
+        for (int i = 0; i < PR_TBL; i++) PR_POW[i] = pow((double)i, PR_G);
+        PR_POW_READY = 1;
+    }
+    return (unsigned)x < (unsigned)PR_TBL ? PR_POW[x] : pow((double)x, PR_G);
+}
 static inline double pr_cap(int a, int d) {
     if (a < 1) return 0.0;
     if (d < 1) return 1.0;
-    double ag = pow((double)a, PR_G), dg = pow((double)d, PR_G);
+    double ag = pr_powg(a), dg = pr_powg(d);
     return ag / (ag + PR_C * dg);
 }
 #define A_END (-1)          /* action sentinel: distinct from any frm<<8|to (>=0) */
 #define MAXCHILD 512        /* max legal RED actions at one node */
+#define UCT_CHECK_EVERY 256 /* adaptive-stop: re-check root visit margin this often */
 
 /* ---- topology (fixed per game) ---- */
 static int N = 0;
@@ -524,7 +540,11 @@ static int best_bot_move(const int *owner, const int *strength, int faction) {
      * owned node that has any legal target; for that strength tier take the
      * WEAKEST reachable defender (== biggest margin once the attacker is fixed);
      * break remaining ties at random. So 7->6 fires before 5->1. */
-    int rf[MAXN * 8], rt[MAXN * 8], rn=0;
+    /* Single pass: keep only the moves at the best (strongest-attacker,
+     * weakest-defender) tier seen so far — reset the bucket when a strictly
+     * better tier appears. Yields the same tier set in the same scan order as
+     * the old two-pass collect-then-filter, so the random tie-break is identical. */
+    int pf[MAXN * 8], pt[MAXN * 8], pn = 0;
     int best_a=0, best_d=0; int found=0;
     for (int i = 0; i < N; i++) {
         if (owner[i] != faction || strength[i] <= 1) continue;
@@ -533,20 +553,15 @@ static int best_bot_move(const int *owner, const int *strength, int faction) {
             int j = ADJ[k];
             if (owner[j] == faction || strength[j] >= si) continue;
             int dj = strength[j];
-            if (rn < MAXN * 8) { rf[rn] = i; rt[rn] = j; rn++; }
             if (!found || si > best_a || (si == best_a && dj < best_d)) {
                 best_a = si; best_d = dj; found = 1;
+                pn = 0; pf[pn] = i; pt[pn] = j; pn++;          /* new better tier */
+            } else if (si == best_a && dj == best_d && pn < MAXN * 8) {
+                pf[pn] = i; pt[pn] = j; pn++;                  /* same tier */
             }
         }
     }
     if (!found) return 0;
-    /* collect every move at the (strongest-attacker, weakest-defender) tier */
-    int pf[MAXN * 8], pt[MAXN * 8], pn = 0;
-    for (int r = 0; r < rn; r++) {
-        if (strength[rf[r]] == best_a && strength[rt[r]] == best_d) {
-            pf[pn] = rf[r]; pt[pn] = rt[r]; pn++;
-        }
-    }
     int idx = 0;
     if (pn > 1) {
         idx = (int)(RNG() * pn);
@@ -618,8 +633,10 @@ static void run_bot_turn(int *owner, int *strength, int faction) {
         int mv = best_bot_move(owner, strength, faction);
         if (mv == 0) break;
         mv -= 1;
-        resolve_battle(owner, strength, mv >> 8, mv & 0xFF);
-        if (check_winner(owner) != -1) return;
+        int to = mv & 0xFF;
+        resolve_battle(owner, strength, mv >> 8, to);
+        /* only a capture (this faction now owns `to`) can change the winner. */
+        if (owner[to] == faction && check_winner(owner) != -1) return;
     }
     reinforce(owner, strength, faction);
 }
@@ -651,8 +668,11 @@ int rollout(const int *owner_in, const int *strength_in, int turns) {
         while (g < 200) {
             int mv = ranked_best_move(owner, strength);
             if (mv == A_END) break;
-            resolve_battle(owner, strength, mv >> 8, mv & 0xFF);
-            if (check_winner(owner) != -1) break;
+            int to = mv & 0xFF;
+            resolve_battle(owner, strength, mv >> 8, to);
+            /* only a capture (red now owns `to`) can change the winner; a repel
+             * leaves all ownership — and thus the win-check — unchanged. */
+            if (owner[to] == 0 && check_winner(owner) != -1) break;
             g++;
         }
         w = check_winner(owner); if (w != -1) return w == 0;
@@ -683,6 +703,7 @@ typedef struct {
     int child_off;     /* index into edge pools */
     int expanded;
     int terminal;
+    long total_n;      /* cached sum of child visits (== times selected through) */
     double v;
 } MNode;
 
@@ -730,7 +751,8 @@ static int legal_red(const int *owner, const int *strength, int *buf) {
 static int new_node(void) {
     if (next_node >= NODE_CAP) return -1;
     MNode *m = &NODES[next_node];
-    m->n_children = 0; m->child_off = -1; m->expanded = 0; m->terminal = 0; m->v = 0.5;
+    m->n_children = 0; m->child_off = -1; m->expanded = 0; m->terminal = 0;
+    m->total_n = 0; m->v = 0.5;
     return (int)next_node++;
 }
 
@@ -755,103 +777,166 @@ static int apply_red(int *owner, int *strength, int act, int *pturns, int *winne
     }
 }
 
-/* Run the C UCT search from (owner_in, strength_in). Reports the root's legal
- * children: out_acts[k] (frm<<8|to, or A_END), out_visits[k], out_q[k] (backed-up
- * RED win-prob = winexp). Returns child count, or -1 on pool alloc failure.
- * nroll = rollouts averaged per leaf. */
-int uct_search(const int *owner_in, const int *strength_in, int root_turns,
-               int sims, double c_puct, int nroll,
-               int *out_acts, int *out_visits, double *out_q) {
-    long ncap = (long)sims * 24 + 4096;
-    long ecap = ncap * 40;
-    if (!ensure_pools(ncap, ecap)) return -1;
-    next_node = 0; next_edge = 0;
+/* ---- search context: shared by the one-shot uct_search and the streaming
+ * uct_begin/uct_step/uct_report API, so both run the IDENTICAL sim + early-stop
+ * (the chunked path just reads intermediate stats between sims). ---- */
+static int    S_root;
+static int    S_root_turns;
+static double S_cpuct;
+static int    S_nroll;
+static int    S_min_sims, S_max_sims;
+static int    S_sims;                          /* sims completed so far */
+static int    S_owner0[MAXN], S_strength0[MAXN];
 
-    int root = new_node();
+/* run exactly one simulation against the persistent tree; increments S_sims. */
+static void uct_sim_once(void) {
     int legal[MAXCHILD];
     int owner[MAXN], strength[MAXN];
+    static int path_eidx[16384];
+    memcpy(owner, S_owner0, N * sizeof(int));
+    memcpy(strength, S_strength0, N * sizeof(int));
+    int turns = S_root_turns;
+    int cur = S_root;
+    int plen = 0;
+    int leaf_value_set = 0; double leaf_value = 0.0;
 
-    for (int sim = 0; sim < sims; sim++) {
-        memcpy(owner, owner_in, N * sizeof(int));
-        memcpy(strength, strength_in, N * sizeof(int));
-        int turns = root_turns;
-        int cur = root;
-        static int path_eidx[16384]; int plen = 0;
-        int leaf_value_set = 0; double leaf_value = 0.0;
-
-        for (;;) {
-            if (plen >= 16384) { leaf_value = NODES[cur].v; leaf_value_set = 1; break; }
-            MNode *node = &NODES[cur];
-            /* terminal node cached by a prior sim: treat as leaf (never select). */
-            if (node->terminal) { leaf_value = node->v; leaf_value_set = 1; break; }
-            if (!node->expanded) {
-                int nc = legal_red(owner, strength, legal);
-                if (next_edge + nc > EDGE_CAP) { leaf_value = node->v; leaf_value_set = 1; break; }
-                node->child_off = (int)next_edge;
-                node->n_children = nc;
-                next_edge += nc;
-                for (int k = 0; k < nc; k++) {
-                    int off = node->child_off + k;
-                    E_ACT[off] = legal[k];
-                    E_CHILD[off] = -1;
-                    E_N[off] = 0;
-                    E_W[off] = 0.0;
-                    E_P[off] = 1.0 / nc;     /* uniform priors */
-                }
-                /* leaf eval = rollout average */
-                double v = 0.0;
-                for (int r = 0; r < nroll; r++) v += rollout(owner, strength, turns);
-                v /= (double)nroll;
-                node->expanded = 1;
-                node->v = v;
-                leaf_value = v; leaf_value_set = 1;
-                break;
-            }
-            /* select best child (PUCT) */
-            int nc = node->n_children;
-            long total = 0;
-            for (int k = 0; k < nc; k++) total += E_N[node->child_off + k];
-            double sqrt_total = sqrt((double)total) + 1e-8;
-            int best_k = 0; double best_u = -1e30;
+    for (;;) {
+        if (plen >= 16384) { leaf_value = NODES[cur].v; leaf_value_set = 1; break; }
+        MNode *node = &NODES[cur];
+        /* terminal node cached by a prior sim: treat as leaf (never select). */
+        if (node->terminal) { leaf_value = node->v; leaf_value_set = 1; break; }
+        if (!node->expanded) {
+            int nc = legal_red(owner, strength, legal);
+            if (next_edge + nc > EDGE_CAP) { leaf_value = node->v; leaf_value_set = 1; break; }
+            node->child_off = (int)next_edge;
+            node->n_children = nc;
+            next_edge += nc;
             for (int k = 0; k < nc; k++) {
                 int off = node->child_off + k;
-                int n = E_N[off];
-                double q = (n > 0) ? (E_W[off] / n) : node->v;
-                double u = q + c_puct * E_P[off] * sqrt_total / (1 + n);
-                if (u > best_u) { best_u = u; best_k = k; }
+                E_ACT[off] = legal[k];
+                E_CHILD[off] = -1;
+                E_N[off] = 0;
+                E_W[off] = 0.0;
+                E_P[off] = 1.0 / nc;     /* uniform priors */
             }
-            int off = node->child_off + best_k;
-            path_eidx[plen] = off; plen++;
-            int act = E_ACT[off];
-            int winner = 0;
-            int term = apply_red(owner, strength, act, &turns, &winner);
-            if (term) {
-                leaf_value = winner ? 1.0 : 0.0; leaf_value_set = 1;
-                if (E_CHILD[off] < 0) {
-                    int cn = new_node();
-                    if (cn >= 0) { NODES[cn].expanded = 1; NODES[cn].terminal = 1; NODES[cn].v = leaf_value; E_CHILD[off] = cn; }
-                }
-                break;
-            }
-            if (turns > MAX_TURNS) { leaf_value = 0.0; leaf_value_set = 1; break; }
+            /* leaf eval = rollout average */
+            double v = 0.0;
+            for (int r = 0; r < S_nroll; r++) v += rollout(owner, strength, turns);
+            v /= (double)S_nroll;
+            node->expanded = 1;
+            node->v = v;
+            leaf_value = v; leaf_value_set = 1;
+            break;
+        }
+        /* select best child (PUCT). total == sum of child visits from prior
+         * sims; cached on the node (each pass-through adds exactly one). */
+        int nc = node->n_children;
+        long total = node->total_n;
+        double sqrt_total = sqrt((double)total) + 1e-8;
+        int best_k = 0; double best_u = -1e30;
+        for (int k = 0; k < nc; k++) {
+            int off = node->child_off + k;
+            int n = E_N[off];
+            double q = (n > 0) ? (E_W[off] / n) : node->v;
+            double u = q + S_cpuct * E_P[off] * sqrt_total / (1 + n);
+            if (u > best_u) { best_u = u; best_k = k; }
+        }
+        int off = node->child_off + best_k;
+        node->total_n++;        /* this pass adds one visit through this node */
+        path_eidx[plen] = off; plen++;
+        int act = E_ACT[off];
+        int winner = 0;
+        int term = apply_red(owner, strength, act, &turns, &winner);
+        if (term) {
+            leaf_value = winner ? 1.0 : 0.0; leaf_value_set = 1;
             if (E_CHILD[off] < 0) {
                 int cn = new_node();
-                if (cn < 0) { leaf_value = NODES[cur].v; leaf_value_set = 1; break; }
-                E_CHILD[off] = cn;
+                if (cn >= 0) { NODES[cn].expanded = 1; NODES[cn].terminal = 1; NODES[cn].v = leaf_value; E_CHILD[off] = cn; }
             }
-            cur = E_CHILD[off];
+            break;
         }
-        /* backup */
-        double val = leaf_value_set ? leaf_value : 0.5;
-        for (int p = 0; p < plen; p++) {
-            int off = path_eidx[p];
-            E_N[off] += 1;
-            E_W[off] += val;
+        if (turns > MAX_TURNS) { leaf_value = 0.0; leaf_value_set = 1; break; }
+        if (E_CHILD[off] < 0) {
+            int cn = new_node();
+            if (cn < 0) { leaf_value = NODES[cur].v; leaf_value_set = 1; break; }
+            E_CHILD[off] = cn;
+        }
+        cur = E_CHILD[off];
+    }
+    /* backup */
+    double val = leaf_value_set ? leaf_value : 0.5;
+    for (int p = 0; p < plen; p++) {
+        int off = path_eidx[p];
+        E_N[off] += 1;
+        E_W[off] += val;
+    }
+    S_sims++;
+}
+
+/* Optional value-based early stop — OFF by default, so uct_search and the gates
+ * keep the strict (move-identical) visit-margin behavior. Enable via
+ * uct_set_value_stop to "settle on a clear winner": once the leading move has
+ * >= min_vis visits AND its RED win-prob is decisive (<= lo or >= hi) OR it
+ * dominates the runner-up by >= gap, stop early. Rollout value is most accurate
+ * at decided extremes (memory rollout-policy-accuracy), so the decisive case is
+ * the safe one; gap is the riskier midgame case — keep it conservative. */
+static double VS_LO = -1.0, VS_HI = 2.0, VS_GAP = 2.0;   /* disabled: never fire */
+static int    VS_MINVIS = 1 << 30;
+void uct_set_value_stop(double lo, double hi, double gap, int min_vis) {
+    VS_LO = lo; VS_HI = hi; VS_GAP = gap; VS_MINVIS = min_vis;
+}
+
+/* early-stop test: stop when the move is locked by visit-margin (runner-up can't
+ * catch the leader in the sims remaining — move-identical) or, if value-stop is
+ * enabled, when the leader is a clear winner by win-prob. */
+static int uct_should_stop(void) {
+    MNode *rn0 = &NODES[S_root];
+    if (!rn0->expanded) return 0;
+    int rnc0 = rn0->n_children, off0 = rn0->child_off;
+    long b1 = -1, b2 = -1; int b1k = -1, b2k = -1;
+    for (int k = 0; k < rnc0; k++) {
+        long n = E_N[off0 + k];
+        if (n > b1) { b2 = b1; b2k = b1k; b1 = n; b1k = k; }
+        else if (n > b2) { b2 = n; b2k = k; }
+    }
+    long remaining = (long)S_max_sims - S_sims;
+    if (rnc0 <= 1 || b1 - b2 > remaining) return 1;     /* visit-margin (move-identical) */
+    if (b1 >= VS_MINVIS && b1k >= 0) {                  /* value-based "clear winner" */
+        double q1 = E_W[off0 + b1k] / (double)b1;       /* leader's RED win-prob */
+        if (q1 <= VS_LO || q1 >= VS_HI) return 1;        /* decided outcome */
+        if (b2k >= 0 && b2 >= VS_MINVIS) {
+            double q2 = E_W[off0 + b2k] / (double)b2;
+            if (q1 - q2 >= VS_GAP) return 1;             /* leader dominates in value */
         }
     }
+    return 0;
+}
 
-    /* report root children visit counts + backed-up Q */
-    MNode *rn = &NODES[root];
+/* set up pools + root for a fresh search; returns 0 ok, -1 on pool alloc fail. */
+static int uct_setup(const int *owner_in, const int *strength_in, int root_turns,
+                     int min_sims, int max_sims, double c_puct, int nroll) {
+    if (min_sims < 1) min_sims = 1;
+    if (max_sims < min_sims) max_sims = min_sims;
+    /* Measured peak usage: ~1.0 nodes/sim, ~7-8 edges/node. Size pools to
+     * max_sims with ~1.5x/12x headroom; any overflow degrades gracefully
+     * (new_node() returns -1, edge-cap hit falls back to a leaf). */
+    long ncap = (long)max_sims + max_sims / 2 + 4096;
+    long ecap = ncap * 12;
+    if (!ensure_pools(ncap, ecap)) return -1;
+    next_node = 0; next_edge = 0;
+    S_root = new_node();
+    S_root_turns = root_turns;
+    S_cpuct = c_puct; S_nroll = nroll;
+    S_min_sims = min_sims; S_max_sims = max_sims;
+    S_sims = 0;
+    memcpy(S_owner0,    owner_in,    N * sizeof(int));
+    memcpy(S_strength0, strength_in, N * sizeof(int));
+    return 0;
+}
+
+/* read the root children into out_* (acts=frm<<8|to or A_END, visits, Q=winexp). */
+static int uct_collect(int *out_acts, int *out_visits, double *out_q) {
+    MNode *rn = &NODES[S_root];
     int nc = rn->n_children;
     for (int k = 0; k < nc; k++) {
         int off = rn->child_off + k;
@@ -860,6 +945,54 @@ int uct_search(const int *owner_in, const int *strength_in, int root_turns,
         if (out_q) out_q[k] = (E_N[off] > 0) ? (E_W[off] / E_N[off]) : rn->v;
     }
     return nc;
+}
+
+/* ---- streaming API: drive the search in chunks so the UI can visualize root
+ * stats converging. uct_begin() then repeatedly uct_step()+uct_report() until
+ * uct_step returns 1. Shares uct_sim_once/uct_should_stop with uct_search, so a
+ * chunked run reaches the exact same terminal state as the one-shot. ---- */
+int uct_begin(const int *owner_in, const int *strength_in, int root_turns,
+              int min_sims, int max_sims, double c_puct, int nroll) {
+    return uct_setup(owner_in, strength_in, root_turns, min_sims, max_sims, c_puct, nroll);
+}
+/* run up to `budget` more sims; returns 1 when finished (early-stop locked or
+ * max_sims reached), else 0. Early-stop checked every UCT_CHECK_EVERY sims past
+ * min_sims — same cadence as the one-shot, so totals match regardless of chunking. */
+int uct_step(int budget) {
+    long target = (long)S_sims + budget;
+    if (target > S_max_sims) target = S_max_sims;
+    while (S_sims < target) {
+        uct_sim_once();                 /* increments S_sims */
+        if (S_sims >= S_min_sims && S_sims < S_max_sims
+                && S_sims % UCT_CHECK_EVERY == 0 && uct_should_stop())
+            return 1;
+    }
+    return S_sims >= S_max_sims ? 1 : 0;
+}
+int uct_report(int *out_acts, int *out_visits, double *out_q) {
+    return uct_collect(out_acts, out_visits, out_q);
+}
+int uct_sims_done(void) { return S_sims; }
+
+/* Run the C UCT search from (owner_in, strength_in). Reports the root's legal
+ * children: out_acts[k] (frm<<8|to, or A_END), out_visits[k], out_q[k] (backed-up
+ * RED win-prob = winexp). Returns child count, or -1 on pool alloc failure.
+ * nroll = rollouts averaged per leaf.
+ *
+ * Adaptive budget: always runs at least min_sims, then stops as soon as the
+ * best root move's visit lead over the runner-up exceeds the sims left to
+ * max_sims (the runner-up can no longer catch it, so the argmax-visits pick is
+ * already locked — identical to running to max_sims). Pass min_sims==max_sims
+ * for a fixed budget. So it "thinks harder" only while the top two stay close.
+ * Implemented as the streaming path run to completion in one step, so the
+ * one-shot and chunked searches are bit-identical. */
+int uct_search(const int *owner_in, const int *strength_in, int root_turns,
+               int min_sims, int max_sims, double c_puct, int nroll,
+               int *out_acts, int *out_visits, double *out_q) {
+    if (uct_setup(owner_in, strength_in, root_turns, min_sims, max_sims, c_puct, nroll) < 0)
+        return -1;
+    while (!uct_step(S_max_sims)) { }   /* run to completion (early-stop or max) */
+    return uct_collect(out_acts, out_visits, out_q);
 }
 
 /* expose primitives for the Python client + parity/regression testing */

@@ -40,10 +40,10 @@
     letter-spacing:.05em; color:#6fae9e; }
   #menupop .div { height:1px; background:rgba(255,255,255,.08); margin:5px 6px; }
   #chips { flex:1; display:flex; justify-content:center; gap:12px; }
-  .chip { position:relative; width:40px; height:40px; border-radius:50%;
+  .chip { position:relative; width:34px; height:34px; border-radius:50%;
     display:flex; align-items:center; justify-content:center;
-    font-weight:800; font-size:16px; color:#fff;
-    border:2.5px solid currentColor; background:rgba(0,0,0,.55); }
+    font-weight:800; font-size:14px; color:#fff;
+    border:2.4px solid currentColor; background:rgba(0,0,0,.55); }
   .chip.red{color:var(--red)} .chip.green{color:var(--green)} .chip.yellow{color:var(--yellow)}
   .chip.blue{color:var(--blue)} .chip.purple{color:var(--purple)}
   .chip { box-shadow:0 0 10px -1px currentColor, inset 0 0 6px -2px currentColor; }
@@ -61,9 +61,8 @@
   #record { font-weight:700; font-size:12px; color:#8fcfb8; letter-spacing:.02em; }
   #record.off { visibility:hidden; }
   #winpct { font-weight:800; font-size:14px; color:#bfe; }
-  #winbar { height:5px; border-radius:3px; background:rgba(255,255,255,.06); overflow:hidden; margin-bottom:7px; }
-  #winbar > i { display:block; height:100%; width:0;
-    background:linear-gradient(90deg, rgba(255,77,94,.45), rgba(245,197,66,.45)); transition:width .35s ease; }
+  /* win-expectation over the game: wide, short, subtle line graph */
+  #wingraph { display:block; width:100%; height:34px; margin-bottom:7px; }
   /* fixed height = 8 rows (the server caps top moves at 8) so the board never
      re-layouts when the suggestion count changes */
   #sugg { display:flex; flex-direction:column; gap:4px; height:284px; overflow:hidden; }
@@ -87,6 +86,7 @@
     padding:10px 22px calc(10px + env(safe-area-inset-bottom)); font-size:16px; }
   .act { color:var(--teal); font-weight:700; cursor:pointer; user-select:none; padding:6px 2px; }
   .act:active { opacity:.55; }
+  #endturn { font-size:20px; }
   .act.off { opacity:.3; pointer-events:none; }
   #status { color:#8fcfb8; font-size:12px; flex:1; text-align:center; padding:0 8px; }
 
@@ -98,6 +98,35 @@
   .dialog h2 { margin:0 0 4px; font-size:25px; color:#fff; }
   .dialog p { margin:0 0 20px; color:#9fc; font-size:14px; }
   .dialog .row { display:flex; gap:34px; justify-content:center; }
+
+  /* clickable W/L record opens the game-history overlay */
+  #record { cursor:pointer; text-decoration:underline; text-decoration-color:rgba(143,207,184,.4);
+    text-underline-offset:3px; }
+  #record:active { opacity:.55; }
+
+  /* game-history overlay: scrollable past games (start board + outcome), tap to reload */
+  #histwrap { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(0,0,0,.6); backdrop-filter:blur(2px); z-index:6; }
+  #histwrap.show { display:flex; }
+  #histpanel { background:#020b08; border:1px solid #1c5; border-radius:14px;
+    width:min(420px,92vw); max-height:84vh; display:flex; flex-direction:column;
+    box-shadow:0 0 40px -8px rgba(54,211,154,.5); overflow:hidden; }
+  #hist-head { display:flex; align-items:center; justify-content:space-between;
+    padding:14px 18px; border-bottom:1px solid rgba(255,255,255,.08);
+    font-size:15px; font-weight:700; color:#cfe; letter-spacing:.03em; }
+  #hist-list { overflow-y:auto; padding:8px; display:flex; flex-direction:column; gap:6px; }
+  #hist-list .muted { color:#7fb6a6; font-style:italic; padding:22px; text-align:center; }
+  .hrow { display:flex; align-items:center; gap:12px; padding:8px 10px; border-radius:10px;
+    background:rgba(255,255,255,.035); cursor:pointer; }
+  .hrow:active { background:rgba(255,255,255,.10); }
+  .hrow canvas { width:54px; height:54px; flex:0 0 auto;
+    background:rgba(0,0,0,.3); border-radius:8px; }
+  .hrow .meta { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
+  .hrow .res { font-weight:800; font-size:14px; }
+  .hrow .res.won { color:var(--green); } .hrow .res.lost { color:var(--red); }
+  .hrow .res.surrendered { color:var(--yellow); } .hrow .res.live { color:var(--teal); }
+  .hrow .sub { font-size:11px; color:#7fb6a6; }
+  .hrow .when { font-size:11px; color:#5f9e8e; flex:0 0 auto; text-align:right; }
 </style>
 </head>
 <body>
@@ -123,7 +152,7 @@
 
   <div id="ai">
     <div id="ai-head"><span id="record" class="off"></span><span id="winpct">—</span></div>
-    <div id="winbar"><i></i></div>
+    <canvas id="wingraph"></canvas>
     <div id="sugg"></div>
   </div>
 
@@ -138,6 +167,11 @@
   <h2 id="m-title">You Won!</h2>
   <p id="m-sub">Play again?</p>
   <div class="row"><div class="act" id="m-no">Close</div><div class="act" id="m-yes">New Game</div></div>
+</div></div>
+
+<div id="histwrap"><div id="histpanel">
+  <div id="hist-head"><span>Game History</span><div class="act" id="hist-close">Close</div></div>
+  <div id="hist-list"></div>
 </div></div>
 
 <script>
@@ -164,10 +198,54 @@ let autoplay = false;       // self-play loop: agent plays its top move, no anim
 let autoplayRunning = false;
 const record = { w: 0, l: 0 };  // autoplay win/loss tally (this session)
 
+// ---- persistent game history: starting board + outcome of every game played,
+// newest first; click a row to reload that exact start (replays the seed). ----
+const HIST_KEY = 'nwHistory', HIST_MAX = 60;
+let history = [];
+try { history = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); } catch (_) { history = []; }
+const saveHistory = () => { try { localStorage.setItem(HIST_KEY, JSON.stringify(history)); } catch (_) {} };
+let curGameId = null, curEntry = null;   // the history row for the game in progress
+
+// Observe every authoritative board: open a row when a new game id appears, and
+// stamp its outcome once it ends. Called from each state-adoption point.
+function noteState(s) {
+  if (!s || s.id == null) return;
+  if (s.id !== curGameId) {                         // a fresh game just began
+    curGameId = s.id;
+    winSeries = [];                                  // start the win-expectation graph fresh
+    curEntry = { seed: s.seed, ts: Date.now(), result: 'live',
+      startCounts: { ...s.counts },
+      startNodes: s.nodes.map(n => ({ x: n.x, y: n.y, owner: n.owner, strength: n.strength })) };
+    history.unshift(curEntry);
+    if (history.length > HIST_MAX) history.length = HIST_MAX;
+    saveHistory(); updateRecord();
+  }
+  if (s.over && curEntry && curEntry.result === 'live') {
+    curEntry.result = s.youWon ? 'won' : (s.redResigned ? 'surrendered' : 'lost');
+    curEntry.finalCounts = { ...s.counts };
+    curEntry.turns = s.turn;
+    saveHistory(); updateRecord();
+  }
+}
+
 let suggestions = [];       // ranked top moves from the C-UCT search
-let bestMove = null;        // {from,to,action,q} — #1, drawn as a soft halo
 let searchId = 0;           // cancels stale searches
 let searching = false;
+let searchSims = 0;         // live sim count of the in-flight search (streamed)
+let winSeries = [];         // converged win-expectation at each decision, this game (line graph)
+const pushWin = (w) => { if (w != null) { winSeries.push(w); if (winSeries.length > 300) winSeries.shift(); } };
+let hoverMove = null;       // {from,to} of the AI suggestion the cursor is over — previewed on the grid
+
+// A streamed mid-search update: adopt the partial ranking so the panel + board
+// show the suggestions and win% converging. Guarded by searchId in onmessage, so
+// only the current search paints. The final move is still the converged result.
+function onSearchProgress(p) {
+  suggestions = p.top || [];
+  searchSims = p.sims || 0;
+  if (p.winexp != null) state._winexp = p.winexp;
+  renderAI();
+  draw();
+}
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -179,7 +257,12 @@ const worker = new Worker('engine.worker.js', { type: 'module' });
 const _pending = new Map();
 let _msgId = 0;
 worker.onmessage = (e) => {
-  const { id, result } = e.data;
+  const d = e.data;
+  if (d.type === 'progress') {                 // streaming search update
+    if (d.tag === searchId) onSearchProgress(d.result);
+    return;
+  }
+  const { id, result } = d;
   const r = _pending.get(id);
   if (r) { _pending.delete(id); r(result); }
 };
@@ -218,12 +301,14 @@ function indexMoves() {
 // Adopt a fresh server view and (re)plan with the search.
 function setState(s) {
   state = s;
+  noteState(s);
   selected = null;
+  hoverMove = null;
   indexMoves();
   renderHeader();
   draw();
   if (autoplay) return;          // the autoplay loop owns search + W/L + restart
-  if (s.over) { suggestions = []; bestMove = null; renderAI(); showModal(); return; }
+  if (s.over) { suggestions = []; renderAI(); showModal(); return; }
   requestSearch();
 }
 
@@ -245,16 +330,16 @@ async function requestSearch() {
   // Always search even with no attacks available — the search returns END TURN as
   // the sole suggestion, so the panel still shows the right move.
   const my = ++searchId;
-  searching = true; renderAI();
-  const res = await api(`/api/game/${state.id}/search`, 'POST', { sims: SIMS });
+  searching = true; searchSims = 0; renderAI();
+  // tag=my streams mid-search updates (onSearchProgress) so the panel animates as
+  // the search converges; the awaited result is the final, threshold-gated answer.
+  const res = await api(`/api/game/${state.id}/search`, 'POST', { sims: SIMS, tag: my });
   if (my !== searchId) return;            // a newer position superseded this one
   searching = false;
   suggestions = res.top || [];
-  bestMove = res.best && res.best.action !== -1
-    ? { from: res.best.from, to: res.best.to, q: res.best.q } : null;
   state._winexp = res.winexp;
+  pushWin(res.winexp);                     // one graph point per converged decision
   renderAI();
-  startHaloPulse();
   draw();
 }
 
@@ -262,9 +347,11 @@ async function requestSearch() {
 // back-to-back, tallying W/L. A live winrate measurement of our best agent. ----
 function updateRecord() {
   const el = document.getElementById('record');
-  const n = record.w + record.l;
-  el.classList.toggle('off', !autoplay && n === 0);
-  el.textContent = n ? `${record.w}W–${record.l}L · ${Math.round(100 * record.w / n)}%` : 'Autoplay…';
+  const w = history.filter(h => h.result === 'won').length;
+  const l = history.filter(h => h.result === 'lost' || h.result === 'surrendered').length;
+  const n = w + l;
+  el.classList.remove('off');     // always visible — it's the clickable history entry point
+  el.textContent = n ? `${w}W–${l}L · ${Math.round(100 * w / n)}%` : 'History';
 }
 
 function setAutoplay(on) {
@@ -287,18 +374,20 @@ async function autoplayLoop() {
         setState(fresh); resize();                // setState is autoplay-guarded
       }
       while (autoplay && state && !state.over) {   // play one game to terminal
-        const s = await api(`/api/game/${state.id}/search`, 'POST', { sims: SIMS });
+        const my = ++searchId;                     // stream this search to the panel
+        searchSims = 0;
+        // autoplay streams for the watcher but only commits on the FINAL result —
+        // the search's own early-stop is the confidence threshold for the move.
+        const s = await api(`/api/game/${state.id}/search`, 'POST', { sims: SIMS, tag: my });
         if (!autoplay) break;
         suggestions = s.top || [];
-        bestMove = (s.best && s.best.action !== -1)
-          ? { from: s.best.from, to: s.best.to, q: s.best.q } : null;
-        state._winexp = s.winexp; renderAI(); draw();    // live view of the agent's pick
+        state._winexp = s.winexp; pushWin(s.winexp); renderAI(); draw();    // converged view of the agent's pick
         const b = s.best;
         const res = (!b || b.action === -1)
           ? await api(`/api/game/${state.id}/end-turn`, 'POST')
           : await api(`/api/game/${state.id}/attack`, 'POST', { from: b.from, to: b.to });
         if (!autoplay) break;
-        state = res; indexMoves(); renderHeader(); draw();
+        state = res; noteState(res); indexMoves(); renderHeader(); draw();
       }
       if (autoplay && state && state.over) {
         if (state.youWon) record.w++; else record.l++;
@@ -312,7 +401,7 @@ async function autoplayLoop() {
     inputLocked = false;
     updateRecord();
     if (!autoplay && state) {                      // hand control back cleanly
-      if (state.over) { suggestions = []; bestMove = null; renderAI(); showModal(); }
+      if (state.over) { suggestions = []; renderAI(); showModal(); }
       else requestSearch();
     }
   }
@@ -322,18 +411,55 @@ function pip(owner, strength) {
   return `<span class="pip ${owner}">${strength}</span>`;
 }
 
+// Wide, short, subtle line graph of win expectation across the game so far.
+function drawWinGraph() {
+  const cv = document.getElementById('wingraph');
+  if (!cv) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = cv.getBoundingClientRect();
+  const W = Math.max(1, Math.round(rect.width)), H = Math.max(1, Math.round(rect.height));
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const padY = 3;
+  const yOf = v => padY + (1 - v) * (H - 2*padY);
+  // faint 50% reference line
+  g.strokeStyle = 'rgba(255,255,255,.10)'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(0, yOf(0.5) + 0.5); g.lineTo(W, yOf(0.5) + 0.5); g.stroke();
+  const pts = winSeries;
+  if (!pts.length) return;
+  const n = pts.length;
+  const xOf = i => n === 1 ? W/2 : (i/(n-1)) * W;
+  // subtle area under the curve
+  g.beginPath();
+  g.moveTo(xOf(0), H);
+  for (let i = 0; i < n; i++) g.lineTo(xOf(i), yOf(pts[i]));
+  g.lineTo(xOf(n-1), H); g.closePath();
+  g.fillStyle = 'rgba(95,208,214,.07)'; g.fill();
+  // the line itself
+  g.beginPath();
+  g.moveTo(xOf(0), yOf(pts[0]));
+  for (let i = 1; i < n; i++) g.lineTo(xOf(i), yOf(pts[i]));
+  g.strokeStyle = 'rgba(95,208,214,.85)'; g.lineWidth = 1.6; g.lineJoin = 'round'; g.stroke();
+  // current value dot
+  g.fillStyle = '#bfe';
+  g.beginPath(); g.arc(xOf(n-1), yOf(pts[n-1]), 2.2, 0, Math.PI*2); g.fill();
+}
+
 function renderAI() {
   const wp = document.getElementById('winpct');
-  const wb = document.querySelector('#winbar > i');
   const sg = document.getElementById('sugg');
+  drawWinGraph();
   if (searching && !suggestions.length) {
     wp.textContent = 'thinking…';
     sg.innerHTML = '<div class="sg muted">searching…</div>';
     return;
   }
   const w = state && state._winexp != null ? state._winexp : null;
-  wp.textContent = w != null ? `${Math.round(w*100)}% win` : '—';
-  wb.style.width = w != null ? `${Math.max(2, Math.round(w*100))}%` : '0';
+  // while a search streams, append its live sim count so the convergence is visible
+  const simTag = searching && searchSims ? ` · ${Math.round(searchSims/1000)}k` : '';
+  wp.textContent = w != null ? `${Math.round(w*100)}% win${simTag}` : (searching ? 'thinking…' : '—');
   sg.innerHTML = '';
   if (!suggestions.length) {
     sg.innerHTML = '<div class="sg muted">no suggestions</div>';
@@ -347,6 +473,7 @@ function renderAI() {
       label = `<span class="lbl">End turn</span>`;
     } else {
       const f = state.nodes[m.from], t = state.nodes[m.to];
+      if (!f || !t) return;          // stale suggestion from a superseded board — skip, never crash
       label = `${pip(f.owner, f.strength)}<span class="arrow">→</span>${pip(t.owner, t.strength)}`
             + `<span class="lbl"></span>`;
     }
@@ -354,6 +481,10 @@ function renderAI() {
       + `<span class="bar"><i style="width:${Math.round(m.frac*100)}%"></i></span>`
       + `<span class="q">${Math.round(m.q*100)}%</span>`;
     row.onclick = () => playSuggestion(m);
+    if (m.action !== -1) {                  // hovering a real attack previews it on the grid
+      row.onmouseenter = () => { hoverMove = { from: m.from, to: m.to }; draw(); };
+      row.onmouseleave = () => { hoverMove = null; draw(); };
+    }
     sg.appendChild(row);
   });
 }
@@ -368,6 +499,7 @@ async function playSuggestion(m) {
 let layout = { r: 20, s: 1, ox: 0, oy: 0 };
 function resize() {
   const dpr = window.devicePixelRatio || 1;
+  drawWinGraph();
   const b = document.getElementById('board').getBoundingClientRect();
   cv.width = b.width * dpr; cv.height = b.height * dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -393,25 +525,12 @@ function octagon(x, y, r) {
   ctx.closePath();
 }
 
-let haloT0 = 0, haloRAF = 0;
-function startHaloPulse() {
-  if (haloRAF) return;
-  const loop = (t) => {
-    haloRAF = 0;
-    draw();
-    if (bestMove && !battle && !state.over) haloRAF = requestAnimationFrame(loop);
-  };
-  haloRAF = requestAnimationFrame(loop);
-}
-
 function draw() {
   if (!state) return;
   const b = document.getElementById('board').getBoundingClientRect();
   ctx.clearRect(0, 0, b.width, b.height);
   const nodes = animBoard || state.nodes;
   const pos = nodes.map(nodePos);
-  const now = performance.now();
-  const pulse = 0.5 + 0.5 * Math.sin(now / 480);   // 0..1 soft pulse
 
   // links
   for (const [a, c] of state.links) {
@@ -419,32 +538,18 @@ function draw() {
     const selHot = selected !== null && (
          (a===selected && targetsFor.get(selected)?.has(c))
       || (c===selected && targetsFor.get(selected)?.has(a)));
-    const isBest = bestMove && !battle && ((a===bestMove.from && c===bestMove.to) || (a===bestMove.to && c===bestMove.from));
+    const isHover = hoverMove && ((a===hoverMove.from && c===hoverMove.to) || (a===hoverMove.to && c===hoverMove.from));
     ctx.beginPath();
     ctx.moveTo(pos[a].x, pos[a].y); ctx.lineTo(pos[c].x, pos[c].y);
     // an active fight draws a bright line in the ATTACKER's color (from-node owner)
     if (inBattle) { const ac = COLORS[nodes[battle.from].owner] || COLORS.red;
       ctx.strokeStyle = ac; ctx.lineWidth = 4; ctx.setLineDash([]); ctx.shadowColor = ac; ctx.shadowBlur = 12; }
     else if (selHot) { ctx.strokeStyle = COLORS.red; ctx.lineWidth = 4; ctx.setLineDash([]); ctx.shadowColor = COLORS.red; ctx.shadowBlur = 10; }
-    else if (isBest) { ctx.strokeStyle = 'rgba(255,211,107,.85)'; ctx.lineWidth = 3; ctx.setLineDash([]); ctx.shadowColor = '#ffd36b'; ctx.shadowBlur = 12; }
+    else if (isHover) { ctx.strokeStyle = 'rgba(255,211,107,.9)'; ctx.lineWidth = 3.5; ctx.setLineDash([]); ctx.shadowColor = '#ffd36b'; ctx.shadowBlur = 12; }
     else { ctx.strokeStyle = 'rgba(120,200,160,.28)'; ctx.lineWidth = 1.5; ctx.setLineDash([4,5]); ctx.shadowBlur = 0; }
     ctx.stroke();
   }
   ctx.setLineDash([]); ctx.shadowBlur = 0;
-
-  // soft AI halo on the #1 recommended from/to (drawn under the nodes)
-  if (bestMove && !battle) {
-    for (const id of [bestMove.from, bestMove.to]) {
-      const p = pos[id];
-      const r0 = Math.max(0, layout.r * 0.7);          // guard degenerate (0-size) layout
-      const rr = Math.max(r0, layout.r * (1.5 + 0.18 * pulse));
-      const g = ctx.createRadialGradient(p.x, p.y, r0, p.x, p.y, rr);
-      g.addColorStop(0, `rgba(255,211,107,${0.30 + 0.18*pulse})`);
-      g.addColorStop(1, 'rgba(255,211,107,0)');
-      ctx.fillStyle = g;
-      ctx.beginPath(); ctx.arc(p.x, p.y, rr, 0, Math.PI*2); ctx.fill();
-    }
-  }
 
   // nodes
   for (const n of nodes) {
@@ -459,17 +564,18 @@ function draw() {
     const isTarget = isDef || (selected !== null && targetsFor.get(selected)?.has(n.id));
     const isFlash = n.id === flashId;
     const isRein = reinforceFlash && reinforceFlash.has(n.id);
+    const isHoverNode = hoverMove && (n.id === hoverMove.from || n.id === hoverMove.to);
     // dark fill + glowing colored ring (real-game look)
     ctx.save();
-    ctx.shadowColor = col;
-    ctx.shadowBlur = isFlash ? 28 : (isRein ? 26 : (isSel ? 22 : (isTarget ? 16 : 11)));
+    ctx.shadowColor = isHoverNode ? '#ffd36b' : col;
+    ctx.shadowBlur = isFlash ? 28 : (isRein ? 26 : (isHoverNode ? 20 : (isSel ? 22 : (isTarget ? 16 : 11))));
     octagon(p.x, p.y, layout.r);
     ctx.fillStyle = 'rgba(3,12,9,.92)';
     ctx.fill();
     ctx.restore();
     octagon(p.x, p.y, layout.r);
-    ctx.lineWidth = (isSel || isTarget || isFlash || isRein) ? 3.2 : 2.4;
-    ctx.strokeStyle = isFlash ? '#fff' : (isRein ? '#fff' : col);
+    ctx.lineWidth = (isSel || isTarget || isFlash || isRein || isHoverNode) ? 3.2 : 2.4;
+    ctx.strokeStyle = isFlash ? '#fff' : (isRein ? '#fff' : (isHoverNode ? '#ffd36b' : col));
     ctx.stroke();
     // number
     ctx.fillStyle = '#fff';
@@ -544,7 +650,7 @@ async function animateBotBattle(e) {
 // state at the end.
 async function animateEndTurn(res) {
   animBoard = state.nodes.map(n => ({ ...n }));
-  selected = null; bestMove = null; suggestions = []; renderAI();
+  selected = null; suggestions = []; renderAI();
   let curFaction = null;
   for (const ev of res.events) {
     if (ev.type === 'reinforce') {
@@ -569,13 +675,13 @@ async function animateEndTurn(res) {
 
 async function doAttack(from, to) {
   selected = null;
+  hoverMove = null;
   inputLocked = true;
-  bestMove = null;                 // halo off during the fight
   setStatus('Attacking…');
   const res = await api(`/api/game/${state.id}/attack`, 'POST', { from, to });
   const e = res.log && res.log[0];
   if (e && e.flips && !instant()) await animateBattle(e);   // state stays pre-attack during replay
-  state = res; indexMoves(); renderHeader();
+  state = res; noteState(res); indexMoves(); renderHeader();
   setStatus(e ? (e.captured ? `Captured node ${e.to}!`
                             : `Attack on ${e.to} repelled (left ${e.fromStrength}).`) : 'Done.');
   // keep attacking from the same node if it can still move
@@ -583,7 +689,7 @@ async function doAttack(from, to) {
     && state.nodes[from].strength > 1 && targetsFor.has(from)) ? from : null;
   inputLocked = false;
   draw();
-  if (state.over) { suggestions = []; bestMove = null; renderAI(); showModal(); }
+  if (state.over) { suggestions = []; renderAI(); showModal(); }
   else requestSearch();
 }
 
@@ -614,7 +720,7 @@ cv.addEventListener('pointerdown', (ev) => {
 async function endTurn() {
   if (!state || state.over || inputLocked) return;
   inputLocked = true;
-  selected = null; bestMove = null; suggestions = []; renderAI();
+  selected = null; suggestions = []; renderAI();
   setStatus('Ending turn…');
   const res = await api(`/api/game/${state.id}/end-turn`, 'POST');
   const caps = (res.events||[]).filter(e => e.type==='attack' && e.captured).length;
@@ -675,6 +781,74 @@ function showModal() {
 function hideModal() { document.getElementById('modal').classList.remove('show'); }
 document.getElementById('m-yes').onclick = () => { hideModal(); newGame(); };
 document.getElementById('m-no').onclick = () => { hideModal(); };
+
+// ---- game history overlay ----
+const RES_LABEL = { won: 'Won', lost: 'Lost', surrendered: 'Surrendered', live: 'In progress' };
+function timeAgo(ts) {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return 'just now';
+  const m = Math.round(s / 60); if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60); if (h < 24) return h + 'h ago';
+  return Math.round(h / 24) + 'd ago';
+}
+// Paint a tiny starting-board thumbnail (faction-colored dots laid out by x,y).
+function drawThumb(cv, nodes) {
+  const ctx = cv.getContext('2d'), W = cv.width, H = cv.height, pad = 5;
+  ctx.clearRect(0, 0, W, H);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const n of nodes) { minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
+    minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y); }
+  const sx = (W - 2*pad) / Math.max(1, maxX - minX), sy = (H - 2*pad) / Math.max(1, maxY - minY);
+  const s = Math.min(sx, sy), r = Math.max(1.4, s * 0.32);
+  for (const n of nodes) {
+    const x = pad + (n.x - minX) * s, y = pad + (n.y - minY) * s;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2);
+    ctx.fillStyle = COLORS[n.owner] || '#888'; ctx.fill();
+  }
+}
+function renderHistory() {
+  const list = document.getElementById('hist-list');
+  list.innerHTML = '';
+  if (!history.length) { list.innerHTML = '<div class="muted">No games yet.</div>'; return; }
+  history.forEach((h, i) => {
+    const row = document.createElement('div');
+    row.className = 'hrow';
+    const cv = document.createElement('canvas'); cv.width = 54; cv.height = 54;
+    const meta = document.createElement('div'); meta.className = 'meta';
+    const score = h.result === 'live'
+      ? `${h.startCounts ? h.startCounts.red : '?'} nodes at start`
+      : `Final: ${h.finalCounts ? h.finalCounts.red : 0} red · ${h.turns || 0} turns`;
+    meta.innerHTML = `<span class="res ${h.result}">${RES_LABEL[h.result] || h.result}</span>`
+      + `<span class="sub">${score}</span>`;
+    const when = document.createElement('div'); when.className = 'when'; when.textContent = timeAgo(h.ts);
+    row.appendChild(cv); row.appendChild(meta); row.appendChild(when);
+    row.onclick = () => reloadGame(h);
+    list.appendChild(row);
+    if (h.startNodes) drawThumb(cv, h.startNodes);
+  });
+}
+function openHistory() { renderHistory(); document.getElementById('histwrap').classList.add('show'); }
+function hideHistory() { document.getElementById('histwrap').classList.remove('show'); }
+document.getElementById('record').onclick = openHistory;
+document.getElementById('hist-close').onclick = hideHistory;
+document.getElementById('histwrap').onclick = (e) => {
+  if (e.target.id === 'histwrap') hideHistory();    // tap the backdrop to dismiss
+};
+
+// Replay a past game from its exact starting board (seed regenerates it identically;
+// iOS-loaded boards have no seed, so re-home the saved nodes instead).
+async function reloadGame(h) {
+  hideHistory();
+  if (autoplay) setAutoplay(false);
+  if (inputLocked) return;
+  const res = h.seed != null
+    ? await api('/api/game', 'POST', { seed: h.seed })
+    : await api('/load-board', 'POST', { nodes: h.startNodes });
+  if (res.error) { setStatus('Reload failed: ' + res.error); return; }
+  setState(res);
+  resize();
+  setStatus('Reloaded a past game. Select a red node to attack.');
+}
 
 async function newGame() {
   const load = new URLSearchParams(location.search).get('load');
