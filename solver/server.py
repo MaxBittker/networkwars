@@ -127,16 +127,53 @@ def do_attack(g, frm, to):
 
 
 def do_end_turn(g):
+    """RED reinforce + the four bot turns, replayed move-by-move so the browser can
+    animate each step. Drives the SAME C primitives in the SAME order as the engine's
+    atomic end_turn (reinforce is RNG-free; only battles advance the mb32 dice), so
+    the final board + g['mb'] are bit-identical to end_turn — just observable."""
     _select(g)
     fastnw.use_mb32(g['mb'])
-    before = g['owner'].copy()
-    fastnw.end_turn(g['owner'], g['strength'])
+    owner, strength = g['owner'], g['strength']
+    events = []
+
+    def reinforce_step(fidx):
+        before = strength.copy()
+        fastnw.reinforce(owner, strength, fidx)
+        ch = [{'id': i, 'to': int(strength[i])}
+              for i in range(len(strength)) if strength[i] != before[i]]
+        if ch:
+            events.append({'type': 'reinforce', 'faction': FACTIONS[fidx], 'changes': ch})
+
+    reinforce_step(0)                                   # RED reinforce
+    if fastnw.check_winner(owner) < 0:
+        for b in range(1, 5):                           # green, yellow, blue, purple
+            if fastnw.counts(owner)[b] == 0:
+                continue                                # eliminated faction takes no turn
+            won = False
+            for _ in range(1000):                       # bot greedily attacks until none
+                mv = fastnw.best_bot_move(owner, strength, b)
+                if mv is None:
+                    break
+                frm, to = mv
+                attacker = FACTIONS[int(owner[frm])]
+                fs, ts = int(strength[frm]), int(strength[to])
+                flips, meta = fastnw.attack_logged(owner, strength, frm, to)
+                events.append({'type': 'attack', 'attacker': attacker, 'from': frm,
+                               'to': to, 'fromStart': fs, 'toStart': ts, 'flips': flips,
+                               'captured': meta['captured'], 'fromStrength': meta['fromStrength'],
+                               'toStrength': meta['toStrength']})
+                if fastnw.check_winner(owner) >= 0:
+                    won = True
+                    break
+            if won:
+                break
+            reinforce_step(b)                           # bot reinforces (no winner check needed)
+
     g['mb'] = fastnw.get_mb32()
     g['turn'] += 1
     _update_winner(g)
-    changed = int((g['owner'] != before).sum())   # nodes that changed hands during bots
     out = view(g)
-    out['log'] = [{'type': 'attack', 'captured': True} for _ in range(changed)]
+    out['events'] = events
     return out
 
 

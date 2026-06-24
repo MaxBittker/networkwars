@@ -22,10 +22,23 @@
 
   /* top bar: menu + faction count chips */
   header { display:flex; align-items:center; gap:8px; padding:12px 14px 6px; }
-  #menu { width:30px; height:30px; flex:0 0 auto; display:flex; flex-direction:column;
+  #menuwrap { position:relative; flex:0 0 auto; }
+  #menu { width:30px; height:30px; display:flex; flex-direction:column;
     justify-content:center; gap:5px; cursor:pointer; opacity:.85; padding:3px; }
   #menu span { height:2.5px; background:#bfe; border-radius:2px; }
   #menu:active { opacity:.5; }
+  #menupop { position:absolute; top:38px; left:0; z-index:10; min-width:178px;
+    background:#04130d; border:1px solid #1c5; border-radius:12px; padding:6px;
+    box-shadow:0 10px 34px -10px rgba(0,0,0,.85); display:none; }
+  #menupop.show { display:block; }
+  #menupop .mi { padding:9px 12px; border-radius:8px; font-size:14px; color:#cfe;
+    cursor:pointer; display:flex; align-items:center; justify-content:space-between; }
+  #menupop .mi:active { background:rgba(255,255,255,.09); }
+  #menupop .mi.sel { color:#bfe; }
+  #menupop .mi.sel::after { content:'✓'; color:var(--teal); font-weight:800; }
+  #menupop .lbl { padding:9px 12px 4px; font-size:11px; text-transform:uppercase;
+    letter-spacing:.05em; color:#6fae9e; }
+  #menupop .div { height:1px; background:rgba(255,255,255,.08); margin:5px 6px; }
   #chips { flex:1; display:flex; justify-content:center; gap:12px; }
   .chip { position:relative; width:40px; height:40px; border-radius:50%;
     display:flex; align-items:center; justify-content:center;
@@ -57,9 +70,8 @@
   .sg:active { background:rgba(255,255,255,.10); }
   .sg.top { background:rgba(255,211,107,.10); box-shadow:inset 0 0 0 1px rgba(255,211,107,.35); }
   .sg .rk { width:14px; color:#7fb6a6; font-weight:700; text-align:center; font-size:11px; }
-  .pip { width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center;
-    font-weight:800; font-size:11px; color:#fff; border:2px solid currentColor; background:rgba(0,0,0,.5);
-    box-shadow:0 0 7px -1px currentColor; flex:0 0 auto; }
+  .pip { display:flex; align-items:center; justify-content:center; min-width:18px;
+    font-weight:800; font-size:15px; flex:0 0 auto; }
   .pip.red{color:var(--red)} .pip.green{color:var(--green)} .pip.yellow{color:var(--yellow)}
   .pip.blue{color:var(--blue)} .pip.purple{color:var(--purple)}
   .sg .arrow { color:#6fae9e; font-weight:700; }
@@ -89,7 +101,18 @@
 <body>
 <div id="app">
   <header>
-    <div id="menu" title="New game"><span></span><span></span><span></span></div>
+    <div id="menuwrap">
+      <div id="menu" title="Menu"><span></span><span></span><span></span></div>
+      <div id="menupop">
+        <div class="mi" id="mi-new">New Game</div>
+        <div class="div"></div>
+        <div class="lbl">Animation speed</div>
+        <div class="mi sp" data-speed="instant">Instant</div>
+        <div class="mi sp" data-speed="fast">Fast</div>
+        <div class="mi sp" data-speed="medium">Medium</div>
+        <div class="mi sp" data-speed="slow">Slow</div>
+      </div>
+    </div>
     <div id="chips"></div>
   </header>
 
@@ -118,6 +141,9 @@
 const COLORS = { red:'#ff4d5e', green:'#36d39a', yellow:'#f5c542', blue:'#4d8bff', purple:'#a96bff' };
 const ORDER = ['red','green','yellow','blue','purple'];
 const SIMS = 6000;
+const SPEEDS = { instant: 0, fast: 0.5, medium: 1, slow: 2 };  // sleep-time multiplier
+let animSpeed = 'medium', animMult = 1;
+const instant = () => animMult === 0;
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 
@@ -129,6 +155,8 @@ let overrides = new Map();  // nodeId -> {strength, owner?} during battle animat
 let flashId = null;
 let battle = null;          // {from,to} highlighted during a fight
 let inputLocked = false;
+let animBoard = null;       // mutable node copy used while animating bot turns
+let reinforceFlash = null;  // Set(nodeId) briefly highlighted on a reinforce step
 
 let suggestions = [];       // ranked top moves from the C-UCT search
 let bestMove = null;        // {from,to,action,q} — #1, drawn as a soft halo
@@ -284,20 +312,24 @@ function draw() {
   if (!state) return;
   const b = document.getElementById('board').getBoundingClientRect();
   ctx.clearRect(0, 0, b.width, b.height);
-  const pos = state.nodes.map(nodePos);
+  const nodes = animBoard || state.nodes;
+  const pos = nodes.map(nodePos);
   const now = performance.now();
   const pulse = 0.5 + 0.5 * Math.sin(now / 480);   // 0..1 soft pulse
 
   // links
   for (const [a, c] of state.links) {
     const inBattle = battle && ((a===battle.from && c===battle.to) || (a===battle.to && c===battle.from));
-    const hot = inBattle || (selected !== null && (
+    const selHot = selected !== null && (
          (a===selected && targetsFor.get(selected)?.has(c))
-      || (c===selected && targetsFor.get(selected)?.has(a))));
+      || (c===selected && targetsFor.get(selected)?.has(a)));
     const isBest = bestMove && !battle && ((a===bestMove.from && c===bestMove.to) || (a===bestMove.to && c===bestMove.from));
     ctx.beginPath();
     ctx.moveTo(pos[a].x, pos[a].y); ctx.lineTo(pos[c].x, pos[c].y);
-    if (hot) { ctx.strokeStyle = COLORS.red; ctx.lineWidth = 4; ctx.setLineDash([]); ctx.shadowColor = COLORS.red; ctx.shadowBlur = 10; }
+    // an active fight draws a bright line in the ATTACKER's color (from-node owner)
+    if (inBattle) { const ac = COLORS[nodes[battle.from].owner] || COLORS.red;
+      ctx.strokeStyle = ac; ctx.lineWidth = 4; ctx.setLineDash([]); ctx.shadowColor = ac; ctx.shadowBlur = 12; }
+    else if (selHot) { ctx.strokeStyle = COLORS.red; ctx.lineWidth = 4; ctx.setLineDash([]); ctx.shadowColor = COLORS.red; ctx.shadowBlur = 10; }
     else if (isBest) { ctx.strokeStyle = 'rgba(255,211,107,.85)'; ctx.lineWidth = 3; ctx.setLineDash([]); ctx.shadowColor = '#ffd36b'; ctx.shadowBlur = 12; }
     else { ctx.strokeStyle = 'rgba(120,200,160,.28)'; ctx.lineWidth = 1.5; ctx.setLineDash([4,5]); ctx.shadowBlur = 0; }
     ctx.stroke();
@@ -318,7 +350,7 @@ function draw() {
   }
 
   // nodes
-  for (const n of state.nodes) {
+  for (const n of nodes) {
     const p = pos[n.id];
     const ov = overrides.get(n.id);
     const owner = (ov && ov.owner) ? ov.owner : n.owner;
@@ -329,17 +361,18 @@ function draw() {
     const isSel = n.id === selected || isAtk;
     const isTarget = isDef || (selected !== null && targetsFor.get(selected)?.has(n.id));
     const isFlash = n.id === flashId;
+    const isRein = reinforceFlash && reinforceFlash.has(n.id);
     // dark fill + glowing colored ring (real-game look)
     ctx.save();
     ctx.shadowColor = col;
-    ctx.shadowBlur = isFlash ? 28 : (isSel ? 22 : (isTarget ? 16 : 11));
+    ctx.shadowBlur = isFlash ? 28 : (isRein ? 26 : (isSel ? 22 : (isTarget ? 16 : 11)));
     octagon(p.x, p.y, layout.r);
     ctx.fillStyle = 'rgba(3,12,9,.92)';
     ctx.fill();
     ctx.restore();
     octagon(p.x, p.y, layout.r);
-    ctx.lineWidth = (isSel || isTarget || isFlash) ? 3.2 : 2.4;
-    ctx.strokeStyle = isFlash ? '#fff' : col;
+    ctx.lineWidth = (isSel || isTarget || isFlash || isRein) ? 3.2 : 2.4;
+    ctx.strokeStyle = isFlash ? '#fff' : (isRein ? '#fff' : col);
     ctx.stroke();
     // number
     ctx.fillStyle = '#fff';
@@ -366,8 +399,8 @@ async function animateBattle(e) {
   overrides.set(from, { strength: a });
   overrides.set(to, { strength: d });
   draw();
-  await sleep(180);
-  const delay = Math.max(45, Math.min(150, Math.round(850 / Math.max(flips.length, 1))));
+  await sleep(180 * animMult);
+  const delay = Math.max(45, Math.min(150, Math.round(850 / Math.max(flips.length, 1)))) * animMult;
   for (const f of flips) {
     if (f === 'd') { d--; flashId = to; } else { a--; flashId = from; }
     overrides.set(from, { strength: a });
@@ -380,10 +413,61 @@ async function animateBattle(e) {
     overrides.set(to, { strength: e.toStrength, owner: e.attacker });
     overrides.set(from, { strength: e.fromStrength });
     draw();
-    await sleep(240);
+    await sleep(240 * animMult);
   }
   overrides.clear();
   battle = null;
+}
+
+const cap = (s) => s[0].toUpperCase() + s.slice(1);
+
+// One bot battle, compact: highlight from->to in the attacker's color, then commit
+// the result with a flash. (Flip-by-flip is reserved for the player's own attacks.)
+async function animateBotBattle(e) {
+  const from = animBoard[e.from], to = animBoard[e.to];
+  battle = { from: e.from, to: e.to };
+  overrides.set(e.from, { strength: e.fromStart });
+  overrides.set(e.to, { strength: e.toStart });
+  draw();
+  await sleep(170 * animMult);
+  // commit to the working board
+  from.strength = e.fromStrength;
+  if (e.captured) { to.owner = e.attacker; to.strength = e.toStrength; }
+  else { to.strength = e.toStrength; }
+  flashId = e.captured ? e.to : e.from;
+  overrides.clear();
+  draw();
+  await sleep(150 * animMult);
+  flashId = null;
+  battle = null;
+}
+
+// Replay RED reinforce + the four bot turns, step by step, from the server's event
+// log. Works on a local copy so each move is visible; adopts the authoritative final
+// state at the end.
+async function animateEndTurn(res) {
+  animBoard = state.nodes.map(n => ({ ...n }));
+  selected = null; bestMove = null; suggestions = []; renderAI();
+  let curFaction = null;
+  for (const ev of res.events) {
+    if (ev.type === 'reinforce') {
+      for (const ch of ev.changes) animBoard[ch.id].strength = ch.to;
+      reinforceFlash = new Set(ev.changes.map(c => c.id));
+      if (ev.faction !== 'red') setStatus(`${cap(ev.faction)} reinforces.`);
+      draw();
+      await sleep((ev.faction === 'red' ? 160 : 240) * animMult);
+      reinforceFlash = null;
+      draw();
+    } else {
+      if (ev.attacker !== curFaction) {
+        curFaction = ev.attacker;
+        setStatus(`${cap(ev.attacker)} is attacking…`);
+      }
+      await animateBotBattle(ev);
+    }
+  }
+  animBoard = null;
+  reinforceFlash = null;
 }
 
 async function doAttack(from, to) {
@@ -393,7 +477,7 @@ async function doAttack(from, to) {
   setStatus('Attacking…');
   const res = await api(`/api/game/${state.id}/attack`, 'POST', { from, to });
   const e = res.log && res.log[0];
-  if (e && e.flips) await animateBattle(e);   // state stays pre-attack during replay
+  if (e && e.flips && !instant()) await animateBattle(e);   // state stays pre-attack during replay
   state = res; indexMoves(); renderHeader();
   setStatus(e ? (e.captured ? `Captured node ${e.to}!`
                             : `Attack on ${e.to} repelled (left ${e.fromStrength}).`) : 'Done.');
@@ -432,12 +516,15 @@ cv.addEventListener('pointerdown', (ev) => {
 
 async function endTurn() {
   if (!state || state.over || inputLocked) return;
+  inputLocked = true;
   selected = null; bestMove = null; suggestions = []; renderAI();
-  setStatus('Bots are moving…');
+  setStatus('Ending turn…');
   const res = await api(`/api/game/${state.id}/end-turn`, 'POST');
-  const caps = (res.log||[]).filter(e => e.type==='attack' && e.captured).length;
-  setState(res);
-  if (!res.over) setStatus(`Bots finished — ${caps} node(s) changed hands. Your move.`);
+  const caps = (res.events||[]).filter(e => e.type==='attack' && e.captured).length;
+  if (res.events && res.events.length && !instant()) await animateEndTurn(res);
+  inputLocked = false;
+  setState(res);                       // adopt authoritative final board + re-search
+  if (!res.over) setStatus(`Bots captured ${caps} node(s). Your move.`);
 }
 document.getElementById('endturn').onclick = endTurn;
 
@@ -448,11 +535,35 @@ document.getElementById('surrender').onclick = async () => {
   setState(res);
 };
 
-document.getElementById('menu').onclick = () => {
+// hamburger dropdown: New Game + animation speed
+const menupop = document.getElementById('menupop');
+function updateSpeedMenu() {
+  document.querySelectorAll('#menupop .sp').forEach(el =>
+    el.classList.toggle('sel', el.dataset.speed === animSpeed));
+}
+function setSpeed(s) {
+  animSpeed = s; animMult = SPEEDS[s];
+  try { localStorage.setItem('nwSpeed', s); } catch (_) {}
+  updateSpeedMenu();
+}
+(function loadSpeed() {
+  let s; try { s = localStorage.getItem('nwSpeed'); } catch (_) {}
+  if (s && s in SPEEDS) { animSpeed = s; animMult = SPEEDS[s]; }
+  updateSpeedMenu();
+})();
+document.getElementById('menu').onclick = () => menupop.classList.toggle('show');
+document.getElementById('mi-new').onclick = () => {
+  menupop.classList.remove('show');
   if (inputLocked) return;
   if (state && !state.over && !confirm('Start a new game?')) return;
   newGame();
 };
+document.querySelectorAll('#menupop .sp').forEach(el => {
+  el.onclick = () => setSpeed(el.dataset.speed);   // leave menu open so the check is visible
+});
+document.addEventListener('click', (e) => {
+  if (!document.getElementById('menuwrap').contains(e.target)) menupop.classList.remove('show');
+});
 
 function showModal() {
   const t = document.getElementById('m-title');
