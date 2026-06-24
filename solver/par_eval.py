@@ -13,7 +13,7 @@ def run_chunk(arg):
     import fmcts  # imports fastnw -> loads NW_ENGINE_SO
     wins = 0
     for s in seeds:
-        won, _ = fmcts.play_game(s, sims, c_puct, nroll)
+        won, *_ = fmcts.play_game(s, sims, c_puct, nroll)
         wins += 1 if won else 0
     return wins, len(seeds)
 
