@@ -259,6 +259,23 @@ let searchSims = 0;         // live sim count of the in-flight search (streamed)
 let winSeries = [];         // converged win-expectation at each decision, this game (line graph)
 const pushWin = (w) => { if (w != null) { winSeries.push(w); if (winSeries.length > 300) winSeries.shift(); } };
 let hoverMove = null;       // {from,to} of the AI suggestion the cursor is over — previewed on the grid
+let lastPointer = { x: -1, y: -1 };  // last seen cursor position, so re-rendered rows can re-sync the hover
+// After the suggestion rows are rebuilt, the cursor may sit over a different row
+// (or none) without firing mouseenter/leave — re-derive hoverMove from the element
+// actually under the cursor so the yellow preview always matches what's hovered.
+function syncHoverToCursor() {
+  let next = null;
+  if (lastPointer.x >= 0) {
+    const el = document.elementFromPoint(lastPointer.x, lastPointer.y);
+    const row = el && el.closest && el.closest('.sg');
+    if (row && row._move) next = row._move;
+  }
+  const changed = (hoverMove && next && (hoverMove.from !== next.from || hoverMove.to !== next.to))
+    || (!hoverMove !== !next);
+  hoverMove = next;
+  if (changed) draw();
+}
+document.addEventListener('pointermove', (e) => { lastPointer = { x: e.clientX, y: e.clientY }; });
 
 // A streamed mid-search update: adopt the partial ranking so the panel + board
 // show the suggestions and win% converging. Guarded by searchId in onmessage, so
@@ -512,15 +529,18 @@ function renderAI() {
       + `<span class="q">${Math.round(m.q*100)}%</span>`;
     row.onclick = () => playSuggestion(m);
     if (m.action !== -1) {                  // hovering a real attack previews it on the grid
-      row.onmouseenter = () => { hoverMove = { from: m.from, to: m.to }; draw(); };
+      row._move = { from: m.from, to: m.to };
+      row.onmouseenter = () => { hoverMove = row._move; draw(); };
       row.onmouseleave = () => { hoverMove = null; draw(); };
     }
     sg.appendChild(row);
   });
+  syncHoverToCursor();   // rows were rebuilt — match the preview to whatever is now under the cursor
 }
 
 async function playSuggestion(m) {
   if (inputLocked || !state || state.over) return;
+  hoverMove = null; draw();   // drop the yellow preview the moment the move is taken
   if (m.action === -1) { endTurn(); return; }
   await doAttack(m.from, m.to);
 }
@@ -569,7 +589,7 @@ function drawArrow(p1, p2, color) {
 function octagon(x, y, r) {
   ctx.beginPath();
   for (let i = 0; i < 8; i++) {
-    const a = -Math.PI/2 + Math.PI/8 + i * Math.PI/4;
+    const a = -Math.PI/2 + Math.PI/8 + Math.PI/8 + i * Math.PI/4;
     const px = x + r * Math.cos(a), py = y + r * Math.sin(a);
     i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
   }
