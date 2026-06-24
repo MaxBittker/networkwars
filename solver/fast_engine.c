@@ -58,6 +58,29 @@ static inline double pr_cap(int a, int d) {
     double ag = pr_powg(a), dg = pr_powg(d);
     return ag / (ag + PR_C * dg);
 }
+/* FITTED survivor curves (re-fit 2026-06-24 on 9,445 live battles; weighted-LSQ
+ * planes in (a,d), clipped to the feasible range — see BATTLE_FUNCTION.md §7 and
+ * iphone_data/plot_battle_compare.py). These predict the conditional-mean
+ * survivor far better than the old clipped-margin rule (mean-fit RMSE per (a,d)
+ * cell: occupier 0.49->0.29, defender remnant 0.59->0.18). The win/loss draw
+ * above is unchanged; only the troops-remaining outcome is recalibrated.
+ * Coefficients are scaled x100 and evaluated in PURE INTEGER arithmetic so the
+ * result is bit-identical under -ffast-math (native) and without it (WASM) — a
+ * float form lands exactly on x.5 boundaries (e.g. occ(6,8)=1.50) where the two
+ * builds round differently, breaking cross-arch parity. */
+static inline int iround100(long n) {  /* round(n/100), half away from zero, integer-only */
+    return (n >= 0) ? (int)((n + 50) / 100) : -(int)(((-n) + 50) / 100);
+}
+static inline int fit_occ(int a, int d) {        /* occupier strength on capture */
+    int v = iround100(82L * a - 44L * d + 10L);  /* 0.82a - 0.44d + 0.10 */
+    if (v < 1) v = 1; if (v > a) v = a;
+    return v;
+}
+static inline int fit_defrem(int a, int d) {     /* defender remnant on repel */
+    int v = iround100(53L * d - 26L * a + 35L);  /* 0.53d - 0.26a + 0.35 */
+    if (v < 0) v = 0; if (v > d) v = d;
+    return v;
+}
 #define A_END (-1)          /* action sentinel: distinct from any frm<<8|to (>=0) */
 #define MAXCHILD 512        /* max legal RED actions at one node */
 #define UCT_CHECK_EVERY 256 /* adaptive-stop: re-check root visit margin this often */
@@ -341,10 +364,9 @@ static void build_cap_tables(void) {
     for (int a = 2; a < MAXS; a++) {
         for (int d = 1; d < MAXS; d++) {
             CAPP[a][d]  = pr_cap(a, d);
-            /* deterministic occupier strength after a capture = max(1, a-d);
+            /* deterministic occupier strength after a capture = fitted curve;
              * CAPES holds P*E[str] so exp_cap_strength returns it directly. */
-            int occ = a - d; if (occ < 1) occ = 1;
-            CAPES[a][d] = CAPP[a][d] * (double)occ;
+            CAPES[a][d] = CAPP[a][d] * (double)fit_occ(a, d);
         }
     }
     CAP_READY = 1;
@@ -486,15 +508,13 @@ static int ranked_best_move(const int *owner, const int *strength) {
 /* dice battle, frm attacks to — fitted iOS power-ratio mechanic */
 static void resolve_battle(int *owner, int *strength, int frm, int to) {
     int a = strength[frm], d = strength[to];
-    if (RNG() < pr_cap(a, d)) {       /* capture: occupier = max(1, a-d) */
+    if (RNG() < pr_cap(a, d)) {       /* capture: fitted occupier curve */
         owner[to] = owner[frm];
-        int occ = a - d; if (occ < 1) occ = 1;
-        strength[to] = occ;
+        strength[to] = fit_occ(a, d);
         strength[frm] = 1;
-    } else {                          /* repel: defender gutted by the attack */
+    } else {                          /* repel: fitted defender-remnant curve */
         strength[frm] = 1;
-        int rem = d - a + 1;
-        strength[to] = rem > 0 ? rem : 0;
+        strength[to] = fit_defrem(a, d);
     }
 }
 
@@ -509,14 +529,15 @@ void resolve_battle_logged(int *owner, int *strength, int frm, int to,
     int def_loss, atk_loss;
     if (captured) {
         owner[to] = owner[frm];
-        int occ = a0 - d0; if (occ < 1) occ = 1;
+        int occ = fit_occ(a0, d0);
         strength[to] = occ;
         strength[frm] = 1;
         def_loss = d0;                 /* defender wiped */
         atk_loss = a0 - occ - 1;       /* troops lost reaching the node */
+        if (atk_loss < 0) atk_loss = 0;
     } else {
         strength[frm] = 1;
-        int rem = d0 - a0 + 1; if (rem < 0) rem = 0;
+        int rem = fit_defrem(a0, d0);
         strength[to] = rem;
         def_loss = d0 - rem;
         atk_loss = a0 - 1;             /* source gutted to 1 */

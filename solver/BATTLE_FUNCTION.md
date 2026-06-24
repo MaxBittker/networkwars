@@ -4,9 +4,11 @@ _Updated 2026-06-22. Supersedes the battle section of `IOS_CALIBRATION.md`._
 
 ## TL;DR
 
-> **SHIPPED MODEL (2026-06-23): the single-shot power-ratio in §6.** This section's
-> history below documents the earlier *iterated* mechanic (k=0.62) that §6 replaced;
-> read §6 first for what `fast_engine.c` actually does today.
+> **SHIPPED MODEL: single-shot power-ratio (§6, 2026-06-23) + fitted (a,d)
+> survivor planes (§7, 2026-06-24).** Read §6 for the win/loss draw and §7 for the
+> troops-remaining outcome — together they are what `fast_engine.c` does today. The
+> history below documents the earlier *iterated* mechanic (k=0.62) and the old
+> `max(1,a−d)`/`max(0,d−a+1)` survivor clamp that §7 replaced.
 
 From **3,308 ground-truth live battles** we replaced the engine's iterated-Bernoulli-at-0.60
 battle with a **power-ratio** mechanic that fits both *who wins* and *how many troops survive*:
@@ -199,3 +201,42 @@ treat the offline gain as variance-reduction, not necessarily a live lever.
 NOT YET DONE: shipping it (would re-freeze `validate_fast.py` golden seeds) and a
 live A/B. Build: `cc -O3 -ffast-math -shared -fPIC fast_engine_battle.c -o
 fast_engine_battle.so`, select via `NW_ENGINE_SO=./fast_engine_battle.so`.
+
+---
+
+## 7. 2026-06-24 survivor re-fit (SHIPPED) — fitted (a,d) planes replace the margin clamp
+
+The §6 win/loss draw is excellent, but the **survivor** rules (`max(1,a−d)`,
+`max(0,d−a+1)`) were a clipped-margin simplification that misfit the data. The key
+finding: **survivors depend on absolute size, not just margin** — at margin +1 the
+occupier rises 1.0→2.0 from 2v1 to 5v4; at margin 0 the repel remnant rises
+0.83→1.71 with size. A margin-only clamp structurally cannot capture that.
+
+Re-fit on **9,445 live battles** (`extract_battles.py runs/*.jsonl`,
+`plot_battle_compare.py`) with weighted least-squares **planes in (a,d)**, clipped
+to the feasible range:
+
+- capture occupier  = `clip(0.82·a − 0.44·d + 0.10,  1,  a)`
+- repel  remnant    = `clip(0.53·d − 0.26·a + 0.35,  0,  d)`
+
+**Mean-fit RMSE per (a,d) cell** (the curve's job — predict the conditional mean):
+
+| survivor | old clamp | fitted plane | 5-fold CV |
+|---|---:|---:|---:|
+| capture occupier | 0.49 | **0.29** | 0.34 |
+| repel defender remnant | 0.59 | **0.18** | 0.26 |
+
+(Per-battle RMSE only drops modestly — ~1 troop of within-cell spread is
+irreducible, OCR jitter + real attrition variance the deterministic curve can't
+remove. The mean is what improved.) A generative war-of-attrition model was tried
+and is **worse** (occ RMSE 0.76) — too much spread.
+
+**Shipped in `fast_engine.c`** (`fit_occ`/`fit_defrem`, used by `resolve_battle`,
+`resolve_battle_logged`, and the `CAPES` policy table). Coefficients are scaled
+×100 and evaluated in **pure-integer arithmetic** (`iround100`): a float form lands
+exactly on x.5 boundaries (e.g. occ(6,8)=1.50) where `-ffast-math` native and
+no-`-ffast-math` WASM round differently — integer math is bit-identical across
+both. Gates re-frozen: `validate_fast.py` golden seeds + battle invariants,
+`wasm_gate.mjs` battle invariants. Both pass (board-gen still 1000/1000
+bit-identical). Source always → 1 (~100%) is unchanged. Offline 1000-game winrate
+on the shipped (integer) build: see commit / series logs.

@@ -57,8 +57,12 @@ for (let seed = 1; seed <= N_SEEDS; seed++) {
 console.error(`invariants: ${N_SEEDS - invFails}/${N_SEEDS} seeds clean`);
 console.error(`determinism: ${N_SEEDS - detFails}/${N_SEEDS} seeds reproducible`);
 
-// ---- battle postconditions: capture => occupier left (to>=1, from==1); repel =>
-// from==1, to==max(0,d0-a0+1). Holds for every outcome. (mirrors validate_fast) ----
+// ---- battle postconditions: capture => source==1, occupier == fitOcc(a,d) in
+// [1,a]; repel => source==1, defender remnant == fitDefrem(a,d) in [0,d]. Fitted
+// survivor curves, integer arithmetic, bit-identical to C (mirrors validate_fast) ----
+const iround100 = (n) => n >= 0 ? Math.trunc((n + 50) / 100) : -Math.trunc(((-n) + 50) / 100);
+const fitOcc = (a, d) => Math.min(a, Math.max(1, iround100(82 * a - 44 * d + 10)));
+const fitDefrem = (a, d) => Math.min(d, Math.max(0, iround100(53 * d - 26 * a + 35)));
 E.setTopologyCsr(2, [[1], [0]]);
 let bTrials = 0, bFails = 0;
 for (let a0 = 1; a0 <= 11; a0++) for (let d0 = 1; d0 <= 11; d0++) for (let k = 0; k < 6; k++) {
@@ -68,8 +72,8 @@ for (let a0 = 1; a0 <= 11; a0++) for (let d0 = 1; d0 <= 11; d0++) for (let k = 0
   const { meta } = E.attackLogged(owner, strength, 0, 1);
   bTrials++;
   const ok = meta.captured
-    ? (owner[1] === 0 && strength[1] >= 1 && strength[0] === 1)
-    : (owner[1] === 1 && strength[0] === 1 && strength[1] === Math.max(0, d0 - a0 + 1));
+    ? (owner[1] === 0 && strength[0] === 1 && strength[1] === fitOcc(a0, d0))
+    : (owner[1] === 1 && strength[0] === 1 && strength[1] === fitDefrem(a0, d0));
   if (!ok) { bFails++; if (bFails <= 5) console.error(`  battle a0=${a0} d0=${d0}: cap=${meta.captured} own=${[...owner]} str=${[...strength]}`); }
 }
 console.error(`battle invariants: ${bTrials - bFails}/${bTrials} ok`);

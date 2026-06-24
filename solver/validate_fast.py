@@ -14,14 +14,15 @@ import fastnw
 # Frozen full-game outcomes (deterministic policies). Regenerate intentionally if
 # the engine is meant to change; an unexpected diff here means a behavior drift.
 GOLDEN = {
-    # Re-frozen 2026-06-23 for the single-shot power-ratio battle (G=3.40, C=1.26)
-    # + attacker-strength-first bot with random tie-breaks (deterministic per seed).
-    (1, 'safe_expand'): ('purple', 9),  (1, 'random_all'): ('green', 8),
-    (2, 'safe_expand'): ('green', 7),   (2, 'random_all'): ('green', 4),
-    (3, 'safe_expand'): ('green', 9),   (3, 'random_all'): ('purple', 8),
-    (7, 'safe_expand'): ('yellow', 7),  (7, 'random_all'): ('purple', 6),
-    (42, 'safe_expand'): ('red', 8),    (42, 'random_all'): ('purple', 7),
-    (100, 'safe_expand'): ('blue', 10), (100, 'random_all'): ('yellow', 7),
+    # Re-frozen 2026-06-24 for the fitted survivor curves (occupier/remnant planes
+    # in (a,d); BATTLE_FUNCTION.md §7) on top of the single-shot power-ratio battle
+    # (G=3.40, C=1.26) + attacker-strength-first bot with random tie-breaks.
+    (1, 'safe_expand'): ('yellow', 10), (1, 'random_all'): ('purple', 6),
+    (2, 'safe_expand'): ('red', 6),     (2, 'random_all'): ('green', 4),
+    (3, 'safe_expand'): ('green', 7),   (3, 'random_all'): ('green', 5),
+    (7, 'safe_expand'): ('blue', 11),   (7, 'random_all'): ('yellow', 5),
+    (42, 'safe_expand'): ('yellow', 5), (42, 'random_all'): ('red', 7),
+    (100, 'safe_expand'): ('purple', 14), (100, 'random_all'): ('blue', 6),
 }
 
 
@@ -70,9 +71,18 @@ def check_invariants(nseeds):
     return fails == 0
 
 
+def _iround100(n):  # round(n/100) half-away-from-zero, integer-only (matches C)
+    return (n + 50) // 100 if n >= 0 else -(((-n) + 50) // 100)
+
+def fit_occ(a, d):     # fitted occupier on capture (BATTLE_FUNCTION.md §7)
+    return min(a, max(1, _iround100(82 * a - 44 * d + 10)))
+
+def fit_defrem(a, d):  # fitted defender remnant on repel
+    return min(d, max(0, _iround100(53 * d - 26 * a + 35)))
+
 def check_battle_invariants():
-    """capture => occupier left behind (to>=1, from==1); repel => from==1,
-    to==max(0,d0-a0+1). Holds for every outcome, so run a spread of (a,d)."""
+    """capture => source==1, occupier == fit_occ(a,d) in [1,a]; repel => source==1,
+    defender remnant == fit_defrem(a,d) in [0,d]. Run a spread of (a,d)."""
     import numpy as np
     fastnw.set_topology_csr(2, [[1], [0]])
     fails = 0
@@ -86,10 +96,11 @@ def check_battle_invariants():
                 _, meta = fastnw.attack_logged(owner, strength, 0, 1)
                 trials += 1
                 if meta['captured']:
-                    ok = owner[1] == 0 and strength[1] >= 1 and strength[0] == 1
+                    ok = (owner[1] == 0 and strength[0] == 1
+                          and strength[1] == fit_occ(a0, d0))
                 else:
                     ok = (owner[1] == 1 and strength[0] == 1
-                          and strength[1] == max(0, d0 - a0 + 1))
+                          and strength[1] == fit_defrem(a0, d0))
                 if not ok:
                     fails += 1
                     if fails <= 5:
