@@ -1,12 +1,12 @@
-# Deploy the self-contained WASM frontend (public/) to GitHub Pages.
-# The site is fully static — fast_engine.js embeds the WASM, and the game runs in a
-# Web Worker in the browser, so there is nothing to build here; we just upload public/.
+# Build the C engine to WASM and deploy the self-contained frontend (public/) to
+# GitHub Pages on every push to main. The WASM (public/fast_engine.js) is rebuilt
+# from solver/fast_engine.c here, so the deployed engine always matches main's
+# source — the committed artifact is just a convenience for local/offline use.
 name: Deploy to GitHub Pages
 
 on:
   push:
     branches: [main]
-    paths: ['public/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -27,6 +27,10 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+      - name: Build WASM engine from source
+        run: bash solver/build_wasm.sh
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
