@@ -82,6 +82,27 @@
   .sg .bar > i { display:block; height:100%; background:#5fd0d6; }
   .sg.muted { opacity:.55; font-style:italic; }
 
+  /* "Hide AI features" (menu toggle): drop the whole suggestions panel so the
+     board claims the full height/width. #board is flex:1 so it expands for free. */
+  body.ai-off #ai { display:none; }
+
+  /* On phones, give the board as much room as possible: shrink the win graph and
+     show fewer suggestion rows (the panel clips to its height) so the play area
+     stays tall. Keyed on the narrow/short viewport, not desktop. */
+  @media (max-width:480px) {
+    #ai { padding:2px 10px 0; }
+    #ai-head { margin-bottom:3px; }
+    #wingraph { height:26px; margin-bottom:4px; }
+    #sugg { height:150px; }            /* ~5 rows instead of 8 */
+    header { padding:8px 14px 4px; }
+  }
+  @media (max-height:670px) {
+    #wingraph { display:none; }
+    #sugg { height:96px; }             /* ~3 rows when vertically cramped */
+    header { padding:6px 14px 3px; }
+    footer { padding:6px 22px calc(6px + env(safe-area-inset-bottom)) !important; }
+  }
+
   footer { display:flex; justify-content:space-between; align-items:center;
     padding:10px 22px calc(10px + env(safe-area-inset-bottom)); font-size:16px; }
   .act { color:var(--teal); font-weight:700; cursor:pointer; user-select:none; padding:6px 2px; }
@@ -137,6 +158,7 @@
       <div id="menupop">
         <div class="mi" id="mi-new">New Game</div>
         <div class="mi" id="mi-auto">Autoplay</div>
+        <div class="mi" id="mi-ai">AI Assist</div>
         <div class="div"></div>
         <div class="lbl">Animation speed</div>
         <div class="mi sp" data-speed="instant">Instant</div>
@@ -196,6 +218,7 @@ let animBoard = null;       // mutable node copy used while animating bot turns
 let reinforceFlash = null;  // Set(nodeId) briefly highlighted on a reinforce step
 let autoplay = false;       // self-play loop: agent plays its top move, no animation
 let autoplayRunning = false;
+let aiOn = true;            // show the AI win%/graph/suggestions panel (menu toggle)
 const record = { w: 0, l: 0 };  // autoplay win/loss tally (this session)
 
 // ---- persistent game history: starting board + outcome of every game played,
@@ -327,6 +350,7 @@ function renderHeader() {
 // ---- AI search + suggestions ----
 async function requestSearch() {
   if (!state || state.over || inputLocked) return;
+  if (!aiOn && !autoplay) return;        // AI features hidden — don't spend a search
   // Always search even with no attacks available — the search returns END TURN as
   // the sole suggestion, so the panel still shows the right move.
   const my = ++searchId;
@@ -765,11 +789,30 @@ document.getElementById('mi-new').onclick = () => {
 document.getElementById('mi-auto').onclick = () => {
   setAutoplay(!autoplay);                         // leave menu open so the check shows
 };
+// Hide AI features: drops the whole suggestions panel (board grows to fill) and
+// stops spending searches during manual play. Persisted across sessions.
+function setAI(on) {
+  aiOn = on;
+  document.body.classList.toggle('ai-off', !on);
+  document.getElementById('mi-ai').classList.toggle('sel', on);
+  try { localStorage.setItem('nwAI', on ? '1' : '0'); } catch (_) {}
+  resize();                                        // board reclaims/yields the panel's height
+  if (on && !autoplay && state && !state.over) requestSearch();
+}
+(function loadAI() {
+  let v; try { v = localStorage.getItem('nwAI'); } catch (_) {}
+  setAI(v == null ? true : v === '1');
+})();
+document.getElementById('mi-ai').onclick = () => setAI(!aiOn);
 document.querySelectorAll('#menupop .sp').forEach(el => {
   el.onclick = () => setSpeed(el.dataset.speed);   // leave menu open so the check is visible
 });
-document.addEventListener('click', (e) => {
-  if (!document.getElementById('menuwrap').contains(e.target)) menupop.classList.remove('show');
+// Dismiss the menu on any tap outside it. pointerdown (not click) so it closes on
+// the first touch — on mobile a trailing synthetic click was unreliable, which made
+// the popup feel stuck open.
+document.addEventListener('pointerdown', (e) => {
+  if (menupop.classList.contains('show') && !document.getElementById('menuwrap').contains(e.target))
+    menupop.classList.remove('show');
 });
 
 function showModal() {
