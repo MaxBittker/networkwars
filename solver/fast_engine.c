@@ -27,14 +27,22 @@
 #define NF 5            /* factions: 0=red, 1..4 bots */
 #define WIN_NODES 24
 #define MAX_TURNS 300
-/* Power-ratio (fitted iOS) battle: per round the attacker wins w.p.
- *   q(a,d) = a^PR_K / (a^PR_K + PR_C0 * d^PR_K)
- * Fit from ~3300 live battles (see solver/BATTLE_FUNCTION.md). */
-#define PR_K  0.62
-#define PR_C0 0.93
-static inline double pr_q(int a, int d) {
-    double ak = pow((double)a, PR_K), dk = pow((double)d, PR_K);
-    return ak / (ak + PR_C0 * dk);
+/* SINGLE-SHOT power-ratio (fitted iOS) battle — the simplest model that best
+ * explains the live capture data. One Bernoulli decides capture vs repel:
+ *   P(capture) = a^PR_G / (a^PR_G + PR_C * d^PR_G)
+ * Survivors are deterministic (both within OCR noise of the live data):
+ *   capture: occupier = max(1, a - d), source = 1
+ *   repel:   source   = 1,            defender remnant = max(0, d - a + 1)
+ * MLE on 7,222 live red-attacker battles: G=3.40, C=1.26 (AIC 5941 vs the old
+ * iterated k=0.62 model's 6077; nails the contested +1 margin 76% vs 74% obs).
+ * See solver/BATTLE_FUNCTION.md / iphone_data/refit_emergent.py. */
+#define PR_G  3.40
+#define PR_C  1.26
+static inline double pr_cap(int a, int d) {
+    if (a < 1) return 0.0;
+    if (d < 1) return 1.0;
+    double ag = pow((double)a, PR_G), dg = pow((double)d, PR_G);
+    return ag / (ag + PR_C * dg);
 }
 #define A_END (-1)          /* action sentinel: distinct from any frm<<8|to (>=0) */
 #define MAXCHILD 512        /* max legal RED actions at one node */
@@ -306,7 +314,7 @@ static double CAPES[MAXS][MAXS];
 static int CAP_READY = 0;
 
 static void build_cap_tables(void) {
-    if (CAP_READY) return;   /* depends only on pr_q; build once */
+    if (CAP_READY) return;   /* single-shot closed form; build once */
     for (int a = 0; a < MAXS; a++) {
         CAPP[a][0] = (a >= 1) ? 1.0 : 0.0;
         CAPES[a][0] = (a >= 1) ? (double)(a - 1) : 0.0;
@@ -317,9 +325,11 @@ static void build_cap_tables(void) {
     }
     for (int a = 2; a < MAXS; a++) {
         for (int d = 1; d < MAXS; d++) {
-            double p = pr_q(a, d), q = 1.0 - p;
-            CAPP[a][d]  = p * CAPP[a][d-1]  + q * CAPP[a-1][d];
-            CAPES[a][d] = p * CAPES[a][d-1] + q * CAPES[a-1][d];
+            CAPP[a][d]  = pr_cap(a, d);
+            /* deterministic occupier strength after a capture = max(1, a-d);
+             * CAPES holds P*E[str] so exp_cap_strength returns it directly. */
+            int occ = a - d; if (occ < 1) occ = 1;
+            CAPES[a][d] = CAPP[a][d] * (double)occ;
         }
     }
     CAP_READY = 1;
@@ -357,17 +367,13 @@ static const RankWeights RW = {  /* C1 */
     .strongTargetPenalty=0, .threshold=220.775,
 };
 
-/* Bot policy calibration. Default mode=0/eps=0 preserves the original iOS model:
- * deterministically choose weakest strict-legal target. Modes 1-3 are strict
- * downhill stochastic tie-break probes: final id tie, weakest-target tie, and
- * max-margin tie. */
+/* Bot policy hook — retained for client API compatibility but now INERT: the
+ * shipped bot (best_bot_move) is attacker-strength-first with random tie-breaks
+ * baked in, so the old stochastic tie-break probe modes no longer apply. */
 static int BOT_POLICY_MODE = 0;
 static double BOT_POLICY_EPS = 0.0;
 
 void set_bot_policy(int mode, double eps) {
-    if (mode < 0 || mode > 3) mode = 0;
-    if (eps < 0.0) eps = 0.0;
-    if (eps > 1.0) eps = 1.0;
     BOT_POLICY_MODE = mode;
     BOT_POLICY_EPS = eps;
 }
@@ -476,18 +482,14 @@ static int ranked_best_move(const int *owner, const int *strength) {
 /* dice battle, frm attacks to — fitted iOS power-ratio mechanic */
 static void resolve_battle(int *owner, int *strength, int frm, int to) {
     int a = strength[frm], d = strength[to];
-    int a0 = a, d0 = d;
-    while (a > 1 && d > 0) {
-        if (RNG() < pr_q(a, d)) d--;
-        else a--;
-    }
-    if (d == 0 && a >= 2) {           /* capture requires a surviving occupier */
+    if (RNG() < pr_cap(a, d)) {       /* capture: occupier = max(1, a-d) */
         owner[to] = owner[frm];
-        strength[to] = a - 1;
+        int occ = a - d; if (occ < 1) occ = 1;
+        strength[to] = occ;
         strength[frm] = 1;
-    } else {                          /* repel (incl. spent-striker d==0,a==1) */
+    } else {                          /* repel: defender gutted by the attack */
         strength[frm] = 1;
-        int rem = d0 - a0 + 1;        /* defender gutted by the full attacking force */
+        int rem = d - a + 1;
         strength[to] = rem > 0 ? rem : 0;
     }
 }
@@ -498,24 +500,28 @@ static void resolve_battle(int *owner, int *strength, int frm, int to) {
  * fromStart, toStart, fromStrength, toStrength}. Uses the active RNG. */
 void resolve_battle_logged(int *owner, int *strength, int frm, int to,
                            int *out_flips, int *out_len, int *out_meta) {
-    int a = strength[frm], d = strength[to];
-    int a0 = a, d0 = d;
-    int nf = 0;
-    while (a > 1 && d > 0) {
-        if (RNG() < pr_q(a, d)) { d--; out_flips[nf++] = 1; }
-        else { a--; out_flips[nf++] = 0; }
-    }
-    int captured = 0;
-    if (d == 0 && a >= 2) {
-        captured = 1;
+    int a0 = strength[frm], d0 = strength[to];
+    int captured = (RNG() < pr_cap(a0, d0)) ? 1 : 0;
+    int def_loss, atk_loss;
+    if (captured) {
         owner[to] = owner[frm];
-        strength[to] = a - 1;
+        int occ = a0 - d0; if (occ < 1) occ = 1;
+        strength[to] = occ;
         strength[frm] = 1;
+        def_loss = d0;                 /* defender wiped */
+        atk_loss = a0 - occ - 1;       /* troops lost reaching the node */
     } else {
         strength[frm] = 1;
-        int rem = d0 - a0 + 1;
-        strength[to] = rem > 0 ? rem : 0;
+        int rem = d0 - a0 + 1; if (rem < 0) rem = 0;
+        strength[to] = rem;
+        def_loss = d0 - rem;
+        atk_loss = a0 - 1;             /* source gutted to 1 */
     }
+    /* synthesize a flip sequence consistent with the survivors (cosmetic only):
+     * defender losses (1) then attacker losses (0). */
+    int nf = 0;
+    for (int i = 0; i < def_loss && nf < 2 * MAXS; i++) out_flips[nf++] = 1;
+    for (int i = 0; i < atk_loss && nf < 2 * MAXS; i++) out_flips[nf++] = 0;
     *out_len = nf;
     out_meta[0] = captured;
     out_meta[1] = a0;
@@ -524,12 +530,14 @@ void resolve_battle_logged(int *owner, int *strength, int frm, int to,
     out_meta[4] = strength[to];
 }
 
-/* best_bot_move: return packed (frm<<8|to)+1, or 0 if none.
- * Baseline tie-break: weakest defender; then strongest attacker; then lowest frm;
- * lowest to. Optional stochastic modes are runtime-settable via set_bot_policy. */
+/* best_bot_move: return packed (frm<<8|to)+1, or 0 if none. */
 static int best_bot_move(const int *owner, const int *strength, int faction) {
-    int bf=-1, bt=-1, bfs=0, bts=0; int found=0;
+    /* Attacker-strength-first (matches observed iOS bot): pick the STRONGEST
+     * owned node that has any legal target; for that strength tier take the
+     * WEAKEST reachable defender (== biggest margin once the attacker is fixed);
+     * break remaining ties at random. So 7->6 fires before 5->1. */
     int rf[MAXN * 8], rt[MAXN * 8], rn=0;
+    int best_a=0, best_d=0; int found=0;
     for (int i = 0; i < N; i++) {
         if (owner[i] != faction || strength[i] <= 1) continue;
         int si = strength[i];
@@ -538,41 +546,26 @@ static int best_bot_move(const int *owner, const int *strength, int faction) {
             if (owner[j] == faction || strength[j] >= si) continue;
             int dj = strength[j];
             if (rn < MAXN * 8) { rf[rn] = i; rt[rn] = j; rn++; }
-            int better = 0;
-            if (!found) better = 1;
-            else if (dj < bts) better = 1;
-            else if (dj == bts && si > bfs) better = 1;
-            else if (dj == bts && si == bfs && i < bf) better = 1;
-            else if (dj == bts && si == bfs && i == bf && j < bt) better = 1;
-            if (better) { bf=i; bt=j; bfs=si; bts=dj; found=1; }
+            if (!found || si > best_a || (si == best_a && dj < best_d)) {
+                best_a = si; best_d = dj; found = 1;
+            }
         }
     }
     if (!found) return 0;
-    if (BOT_POLICY_MODE > 0 && BOT_POLICY_EPS > 0.0 && rn > 1 && RNG() < BOT_POLICY_EPS) {
-        int pf[MAXN * 8], pt[MAXN * 8], pn = 0;
-        int max_margin = -9999;
-        if (BOT_POLICY_MODE == 3) {
-            for (int r = 0; r < rn; r++) {
-                int m = strength[rf[r]] - strength[rt[r]];
-                if (m > max_margin) max_margin = m;
-            }
-        }
-        for (int r = 0; r < rn; r++) {
-            int fs = strength[rf[r]], ts = strength[rt[r]];
-            int ok = 0;
-            if (BOT_POLICY_MODE == 1) ok = (ts == bts && fs == bfs);
-            else if (BOT_POLICY_MODE == 2) ok = (ts == bts);
-            else if (BOT_POLICY_MODE == 3) ok = (fs - ts == max_margin);
-            if (ok && pn < MAXN * 8) { pf[pn] = rf[r]; pt[pn] = rt[r]; pn++; }
-        }
-        if (pn > 1) {
-            int r = (int)(RNG() * pn);
-            if (r < 0) r = 0;
-            if (r >= pn) r = pn - 1;
-            return ((pf[r] << 8) | pt[r]) + 1;
+    /* collect every move at the (strongest-attacker, weakest-defender) tier */
+    int pf[MAXN * 8], pt[MAXN * 8], pn = 0;
+    for (int r = 0; r < rn; r++) {
+        if (strength[rf[r]] == best_a && strength[rt[r]] == best_d) {
+            pf[pn] = rf[r]; pt[pn] = rt[r]; pn++;
         }
     }
-    return found ? ((bf << 8) | bt) + 1 : 0;
+    int idx = 0;
+    if (pn > 1) {
+        idx = (int)(RNG() * pn);
+        if (idx < 0) idx = 0;
+        if (idx >= pn) idx = pn - 1;
+    }
+    return ((pf[idx] << 8) | pt[idx]) + 1;
 }
 
 /* reinforce faction's largest component (border round-robin). */

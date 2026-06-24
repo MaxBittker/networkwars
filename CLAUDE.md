@@ -13,7 +13,7 @@
   dropped (it plateaued below the search; findings in memory
   `alphago-levers-ruled-out`). No Gymnasium env or torch/pufferlib dependency.
 - **`solver/fast_engine.c` is the single implementation of everything**: board
-  generation + the iOS deal, the four deterministic bots, the power-ratio battle,
+  generation + the iOS deal, the four bots, the power-ratio battle,
   reinforcement, win check, and the open-loop C-UCT search (ranked **C1** rollout
   baked in, `c_puct=2.5`). Everything else is a thin client over it:
   - `solver/fastnw.py` — ctypes client (marshals int32 arrays; implements no rules).
@@ -25,10 +25,16 @@
   `solver/validate_fast.py` (board/deal/battle invariants over 1000 seeds + frozen
   golden-seed game outcomes).
 - Two things were recalibrated from live play: the deal (every faction totals 20, 4
-  fixed templates) and battle. BATTLE is the **power-ratio** model (fit from ~3300
-  live battles, see solver/BATTLE_FUNCTION.md): per round the attacker wins w.p.
-  `a^0.62/(a^0.62 + 0.93·d^0.62)`; a capture needs the attacker to keep an occupier
-  (node→a-1 ≥1, never 0), a repel gutts the defender to `max(0,d0-a0+1)` (can be 0).
+  fixed templates) and battle. BATTLE is the **single-shot power-ratio** model
+  (re-fit 2026-06-23 from 7,222 live red battles, see solver/BATTLE_FUNCTION.md §6):
+  one Bernoulli decides the whole fight, `P(capture)=a^3.40/(a^3.40 + 1.26·d^3.40)`;
+  on capture the occupier = `max(1, a−d)` (source→1), on repel the defender is gutted
+  to `max(0, d−a+1)` (source→1). This is simplest + best-fitting (AIC 5941 vs the old
+  iterated k=0.62 model's 6077, which was too soft at the contested margins).
+- BOTS: each of the four bots greedily attacks **strongest-own-node first**, then that
+  node's **weakest reachable target**, ties broken at random (matches observed iOS
+  bot ordering); then reinforces its largest component's border. The RNG is seeded
+  per game so outcomes stay reproducible (golden-seed gate holds).
 - Build + drive: `cc -O3 -ffast-math -shared -fPIC solver/fast_engine.c -o
   solver/fast_engine.so`, then `solver/fmcts.py` (or `solver/par_eval.py` for
   parallel winrate evals), or `solver/server.py` to play in a browser. On the

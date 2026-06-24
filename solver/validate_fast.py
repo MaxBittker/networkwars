@@ -14,12 +14,14 @@ import fastnw
 # Frozen full-game outcomes (deterministic policies). Regenerate intentionally if
 # the engine is meant to change; an unexpected diff here means a behavior drift.
 GOLDEN = {
-    (1, 'safe_expand'): ('blue', 5),   (1, 'random_all'): ('blue', 15),
-    (2, 'safe_expand'): ('green', 5),  (2, 'random_all'): ('green', 6),
-    (3, 'safe_expand'): ('green', 5),  (3, 'random_all'): ('green', 9),
-    (7, 'safe_expand'): ('blue', 7),   (7, 'random_all'): ('blue', 6),
-    (42, 'safe_expand'): ('purple', 8), (42, 'random_all'): ('blue', 7),
-    (100, 'safe_expand'): ('purple', 12), (100, 'random_all'): ('red', 8),
+    # Re-frozen 2026-06-23 for the single-shot power-ratio battle (G=3.40, C=1.26)
+    # + attacker-strength-first bot with random tie-breaks (deterministic per seed).
+    (1, 'safe_expand'): ('purple', 9),  (1, 'random_all'): ('green', 8),
+    (2, 'safe_expand'): ('green', 7),   (2, 'random_all'): ('green', 4),
+    (3, 'safe_expand'): ('green', 9),   (3, 'random_all'): ('purple', 8),
+    (7, 'safe_expand'): ('yellow', 7),  (7, 'random_all'): ('purple', 6),
+    (42, 'safe_expand'): ('red', 8),    (42, 'random_all'): ('purple', 7),
+    (100, 'safe_expand'): ('blue', 10), (100, 'random_all'): ('yellow', 7),
 }
 
 

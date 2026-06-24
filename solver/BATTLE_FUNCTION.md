@@ -4,19 +4,23 @@ _Updated 2026-06-22. Supersedes the battle section of `IOS_CALIBRATION.md`._
 
 ## TL;DR
 
+> **SHIPPED MODEL (2026-06-23): the single-shot power-ratio in §6.** This section's
+> history below documents the earlier *iterated* mechanic (k=0.62) that §6 replaced;
+> read §6 first for what `fast_engine.c` actually does today.
+
 From **3,308 ground-truth live battles** we replaced the engine's iterated-Bernoulli-at-0.60
 battle with a **power-ratio** mechanic that fits both *who wins* and *how many troops survive*:
 
-- **Who wins (per round):** attacker wins with probability `a^k / (a^k + c0·d^k)`, `k≈0.62`,
-  `c0≈0.9` — steeper and more decisive than a fixed coin. (As a single-shot outcome model,
-  `P(capture) = a^γ/(a^γ + c·d^γ)` with **γ≈3.37, c≈1.30** is the best pure-outcome fit.)
-- **Capture:** requires the attacker to still have ≥2 when the defender reaches 0 (one to
-  occupy, one garrison). Captured node gets `a_remaining − 1`; source keeps 1.
+- **Who wins:** the best, simplest fit is a single-shot `P(capture) = a^γ/(a^γ + c·d^γ)`
+  with **γ≈3.40, c≈1.26** (§6, re-fit on 7,222 battles — this is what ships). The earlier
+  per-round form `a^k/(a^k + c0·d^k)`, `k≈0.62` is steeper than a fixed coin but too soft at
+  the contested margins; §6 supersedes it.
+- **Capture:** occupier = `max(1, a − d)`; source keeps 1.
 - **Repel:** source → 1; defender remnant → `max(0, d0 − a0 + 1)` (gutted by the full
   attacking force).
 
-Confidence: **high** on the capture-probability shape and the survivor rules. The mechanic is
-deployed live (`fast_engine_pr.c`). Reference implementation + self-test: `iphone_data/battle_model.py`.
+Confidence: **high** on the capture-probability shape and the survivor rules. Shipped in
+`fast_engine.c`; fit/comparison tooling: `iphone_data/refit_battle.py`, `refit_emergent.py`.
 
 ---
 
@@ -152,11 +156,46 @@ mechanic against all 3,187 battles:
 
 ## 5. Artifacts
 
-- `iphone_data/battle_model.py` — reference mechanic + drop-in `resolve_battle` + self-test.
 - `iphone_data/extract_battles.py` — pull `(a,d,outcome,survivors)` from any series/botcap log.
-- `iphone_data/fit_battle.py` — outcome-model MLE/AIC + calibration + survivor lstsq.
-- `iphone_data/fit_mechanic.py` — joint outcome+survivor generative fit.
-- `fast_engine_pr.c` / `fast_engine_pr.so` — the deployed power-ratio C search engine
-  (select at runtime via `NW_ENGINE_SO`).
-- `eval_corrected_env.py`, `eval_search_engine.py` — offline A/Bs that showed the corrected
-  battle is winrate-positive for red (90%→96% env; 95.7%→98.0% search, same seeds).
+- `iphone_data/refit_battle.py` — logistic-MLE (IRLS, no scipy) model comparison + calibration.
+- `iphone_data/refit_emergent.py` — iterated-DP vs single-shot MLE fit (the §6 comparison).
+- `fast_engine.c` — the single shipped engine; battle lives in `pr_cap` + `resolve_battle`.
+  (Older `battle_model.py`, `fit_battle.py`, `fit_mechanic.py` documented the superseded
+  iterated mechanic; see git history.)
+
+---
+
+## 6. 2026-06-23 re-fit (now 7,222 red-attacker battles)
+
+Re-ran the fit on the full accumulated logs (`extract_battles.py runs/*.jsonl` →
+7,222 valid red battles, 66.1% capture; tooling: `iphone_data/refit_battle.py`,
+`iphone_data/refit_emergent.py`). "Simplest model that best explains it",
+MLE on the compressed (a,d) table:
+
+| model (2 params) | logLik | AIC |
+|---|---:|---:|
+| SHIPPED iterated `q=a^0.62/(a^0.62+0.93 d^0.62)` | −3036.7 | 6077.4 |
+| REFIT iterated `k=0.869, c0=0.885` | −3004.6 | 6013.2 |
+| **REFIT single-shot `P=a^3.40/(a^3.40+1.26 d^3.40)`** | **−2968.5** | **5941.0** |
+
+The **single-shot power-ratio is both the simplest algorithm (one closed-form
+Bernoulli, no iteration loop) and the best fit.** The deployed iterated k=0.62 is
+systematically too soft in the contested region that decides games — margin 0:
+38.6% vs **44.5% observed**; margin +1: 64.3% vs **74.2% observed**. Single-shot
+nails both (44.3% / 76.0%). γ≈3.40 is stable vs the 2026-06-22 fit (3.37) on 2× data.
+
+Survivors stay deterministic and within OCR noise of the data:
+- capture occupier = `max(1, a−d)` (obs mean 2.86, MAE 0.68)
+- repel defender remnant = `max(0, d−a+1)` (obs mean 1.45, MAE 0.81)
+
+Implemented in `fast_engine_battle.c` (single draw + deterministic survivors;
+`build_cap_tables`/`capture_prob`/`exp_cap_strength` filled from the closed form
+to stay consistent with `resolve_battle`). **Offline A/B (800 games, 8000 sims,
+same seeds): 97.0% → 98.8% (+1.8 pts).** Direction matches the 2026-06 recal
+(steeper, more-decisive battles favor the stronger MCTS player by cutting
+variance) — but recall the live A/B for that change was NULL (~80% plateau), so
+treat the offline gain as variance-reduction, not necessarily a live lever.
+
+NOT YET DONE: shipping it (would re-freeze `validate_fast.py` golden seeds) and a
+live A/B. Build: `cc -O3 -ffast-math -shared -fPIC fast_engine_battle.c -o
+fast_engine_battle.so`, select via `NW_ENGINE_SO=./fast_engine_battle.so`.
