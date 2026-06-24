@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Network Wars</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <style>
   :root {
     --red:#ff4d5e; --green:#36d39a; --yellow:#f5c542; --blue:#4d8bff; --purple:#a96bff;
@@ -451,24 +452,21 @@ function drawWinGraph() {
   // faint 50% reference line
   g.strokeStyle = 'rgba(255,255,255,.10)'; g.lineWidth = 1;
   g.beginPath(); g.moveTo(0, yOf(0.5) + 0.5); g.lineTo(W, yOf(0.5) + 0.5); g.stroke();
-  const pts = winSeries;
-  if (!pts.length) return;
+  // Anchor every game's curve at a 100% "data point 0" so a fresh graph reads as
+  // a line dropping from full strength rather than a lone dot.
+  const pts = [1, ...winSeries];
   const n = pts.length;
   const xOf = i => n === 1 ? W/2 : (i/(n-1)) * W;
-  // subtle area under the curve
-  g.beginPath();
-  g.moveTo(xOf(0), H);
-  for (let i = 0; i < n; i++) g.lineTo(xOf(i), yOf(pts[i]));
-  g.lineTo(xOf(n-1), H); g.closePath();
-  g.fillStyle = 'rgba(95,208,214,.07)'; g.fill();
   // the line itself
   g.beginPath();
   g.moveTo(xOf(0), yOf(pts[0]));
   for (let i = 1; i < n; i++) g.lineTo(xOf(i), yOf(pts[i]));
   g.strokeStyle = 'rgba(95,208,214,.85)'; g.lineWidth = 1.6; g.lineJoin = 'round'; g.stroke();
-  // current value dot
-  g.fillStyle = '#bfe';
-  g.beginPath(); g.arc(xOf(n-1), yOf(pts[n-1]), 2.2, 0, Math.PI*2); g.fill();
+  // a dot at every datapoint (current value drawn brighter)
+  for (let i = 0; i < n; i++) {
+    g.fillStyle = i === n - 1 ? '#eafdf6' : '#bfe';
+    g.beginPath(); g.arc(xOf(i), yOf(pts[i]), 2, 0, Math.PI*2); g.fill();
+  }
 }
 
 function renderAI() {
@@ -538,6 +536,27 @@ function resize() {
 }
 function nodePos(n) { return { x: layout.ox + n.x * layout.s, y: layout.oy + n.y * layout.s }; }
 
+// directional arrowhead near p2, pointing from p1 -> p2 (tip just outside p2's ring)
+function drawArrow(p1, p2, color) {
+  const dx = p2.x - p1.x, dy = p2.y - p1.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len, uy = dy / len;          // unit p1->p2
+  const px = -uy, py = ux;                      // perpendicular
+  const tipX = p2.x - ux * (layout.r + 1), tipY = p2.y - uy * (layout.r + 1);
+  const ah = Math.max(5, layout.r * 0.45);     // arrowhead length (small, sits at the target end)
+  const aw = Math.max(3.5, layout.r * 0.3);    // arrowhead half-width
+  const bx = tipX - ux * ah, by = tipY - uy * ah;
+  ctx.beginPath();
+  ctx.moveTo(tipX, tipY);
+  ctx.lineTo(bx + px * aw, by + py * aw);
+  ctx.lineTo(bx - px * aw, by - py * aw);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.shadowColor = color; ctx.shadowBlur = 10;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
 // flat-top octagon (stop-sign orientation)
 function octagon(x, y, r) {
   ctx.beginPath();
@@ -588,24 +607,29 @@ function draw() {
     const isTarget = isDef || (selected !== null && targetsFor.get(selected)?.has(n.id));
     const isFlash = n.id === flashId;
     const isRein = reinforceFlash && reinforceFlash.has(n.id);
-    const isHoverNode = hoverMove && (n.id === hoverMove.from || n.id === hoverMove.to);
     // dark fill + glowing colored ring (real-game look)
     ctx.save();
-    ctx.shadowColor = isHoverNode ? '#ffd36b' : col;
-    ctx.shadowBlur = isFlash ? 28 : (isRein ? 26 : (isHoverNode ? 20 : (isSel ? 22 : (isTarget ? 16 : 11))));
+    ctx.shadowColor = col;
+    ctx.shadowBlur = isFlash ? 28 : (isRein ? 26 : (isSel ? 22 : (isTarget ? 16 : 11)));
     octagon(p.x, p.y, layout.r);
     ctx.fillStyle = 'rgba(3,12,9,.92)';
     ctx.fill();
     ctx.restore();
     octagon(p.x, p.y, layout.r);
-    ctx.lineWidth = (isSel || isTarget || isFlash || isRein || isHoverNode) ? 3.2 : 2.4;
-    ctx.strokeStyle = isFlash ? '#fff' : (isRein ? '#fff' : (isHoverNode ? '#ffd36b' : col));
+    ctx.lineWidth = (isSel || isTarget || isFlash || isRein) ? 3.2 : 2.4;
+    ctx.strokeStyle = isFlash ? '#fff' : (isRein ? '#fff' : col);
     ctx.stroke();
     // number
     ctx.fillStyle = '#fff';
     ctx.font = `800 ${Math.round(layout.r*0.95)}px -apple-system, sans-serif`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(strength, p.x, p.y + 1);
+  }
+
+  // hovered suggestion: a directional arrow along the edge (drawn on top of nodes)
+  if (hoverMove && hoverMove.from != null && hoverMove.to != null) {
+    const pf = pos[hoverMove.from], pt = pos[hoverMove.to];
+    if (pf && pt) drawArrow(pf, pt, '#ffd36b');
   }
 }
 
