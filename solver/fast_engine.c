@@ -10,9 +10,8 @@
  * set_topology() — or built in C by new_game(), which also fills owner/strength.
  *
  * Two RNG sources, selected by the RNG function pointer:
- *   - mulberry32 (set_rng_mb32): the real seeded game stream — bit-identical to
- *     the old network_wars.py / game.js mulberry32. Used for board-gen and for
- *     playing out the real iOS-faithful game.
+ *   - mulberry32 (set_rng_mb32): the real seeded game stream. Used for board-gen
+ *     and for playing out the real iOS-faithful game.
  *   - splitmix64 (set_sim_seed): a private, seed-free stream for MCTS rollouts so
  *     the search never sees the real game's dice (no seed exploitation).
  *
@@ -110,7 +109,7 @@ static const int DEAL_TMPL[4][6] = {
     {1, 1, 4, 4, 5, 5},
     {1, 3, 4, 4, 4, 4},
 };
-static const double DEAL_CUM[4] = {0.385, 0.712, 0.934, 1.0};  /* 0.385,+0.327,+0.222,+0.066 */
+static const double DEAL_CUM[4] = {0.392, 0.722, 0.923, 1.0};  /* 0.392,+0.330,+0.201,+0.077; MLE over 2163 live faction-deals */
 
 /* Fisher-Yates over the mb32 stream, matching Python's shuffle() exactly. */
 static void bg_shuffle(int *a, int n) {
@@ -366,17 +365,6 @@ static const RankWeights RW = {  /* C1 */
     .eliminate=0, .exposure=60.487, .lowChancePenalty=140.411,
     .strongTargetPenalty=0, .threshold=220.775,
 };
-
-/* Bot policy hook — retained for client API compatibility but now INERT: the
- * shipped bot (best_bot_move) is attacker-strength-first with random tie-breaks
- * baked in, so the old stochastic tie-break probe modes no longer apply. */
-static int BOT_POLICY_MODE = 0;
-static double BOT_POLICY_EPS = 0.0;
-
-void set_bot_policy(int mode, double eps) {
-    BOT_POLICY_MODE = mode;
-    BOT_POLICY_EPS = eps;
-}
 
 /* red component labels: label[i] = component index (-1 if not red) */
 static int LBL[MAXN];

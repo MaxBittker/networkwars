@@ -35,7 +35,6 @@ import fastnw
 # Module globals captured by fork() before the Pool is created — workers read
 # these directly so we never re-pickle the board per task.
 _G = {}
-BOT_POLICY_CHOICES = tuple(fastnw.BOT_POLICY_MODES.keys())
 
 
 def build_state(js):
@@ -58,8 +57,7 @@ def _worker(task):
     """One independent search with its own sim-seed. Topology is inherited from
     the parent via fork; we only re-seed the search RNG. Returns (acts, visits, q)
     as plain lists so they pickle back cheaply."""
-    seed, policy, eps = task
-    fastnw.set_bot_policy(policy, eps)
+    seed = task
     fastnw.use_sim(seed)
     acts, visits, q = fastnw.uct_search(
         _G['owner'], _G['strength'], _G['turns'], _G['sims'],
@@ -78,9 +76,6 @@ def main():
     ap.add_argument('--policy', type=int, default=1, help='back-compat; ignored')
     ap.add_argument('--turns', type=int, default=1)
     ap.add_argument('--sim-seed', type=int, default=0x12345678)
-    ap.add_argument('--bot-policy', choices=BOT_POLICY_CHOICES,
-                    default='baseline')
-    ap.add_argument('--bot-eps', type=float, default=0.0)
     args = ap.parse_args()
 
     js = json.load(open(args.state))
@@ -95,8 +90,7 @@ def main():
 
     # Distinct sim-seed per worker (splitmix64 mixes well, but spread them anyway).
     tasks = [
-        ((args.sim_seed + i * 0x9E3779B1) & 0xFFFFFFFFFFFFFFFF,
-         args.bot_policy, args.bot_eps)
+        (args.sim_seed + i * 0x9E3779B1) & 0xFFFFFFFFFFFFFFFF
         for i in range(args.workers)
     ]
 
@@ -146,8 +140,7 @@ def main():
     eff = args.sims * args.workers
     if best == -1:
         print(json.dumps({'action': 'stop', 'winexp': winexp, 'visits': tv,
-                          'top': top, 'effSims': eff, 'workers': args.workers,
-                          'botPolicy': args.bot_policy, 'botEps': args.bot_eps}))
+                          'top': top, 'effSims': eff, 'workers': args.workers}))
         return
     frm, to = best >> 8, best & 0xFF
     print(json.dumps({
@@ -155,7 +148,6 @@ def main():
         'fromPx': px[frm], 'toPx': px[to],
         'winexp': winexp, 'visits': tv, 'moveVisits': agg_v[best], 'top': top,
         'effSims': eff, 'workers': args.workers,
-        'botPolicy': args.bot_policy, 'botEps': args.bot_eps,
     }))
 
 

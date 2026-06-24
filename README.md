@@ -20,7 +20,6 @@ game and the search-based AI play through.
 
 - **[`DESIGN.md`](DESIGN.md)** — the rules, in prose. The source of truth for *what the
   game is*; if a rule there is wrong, fix it there first, then in the code.
-- **[`STRATEGIES.md`](STRATEGIES.md)** — strategy notes and analysis.
 - **[`solver/README.md`](solver/README.md)** — the engine + solver in depth.
 - **[`solver/BATTLE_FUNCTION.md`](solver/BATTLE_FUNCTION.md)** / **[`solver/IOS_CALIBRATION.md`](solver/IOS_CALIBRATION.md)** —
   how battle and the deal were fit to ~3300 live battles, and the offline-vs-live gap.

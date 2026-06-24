@@ -25,7 +25,6 @@ NWCAP = os.path.join(HERE, 'nwcap.sh')
 WIN_NODES = 24
 END_TURN = (281, 643)      # logical coords of "End Turn"
 DESELECT = (12, 500)       # empty left margin
-BOT_POLICY_CHOICES = tuple(fastnw.BOT_POLICY_MODES.keys())
 
 # settle/stabilize: poll cheap screenshot diffs and parse only once the screen
 # stops animating, instead of fixed long sleeps + repeated full parses.
@@ -178,8 +177,7 @@ PYTHON = os.path.join(os.path.dirname(HERE), '.venv', 'bin', 'python')
 
 
 def mcts_move(st, rollout, engine='fast', sims=8000, turns=1,
-              wset='C1', c_puct=2.5, nroll=1, workers=1,
-              bot_policy='baseline', bot_eps=0.0):
+              wset='C1', c_puct=2.5, nroll=1, workers=1):
     """Pure C-UCT move (fast_engine.so, no net) — the ~78-80% config. The `rollout`
     and `engine` args are vestigial (kept for the call signature).
 
@@ -201,7 +199,6 @@ def mcts_move(st, rollout, engine='fast', sims=8000, turns=1,
         r = sh(PYTHON, script, tmp,
                '--sims', str(sims), '--turns', str(turns), '--wset', wset,
                '--c-puct', str(c_puct), '--nroll', str(nroll),
-               '--bot-policy', bot_policy, '--bot-eps', str(bot_eps),
                *extra)
         line = r.stdout.strip().split('\n')[-1] if r.stdout.strip() else ''
         if line:
@@ -226,11 +223,6 @@ def main():
     ap.add_argument('--nroll', type=int, default=1, help='fast engine rollouts per leaf')
     ap.add_argument('--workers', type=int, default=1,
                     help='>1 = root-parallel search (effective sims ~= workers*sims)')
-    ap.add_argument('--bot-policy', choices=BOT_POLICY_CHOICES,
-                    default='baseline',
-                    help='bot model used inside search rollouts/tree')
-    ap.add_argument('--bot-eps', type=float, default=0.0,
-                    help='probability of using the non-baseline bot move in search')
     args = ap.parse_args()
 
     # pin window on-screen so taps register (off-display buttons = dead clicks)
@@ -266,8 +258,7 @@ def play_loop(args):
             mv = mcts_move(st, args.rollout, engine='fast', sims=args.sims,
                            turns=rnd + 1,
                            wset=args.wset, c_puct=args.c_puct, nroll=args.nroll,
-                           workers=args.workers, bot_policy=args.bot_policy,
-                           bot_eps=args.bot_eps)
+                           workers=args.workers)
             if mv['action'] == 'stop':
                 print(f"  mcts: STOP after {a} attacks")
                 break

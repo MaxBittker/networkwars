@@ -11,7 +11,7 @@ bot animation. Walking consecutive frames lets us:
     cascade that single-snapshot data could not distinguish from a policy break).
 
 A capture that is greedy-illegal AND not explained by prior softening at finer
-granularity is a genuine bot-policy difference from game.js best_bot_move.
+granularity is a genuine bot-policy difference from the engine's best_bot_move.
 
 Usage: analyze_botcap.py runs/botcap.jsonl
 """

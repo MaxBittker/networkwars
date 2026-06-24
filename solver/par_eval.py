@@ -9,10 +9,8 @@ from multiprocessing import Pool
 
 
 def run_chunk(arg):
-    seeds, sims, c_puct, nroll, bot_policy, bot_eps = arg
+    seeds, sims, c_puct, nroll = arg
     import fmcts  # imports fastnw -> loads NW_ENGINE_SO
-    import fastnw
-    fastnw.set_bot_policy(bot_policy, bot_eps)
     wins = 0
     for s in seeds:
         won, _ = fmcts.play_game(s, sims, c_puct, nroll)
@@ -21,8 +19,6 @@ def run_chunk(arg):
 
 
 def main():
-    import fastnw
-    bot_policy_choices = tuple(fastnw.BOT_POLICY_MODES.keys())
     ap = argparse.ArgumentParser()
     ap.add_argument('--games', type=int, default=1000)
     ap.add_argument('--sims', type=int, default=8000)
@@ -30,21 +26,16 @@ def main():
     ap.add_argument('--c-puct', type=float, default=2.5)
     ap.add_argument('--nroll', type=int, default=1)
     ap.add_argument('--workers', type=int, default=9)
-    ap.add_argument('--bot-policy', choices=bot_policy_choices,
-                    default='baseline')
-    ap.add_argument('--bot-eps', type=float, default=0.0)
     a = ap.parse_args()
 
     seeds = list(range(a.seed_base, a.seed_base + a.games))
     # round-robin into `workers` chunks so each gets a mix of seeds
     chunks = [seeds[i::a.workers] for i in range(a.workers)]
-    tasks = [(c, a.sims, a.c_puct, a.nroll, a.bot_policy, a.bot_eps)
-             for c in chunks if c]
+    tasks = [(c, a.sims, a.c_puct, a.nroll) for c in chunks if c]
 
     print(f'ENGINE={os.environ.get("NW_ENGINE_SO","(default fast_engine.so)")}', flush=True)
     print(f'eval: {a.games} games, sims={a.sims}, c_puct={a.c_puct}, '
-          f'{a.workers} workers, bot_policy={a.bot_policy}, bot_eps={a.bot_eps}',
-          flush=True)
+          f'{a.workers} workers', flush=True)
     t0 = time.time()
     with Pool(a.workers) as pool:
         res = pool.map(run_chunk, tasks)

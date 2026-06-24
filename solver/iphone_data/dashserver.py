@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Lightweight PUBLISH-based dashboard for the C-UCT series driver.
 
-Unlike nwserver.py (which computes neural moves itself), this server holds NO
-model — series.py POSTs telemetry to /publish after each move and after each
-game, and the dashboard at / renders it live (board, RED win expectation over
-time, search-tree candidate bars, and the running series W-L tally).
+This server runs no search itself — series.py POSTs telemetry to /publish after
+each move and after each game, and the dashboard at / renders it live (board,
+RED win expectation over time, search-tree candidate bars, and the running
+series W-L tally).
 
 Endpoints (127.0.0.1:PORT):
   POST /publish  body=<telemetry dict>  -> merges into state (move-level)

@@ -159,7 +159,7 @@ capture *decision* is pinned down, the *post-battle stacks* are not.
 caps out (AIC 1347) well short of the single-shot fit.
 
 ### Shipped vs. proposed
-- **Shipped:** `ATTACKER_WIN_P` 0.55→0.60 in `network_wars.py`, `fast_engine.c`, `game.js`
+- **Shipped:** `ATTACKER_WIN_P` 0.55→0.60 in `network_wars.py`, `fast_engine.c`
   (the MLE best *single value*; winrate-neutral in self-play because it's symmetric).
 - **Proposed:** the power-ratio *shape* (γ≈3.3) — pending one capture-logging run to observe
   survivors and disambiguate models 2/3.
@@ -210,10 +210,10 @@ heuristic. The two corrections affect search differently.
 
 | Change | Where | State |
 |---|---|---|
-| Balanced 4-template deal (total 20/faction) | `network_wars.py`, `game.js` | ✅ shipped, verified |
-| `ATTACKER_WIN_P` 0.55→0.60 | `network_wars.py`, `fast_engine.c`, `game.js` | ✅ shipped |
-| Power-ratio battle shape (γ≈3.3) | — | 🔬 proposed (needs survivor data) |
-| Docs (`CLAUDE.md`, `verify_port.py`, headers) | repo | ✅ updated |
+| Balanced 4-template deal (total 20/faction) | `network_wars.py`, `fast_engine.c` | ✅ shipped, verified |
+| `ATTACKER_WIN_P` 0.55→0.60 | `network_wars.py`, `fast_engine.c` | ✅ shipped |
+| Single-shot power-ratio battle (γ≈3.40) | `fast_engine.c` | ✅ shipped 2026-06-23 (see `BATTLE_FUNCTION.md` §6) |
+| Docs (`CLAUDE.md`, headers) | repo | ✅ updated |
 | Parallel winrate harness | `par_eval.py` | ✅ added |
 
 ---
@@ -225,9 +225,8 @@ heuristic. The two corrections affect search differently.
 2. **Log battle survivors.** Run a capture-logging series (extend `iphone_data/capture_bots.py`)
    recording node strengths immediately before/after individual battles. This is the missing
    data to disambiguate the survivor rule and fit models 2/3.
-3. **Implement the power-ratio battle** (model 1 first: closed-form `capture_prob`, then a
-   survivor rule from step 2) in `network_wars.py` + `fast_engine.c` + `game.js`; keep the three
-   in sync.
+3. ~~**Implement the power-ratio battle**~~ ✅ **Done 2026-06-23**: the single-shot power-ratio
+   model (`P=a^3.40/(a^3.40+1.26·d^3.40)`) shipped in `fast_engine.c` (see `BATTLE_FUNCTION.md` §6).
 4. **Re-baseline + re-tune** the C-UCT on the corrected engine: re-run the AlphaGo-style lever
    sweep (priors, value-leaf, LCB, behind-safety) — they may behave differently now that the
    underlying value is correctly calibrated. Re-check winexp calibration against live games.

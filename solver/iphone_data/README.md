@@ -1,7 +1,7 @@
 # iOS Network Wars capture / play tools
 
 Drive and record the **real** iOS Network Wars app (via macOS *iPhone Mirroring*) to
-validate the JS emulation and benchmark strategies. The game window is screenshotted by
+validate the C engine (`solver/fast_engine.c`) and benchmark the AI. The game window is screenshotted by
 CoreGraphics window-id (works even when occluded), parsed into structured state, and
 acted on with synthetic taps.
 
@@ -38,7 +38,6 @@ acted on with synthetic taps.
 ```
 
 **Performance** (the phone, not the AI, is the bottleneck — search is ~40ms/move):
-- `nwserver.py` keeps the model resident, so the ~1.3s torch-reload is paid once.
 - Taps use `nwcap.sh tapfast` (~0.26s) instead of `tap` (~1.25s, which re-activates
   + repositions + sleeps every call); the window is re-pinned once per turn via
   `place()` and again only on a miss (drift). No routine deselect.
@@ -60,6 +59,6 @@ acted on with synthetic taps.
   highlights corrupt the parse. `play.py` deselects, waits, and requires two identical
   consecutive parses before acting.
 
-## Findings: real app vs `game.js` emulation
+## Findings: real app (now matched by the C engine)
 - Board is **6 cols × 7 rows** (42 cells − 12 removed = 30), not 6×6.
-- **Initial strengths reach 8** at a 6/6/6/6/6 opening; `game.js` caps initial at 5.
+- **Initial strengths reach 8** at a 6/6/6/6/6 opening.

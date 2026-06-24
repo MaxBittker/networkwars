@@ -8,8 +8,7 @@ the C engine via fastnw. There is no second rules implementation.
 The two re-calibrated mechanics (see solver/BATTLE_FUNCTION.md and the memories
 sim-vs-real-deal-imbalance / sim-vs-real-battle-mismatch) live in the C engine:
 the iOS deal (every faction totals 20, 4 fixed templates) and the power-ratio
-battle. game.js / a JS port no longer exist — the browser talks to this same C
-engine over HTTP via solver/server.py.
+battle. The browser talks to this same C engine over HTTP via solver/server.py.
 """
 import fastnw
 

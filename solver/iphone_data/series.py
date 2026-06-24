@@ -251,8 +251,7 @@ def play_one_game(args, gi):
             stage(f'searching · game {gi + 1} round {rnd + 1} move {a + 1}')
             mv = PL.mcts_move(st, args.rollout, engine='fast', sims=args.sims,
                               turns=rnd + 1, wset=args.wset, c_puct=args.c_puct,
-                              nroll=args.nroll, workers=args.workers,
-                              bot_policy=args.bot_policy, bot_eps=args.bot_eps)
+                              nroll=args.nroll, workers=args.workers)
             publish_move(st, mv, rnd + 1, shot=cur_shot)
             if mv.get('action') == 'stop':
                 turn['moves'].append({'action': 'stop', 'winexp': mv.get('winexp'),
@@ -385,11 +384,6 @@ def main():
     ap.add_argument('--max-rounds', type=int, default=80,   # high: let games finish naturally
                     help='hard cap only; games are expected to reach a natural win/loss')
     ap.add_argument('--max-attacks', type=int, default=14)
-    ap.add_argument('--bot-policy', choices=PL.BOT_POLICY_CHOICES,
-                    default='baseline',
-                    help='bot model used inside search rollouts/tree')
-    ap.add_argument('--bot-eps', type=float, default=0.0,
-                    help='probability of using the non-baseline bot move in search')
     ap.add_argument('--out', default=os.path.join(RUNS, 'series_b8k.jsonl'))
     ap.add_argument('--start-index', type=int, default=0)
     args = ap.parse_args()
@@ -405,7 +399,6 @@ def main():
         'search': 'root_parallel' if args.workers > 1 else 'single',
         'rollout_policy': 'ranked_C1', 'win_nodes': WIN_NODES,
         'max_rounds': args.max_rounds, 'max_attacks': args.max_attacks,
-        'bot_policy': args.bot_policy, 'bot_eps': args.bot_eps,
         'engine_build': 'fast_engine.so (-O3 -ffast-math)', 'role': 'red',
         'winexp_def': 'backed-up Q of the chosen root child = RED win-prob estimate',
         'seed_exploitation': False, 'never_surrender': True,
@@ -432,9 +425,7 @@ def main():
             rec = play_one_game(args, gi)
             rec['type'] = 'game'
             rec['config_ref'] = {'sims': args.sims, 'wset': args.wset,
-                                 'c_puct': args.c_puct, 'engine': 'fast_c_uct',
-                                 'bot_policy': args.bot_policy,
-                                 'bot_eps': args.bot_eps}
+                                 'c_puct': args.c_puct, 'engine': 'fast_c_uct'}
             fout.write(json.dumps(rec) + '\n')
 
             r = rec['result']
