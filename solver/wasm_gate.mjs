@@ -62,7 +62,7 @@ console.error(`determinism: ${N_SEEDS - detFails}/${N_SEEDS} seeds reproducible`
 // survivor curves, integer arithmetic, bit-identical to C (mirrors validate_fast) ----
 const iround100 = (n) => n >= 0 ? Math.trunc((n + 50) / 100) : -Math.trunc(((-n) + 50) / 100);
 const fitOcc = (a, d) => Math.min(a, Math.max(1, iround100(82 * a - 44 * d + 10)));
-const fitDefrem = (a, d) => Math.min(d, Math.max(0, iround100(53 * d - 26 * a + 35)));
+const fitDefrem = (a, d) => Math.min(d, Math.max(0, iround100(24 * d + 42 * Math.max(0, d - a) + 30)));
 E.setTopologyCsr(2, [[1], [0]]);
 let bTrials = 0, bFails = 0;
 for (let a0 = 1; a0 <= 11; a0++) for (let d0 = 1; d0 <= 11; d0++) for (let k = 0; k < 6; k++) {

@@ -76,8 +76,14 @@ static inline int fit_occ(int a, int d) {        /* occupier strength on capture
     if (v < 1) v = 1; if (v > a) v = a;
     return v;
 }
-static inline int fit_defrem(int a, int d) {     /* defender remnant on repel */
-    int v = iround100(53L * d - 26L * a + 35L);  /* 0.53d - 0.26a + 0.35 */
+static inline int fit_defrem(int a, int d) {     /* defender remnant on repel — HINGE */
+    /* 0.30 + 0.24d + 0.42*max(0,d-a): a size-scaled floor (a lucky repel keeps ~1)
+     * plus softer-than-1:1 gutting that only fires when the defender is bigger.
+     * Beats the old linear plane on both tails (mean-fit RMSE 0.18 -> 0.11); the
+     * plane under-credited big-deficit repels and zeroed out the lucky-repel floor
+     * at margin +2/+3. See BATTLE_FUNCTION.md §7. Pure integer for WASM parity. */
+    long hinge = (long)d - a; if (hinge < 0) hinge = 0;
+    int v = iround100(24L * d + 42L * hinge + 30L);
     if (v < 0) v = 0; if (v > d) v = d;
     return v;
 }

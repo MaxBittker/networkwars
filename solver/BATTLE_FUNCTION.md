@@ -204,7 +204,7 @@ fast_engine_battle.so`, select via `NW_ENGINE_SO=./fast_engine_battle.so`.
 
 ---
 
-## 7. 2026-06-24 survivor re-fit (SHIPPED) — fitted (a,d) planes replace the margin clamp
+## 7. survivor re-fit (SHIPPED) — (a,d) occupier plane + defender-remnant hinge replace the margin clamp
 
 The §6 win/loss draw is excellent, but the **survivor** rules (`max(1,a−d)`,
 `max(0,d−a+1)`) were a clipped-margin simplification that misfit the data. The key
@@ -216,20 +216,32 @@ Re-fit on **9,445 live battles** (`extract_battles.py runs/*.jsonl`,
 `plot_battle_compare.py`) with weighted least-squares **planes in (a,d)**, clipped
 to the feasible range:
 
-- capture occupier  = `clip(0.82·a − 0.44·d + 0.10,  1,  a)`
-- repel  remnant    = `clip(0.53·d − 0.26·a + 0.35,  0,  d)`
+- capture occupier  = `clip(0.82·a − 0.44·d + 0.10,  1,  a)`        (plane)
+- repel  remnant    = `clip(0.30 + 0.24·d + 0.42·max(0, d−a),  0,  d)`  (HINGE — see below)
 
 **Mean-fit RMSE per (a,d) cell** (the curve's job — predict the conditional mean):
 
-| survivor | old clamp | fitted plane | 5-fold CV |
+| survivor | old clamp | shipped curve | 5-fold CV |
 |---|---:|---:|---:|
-| capture occupier | 0.49 | **0.29** | 0.34 |
-| repel defender remnant | 0.59 | **0.18** | 0.26 |
+| capture occupier (plane) | 0.49 | **0.29** | 0.34 |
+| repel defender remnant (hinge) | 0.59 | **0.11** | 0.14 |
 
 (Per-battle RMSE only drops modestly — ~1 troop of within-cell spread is
 irreducible, OCR jitter + real attrition variance the deterministic curve can't
 remove. The mean is what improved.) A generative war-of-attrition model was tried
 and is **worse** (occ RMSE 0.76) — too much spread.
+
+**Remnant: the HINGE beats the plane (2026-06-25).** The linear remnant plane
+under-fit *both* tails — it under-credited big-deficit repels (a much-stronger
+defender keeps more, approaching `d−a+1`) and zeroed out the **lucky-repel floor**
+at margins +2/+3 (a stronger attacker that somehow gets repelled still leaves the
+defender ~1). `max(0, d−a)` only fires when the defender is bigger (softer-than-1:1
+gutting), and `0.30 + 0.24·d` is a size-scaled floor. RMSE 0.18 → **0.11** (CV
+0.14); the worst per-margin miss (+3: −0.63 troops) drops to −0.02. The marginally
+better harmonic form `a·d/(a+d)` (RMSE 0.097) was **rejected** — its division
+reintroduces the x.5 cross-arch rounding hazard; the hinge is integer-clean and the
+most accurate *plausibly-shippable* curve. Occupier stays the plane (no clearly
+better plausible form found).
 
 **Shipped in `fast_engine.c`** (`fit_occ`/`fit_defrem`, used by `resolve_battle`,
 `resolve_battle_logged`, and the `CAPES` policy table). Coefficients are scaled
@@ -238,5 +250,8 @@ exactly on x.5 boundaries (e.g. occ(6,8)=1.50) where `-ffast-math` native and
 no-`-ffast-math` WASM round differently — integer math is bit-identical across
 both. Gates re-frozen: `validate_fast.py` golden seeds + battle invariants,
 `wasm_gate.mjs` battle invariants. Both pass (board-gen still 1000/1000
-bit-identical). Source always → 1 (~100%) is unchanged. Offline 1000-game winrate
-on the shipped (integer) build: see commit / series logs.
+bit-identical). Source always → 1 (~100%) is unchanged. **Offline winrate
+(8000 sims):** planes 96.5% (n=1000) → hinge 96.2% (n=500) — statistically
+indistinguishable. The hinge is a better *data fit*, not a winrate lever: survivor
+accuracy is variance-reduction, the MCTS player already wins the games the survivor
+detail would swing. Ship for fidelity to the real game, not for score.
