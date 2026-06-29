@@ -29,9 +29,9 @@
 /* SINGLE-SHOT power-ratio (fitted iOS) battle — the simplest model that best
  * explains the live capture data. One Bernoulli decides capture vs repel:
  *   P(capture) = a^PR_G / (a^PR_G + PR_C * d^PR_G)
- * Survivors are deterministic (both within OCR noise of the live data):
- *   capture: occupier = max(1, a - d), source = 1
- *   repel:   source   = 1,            defender remnant = max(0, d - a + 1)
+ * Survivors are BINOMIAL around the fitted conditional mean (see §8 below):
+ *   capture: occupier = 1 + Binomial(a-2, p_occ), source = 1
+ *   repel:   source   = 1,           defender remnant = Binomial(d, p_rem)
  * MLE on 7,222 live red-attacker battles: G=3.40, C=1.26 (AIC 5941 vs the old
  * iterated k=0.62 model's 6077; nails the contested +1 margin 76% vs 74% obs).
  * See solver/BATTLE_FUNCTION.md / iphone_data/refit_emergent.py. */
@@ -58,34 +58,25 @@ static inline double pr_cap(int a, int d) {
     double ag = pr_powg(a), dg = pr_powg(d);
     return ag / (ag + PR_C * dg);
 }
-/* FITTED survivor curves (re-fit 2026-06-24 on 9,445 live battles; weighted-LSQ
- * planes in (a,d), clipped to the feasible range — see BATTLE_FUNCTION.md §7 and
- * iphone_data/plot_battle_compare.py). These predict the conditional-mean
- * survivor far better than the old clipped-margin rule (mean-fit RMSE per (a,d)
- * cell: occupier 0.49->0.29, defender remnant 0.59->0.18). The win/loss draw
- * above is unchanged; only the troops-remaining outcome is recalibrated.
- * Coefficients are scaled x100 and evaluated in PURE INTEGER arithmetic so the
- * result is bit-identical under -ffast-math (native) and without it (WASM) — a
- * float form lands exactly on x.5 boundaries (e.g. occ(6,8)=1.50) where the two
- * builds round differently, breaking cross-arch parity. */
-static inline int iround100(long n) {  /* round(n/100), half away from zero, integer-only */
-    return (n >= 0) ? (int)((n + 50) / 100) : -(int)(((-n) + 50) / 100);
+/* FITTED survivor MEANS — conditional-mean troops remaining after a resolved
+ * battle (re-fit on 9,445 live battles; see BATTLE_FUNCTION.md §7). The actual
+ * survivor is drawn Binomial around these means (draw_occ/draw_defrem below);
+ * because each troop survives independently, E[survivor] == these curves exactly,
+ * so the search value table (CAPES) and aggregate win-rate are set by the mean
+ * while the spread is emergent. Clipped to the feasible range (occupier in
+ * [1,a-1] since the source always keeps 1; remnant in [0,d]). */
+static inline double mean_occ(int a, int d) {    /* E[occupier | capture] */
+    double m = 0.82 * a - 0.44 * d + 0.10;
+    double hi = (double)(a - 1);                 /* a==2 -> hi==1 -> occ==1 */
+    if (m < 1.0) m = 1.0;
+    if (m > hi)  m = hi;
+    return m;
 }
-static inline int fit_occ(int a, int d) {        /* occupier strength on capture */
-    int v = iround100(82L * a - 44L * d + 10L);  /* 0.82a - 0.44d + 0.10 */
-    if (v < 1) v = 1; if (v > a) v = a;
-    return v;
-}
-static inline int fit_defrem(int a, int d) {     /* defender remnant on repel — HINGE */
-    /* 0.30 + 0.24d + 0.42*max(0,d-a): a size-scaled floor (a lucky repel keeps ~1)
-     * plus softer-than-1:1 gutting that only fires when the defender is bigger.
-     * Beats the old linear plane on both tails (mean-fit RMSE 0.18 -> 0.11); the
-     * plane under-credited big-deficit repels and zeroed out the lucky-repel floor
-     * at margin +2/+3. See BATTLE_FUNCTION.md §7. Pure integer for WASM parity. */
-    long hinge = (long)d - a; if (hinge < 0) hinge = 0;
-    int v = iround100(24L * d + 42L * hinge + 30L);
-    if (v < 0) v = 0; if (v > d) v = d;
-    return v;
+static inline double mean_rem(int a, int d) {    /* E[remnant | repel] (hinge) */
+    double m = 0.30 + 0.24 * d + 0.42 * (d > a ? (d - a) : 0);
+    if (m < 0.0)        m = 0.0;
+    if (m > (double)d)  m = (double)d;
+    return m;
 }
 #define A_END (-1)          /* action sentinel: distinct from any frm<<8|to (>=0) */
 #define MAXCHILD 512        /* max legal RED actions at one node */
@@ -370,9 +361,9 @@ static void build_cap_tables(void) {
     for (int a = 2; a < MAXS; a++) {
         for (int d = 1; d < MAXS; d++) {
             CAPP[a][d]  = pr_cap(a, d);
-            /* deterministic occupier strength after a capture = fitted curve;
+            /* expected occupier strength after a capture = fitted mean curve;
              * CAPES holds P*E[str] so exp_cap_strength returns it directly. */
-            CAPES[a][d] = CAPP[a][d] * (double)fit_occ(a, d);
+            CAPES[a][d] = CAPP[a][d] * mean_occ(a, d);
         }
     }
     CAP_READY = 1;
@@ -511,16 +502,41 @@ static int ranked_best_move(const int *owner, const int *strength) {
     return best_act;
 }
 
+/* BINOMIAL survivor draws — each troop survives independently, so the survivor
+ * count is Binomial(n, p) with p set so the mean equals the fitted curve. Sampled
+ * as a sum of n RNG()<p Bernoullis off the active stream (mb32 real / sm_rand
+ * rollout): deterministic per seed, integer-only, no x.5 rounding hazard, so it
+ * is WASM-parity-safe. See BATTLE_FUNCTION.md §8. */
+static inline int binomial_draw(int n, double p) {
+    int k = 0;
+    for (int i = 0; i < n; i++) if (RNG() < p) k++;
+    return k;
+}
+static inline int draw_occ(int a, int d) {        /* occupier on a captured node */
+    if (d <= 0) return a - 1;                     /* no defender -> no losses */
+    int n = a - 2;                                /* support is [1, a-1] */
+    if (n <= 0) return 1;                         /* a==2 -> occupier always 1 */
+    double p = (mean_occ(a, d) - 1.0) / n;
+    if (p < 0) p = 0; else if (p > 1) p = 1;
+    return 1 + binomial_draw(n, p);
+}
+static inline int draw_defrem(int a, int d) {     /* defender remnant on a repel */
+    if (d <= 0) return 0;                         /* support is [0, d] */
+    double p = mean_rem(a, d) / d;
+    if (p < 0) p = 0; else if (p > 1) p = 1;
+    return binomial_draw(d, p);
+}
+
 /* dice battle, frm attacks to — fitted iOS power-ratio mechanic */
 static void resolve_battle(int *owner, int *strength, int frm, int to) {
     int a = strength[frm], d = strength[to];
-    if (RNG() < pr_cap(a, d)) {       /* capture: fitted occupier curve */
+    if (RNG() < pr_cap(a, d)) {       /* capture: binomial occupier */
         owner[to] = owner[frm];
-        strength[to] = fit_occ(a, d);
+        strength[to] = draw_occ(a, d);
         strength[frm] = 1;
-    } else {                          /* repel: fitted defender-remnant curve */
+    } else {                          /* repel: binomial defender remnant */
         strength[frm] = 1;
-        strength[to] = fit_defrem(a, d);
+        strength[to] = draw_defrem(a, d);
     }
 }
 
@@ -535,7 +551,7 @@ void resolve_battle_logged(int *owner, int *strength, int frm, int to,
     int def_loss, atk_loss;
     if (captured) {
         owner[to] = owner[frm];
-        int occ = fit_occ(a0, d0);
+        int occ = draw_occ(a0, d0);
         strength[to] = occ;
         strength[frm] = 1;
         def_loss = d0;                 /* defender wiped */
@@ -543,7 +559,7 @@ void resolve_battle_logged(int *owner, int *strength, int frm, int to,
         if (atk_loss < 0) atk_loss = 0;
     } else {
         strength[frm] = 1;
-        int rem = fit_defrem(a0, d0);
+        int rem = draw_defrem(a0, d0);
         strength[to] = rem;
         def_loss = d0 - rem;
         atk_loss = a0 - 1;             /* source gutted to 1 */

@@ -43,3 +43,6 @@ solver/iphone_data/imported_board.json
 
 # Claude Code worktree scaffolding
 .claude/
+
+# macOS Finder metadata
+.DS_Store

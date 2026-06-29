@@ -4,11 +4,13 @@ _Updated 2026-06-22. Supersedes the battle section of `IOS_CALIBRATION.md`._
 
 ## TL;DR
 
-> **SHIPPED MODEL: single-shot power-ratio (§6, 2026-06-23) + fitted (a,d)
-> survivor planes (§7, 2026-06-24).** Read §6 for the win/loss draw and §7 for the
-> troops-remaining outcome — together they are what `fast_engine.c` does today. The
-> history below documents the earlier *iterated* mechanic (k=0.62) and the old
-> `max(1,a−d)`/`max(0,d−a+1)` survivor clamp that §7 replaced.
+> **SHIPPED MODEL: single-shot power-ratio win/loss (§6, 2026-06-23) +
+> BINOMIAL survivors around the fitted (a,d) means (§8, 2026-06-29).** Read §6 for
+> the win/loss draw and §8 for the troops-remaining outcome — together they are what
+> `fast_engine.c` does today. §7 (2026-06-24) fitted the survivor *means*; §8 makes
+> the survivor a *draw* around that mean so the engine reproduces the live
+> distribution, not just its mean. The history below documents the earlier
+> *iterated* mechanic (k=0.62) and the old `max(1,a−d)`/`max(0,d−a+1)` clamp.
 
 From **3,308 ground-truth live battles** we replaced the engine's iterated-Bernoulli-at-0.60
 battle with a **power-ratio** mechanic that fits both *who wins* and *how many troops survive*:
@@ -243,15 +245,61 @@ reintroduces the x.5 cross-arch rounding hazard; the hinge is integer-clean and 
 most accurate *plausibly-shippable* curve. Occupier stays the plane (no clearly
 better plausible form found).
 
-**Shipped in `fast_engine.c`** (`fit_occ`/`fit_defrem`, used by `resolve_battle`,
-`resolve_battle_logged`, and the `CAPES` policy table). Coefficients are scaled
-×100 and evaluated in **pure-integer arithmetic** (`iround100`): a float form lands
-exactly on x.5 boundaries (e.g. occ(6,8)=1.50) where `-ffast-math` native and
-no-`-ffast-math` WASM round differently — integer math is bit-identical across
-both. Gates re-frozen: `validate_fast.py` golden seeds + battle invariants,
-`wasm_gate.mjs` battle invariants. Both pass (board-gen still 1000/1000
-bit-identical). Source always → 1 (~100%) is unchanged. **Offline winrate
-(8000 sims):** planes 96.5% (n=1000) → hinge 96.2% (n=500) — statistically
-indistinguishable. The hinge is a better *data fit*, not a winrate lever: survivor
-accuracy is variance-reduction, the MCTS player already wins the games the survivor
-detail would swing. Ship for fidelity to the real game, not for score.
+These mean curves were the survivor model through 2026-06-25. **§8 keeps the
+curves but uses them as the *mean of a Binomial draw* instead of a deterministic
+value** — see below. (Historical note: the original mean impl used pure-integer
+`iround100` arithmetic to dodge an x.5 cross-arch rounding hazard; §8's draw is
+integer by construction so that concern is moot.)
+
+## 8. survivors are BINOMIAL around the mean (SHIPPED 2026-06-29) — match the distribution, not just the mean
+
+§7's curves nail each cell's **mean** (RMSE 0.29/0.11 troops) but the engine still
+emitted **one deterministic value** per `(a,d)`. Live survivors have real spread:
+per-margin std 0.5–3.0 troops, and a single value matches the actual outcome only
+~58% (capture) / ~42% (repel) of the time. That spread is genuine battle
+randomness the deterministic engine threw away.
+
+**The model (zero new free parameters).** Each troop survives independently, so the
+survivor count is **Binomial**, with success probability set so the mean equals the
+§7 curve. The variance `n·p·(1−p)` is then *emergent* — not fit — and the integer
+bounds fall out for free:
+
+- capture occupier:  `occ = 1 + Binomial(a−2, p_occ)`,  `p_occ = (μ_occ − 1)/(a−2)`,  support `[1, a−1]`
+- repel  remnant:    `rem = Binomial(d, p_rem)`,        `p_rem = μ_rem / d`,           support `[0, d]`
+- `μ_occ = clip(0.82a − 0.44d + 0.10, 1, a−1)`,  `μ_rem = clip(0.30 + 0.24d + 0.42·max(0,d−a), 0, d)`  (the §7 curves)
+
+`E[occ]=μ_occ` and `E[rem]=μ_rem` **exactly**, so the `CAPES` value table and the
+aggregate win-rate are unchanged from the §7 mean engine — only per-game variance
+is added back.
+
+**Distribution fit** (per-cell pmf vs live, n≥20 cells; total-variation distance,
+0 = identical):
+
+| survivor | sd-prediction RMSE | mean total-var dist |
+|---|---:|---:|
+| capture occupier | 0.19 | **0.12** |
+| repel  remnant   | 0.08 | **0.05** |
+
+The variance the binomial *predicts* lands on the observed variance to <0.2 troops,
+with no spread parameter fit — strong evidence the independent-survival mechanic is
+the right generative story. The dispersion it produces matches the data's own
+(capture is underdispersed, var/mean ≈ 0.1–0.3, because `p` is high and the `a−1`
+ceiling clips spread; repel is broader, var/mean ≈ 0.4–0.7). **Not overfit:** the
+one known stiff spot is high-margin small-`a` captures (e.g. `a=3,d=1`) where `μ_occ`
+pins to the `a−1` ceiling, `p_occ→1`, and the draw collapses to a spike — missing
+the ~12% that land one below. Chasing it needs a noise parameter the data barely
+constrains, so it was left alone.
+
+**Shipped in `fast_engine.c`** — `mean_occ`/`mean_rem` (the curves, used by
+`CAPES`) and `draw_occ`/`draw_defrem` (the binomial, used by `resolve_battle` /
+`resolve_battle_logged`). Each Bernoulli is one `RNG()<p` draw off the active
+stream (`mb32` real game / `sm_rand` rollout), so survivors stay deterministic per
+seed and WASM-parity-safe (integer-only, no rounding hazard). The draws consume the
+seeded stream, so golden outcomes shifted — gates **re-frozen 2026-06-29** and pass:
+`validate_fast.py` (range + empirical-mean over 4000 draws/cell + golden seeds),
+`wasm_gate.mjs` (same), board-gen still 1000/1000 bit-identical, WASM determinism
+1000/1000. **Offline winrate (8000 sims): 94.0% (470/500)** — vs the §7 deterministic
+engine's ~96%; the ~2pt drop is the *real* battle variance the deterministic engine
+was suppressing (it always handed the search the mean outcome). Ship for fidelity to
+the real game's noise, not for score. Distribution-fit tooling:
+`iphone_data/plot_survivor_dist.py`.
