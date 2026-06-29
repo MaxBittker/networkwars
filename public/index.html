@@ -596,6 +596,17 @@ function octagon(x, y, r) {
   ctx.closePath();
 }
 
+// flat dark fill tinted toward the owner's color (not pure black)
+const _darkFill = {};
+function darkFill(hex) {
+  if (_darkFill[hex]) return _darkFill[hex];
+  const s = hex.replace('#', '');
+  const r = parseInt(s.slice(0,2),16), g = parseInt(s.slice(2,4),16), b = parseInt(s.slice(4,6),16);
+  const t = 0.20; // how much color shows through the dark base
+  const mix = (c) => Math.round(2 + c * t);
+  return (_darkFill[hex] = `rgb(${mix(r)},${mix(g)},${mix(b)})`);
+}
+
 function draw() {
   if (!state) return;
   const b = document.getElementById('board').getBoundingClientRect();
@@ -640,7 +651,7 @@ function draw() {
     ctx.shadowColor = col;
     ctx.shadowBlur = isFlash ? 30 : (isRein ? 28 : (isSel ? 24 : (isTarget ? 18 : 13)));
     octagon(p.x, p.y, layout.r);
-    ctx.fillStyle = 'rgba(3,12,9,.92)';
+    ctx.fillStyle = darkFill(col);
     ctx.fill();
     ctx.restore();
     octagon(p.x, p.y, layout.r);
