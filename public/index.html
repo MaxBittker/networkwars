@@ -596,27 +596,6 @@ function octagon(x, y, r) {
   ctx.closePath();
 }
 
-// color helpers + the real-game node fill: a glossy radial gradient in the
-// owner's hue (bright saturated core, fading to a dark colored rim).
-const _rgbCache = {};
-function hexRgb(h) {
-  if (_rgbCache[h]) return _rgbCache[h];
-  const s = h.replace('#', '');
-  return (_rgbCache[h] = [parseInt(s.slice(0,2),16), parseInt(s.slice(2,4),16), parseInt(s.slice(4,6),16)]);
-}
-function mix(a, b, t) { return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t]; }
-function rgb(c) { return `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`; }
-function nodeFill(x, y, r, hex) {
-  const c = hexRgb(hex);
-  // focal point a touch below center, like the real game's lower-middle glow
-  const g = ctx.createRadialGradient(x, y + r*0.18, r*0.12, x, y + r*0.08, r*1.05);
-  g.addColorStop(0.00, rgb(mix(c, [255,255,255], 0.55)));  // bright core
-  g.addColorStop(0.38, rgb(mix(c, [255,255,255], 0.10)));  // saturated body
-  g.addColorStop(0.80, rgb(mix(c, [4,12,9], 0.74)));       // dark colored rim
-  g.addColorStop(1.00, rgb(mix(c, [3,9,7], 0.88)));        // deepest edge
-  return g;
-}
-
 function draw() {
   if (!state) return;
   const b = document.getElementById('board').getBoundingClientRect();
@@ -661,7 +640,7 @@ function draw() {
     ctx.shadowColor = col;
     ctx.shadowBlur = isFlash ? 30 : (isRein ? 28 : (isSel ? 24 : (isTarget ? 18 : 13)));
     octagon(p.x, p.y, layout.r);
-    ctx.fillStyle = nodeFill(p.x, p.y, layout.r, col);
+    ctx.fillStyle = 'rgba(3,12,9,.92)';
     ctx.fill();
     ctx.restore();
     octagon(p.x, p.y, layout.r);
