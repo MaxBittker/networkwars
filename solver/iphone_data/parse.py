@@ -32,6 +32,13 @@ NAMES = list(FACTIONS)
 # board region of the 636x1402 capture (excludes top scoreboard + bottom buttons)
 BOARD_Y0, BOARD_Y1 = 380, 1240
 MIN_BLOB = 450          # downsampled-px area; real nodes ~600-1100, artifacts <300
+# overlay/modal rejection: a popup ("You Lost! / Play again?", round-end, transition)
+# is a big near-black flat rounded-rect over the board. The parser otherwise
+# force-parses the occluded board into a garbage 30-node state (hallucinated owners
+# /strengths, impossible faction counts). Such a frame's board region is ~34%
+# near-black-and-flat pixels vs ~5% for a clean board (huge gap, no overlap on 400
+# sampled frames) — reject above MODAL_DARKFLAT.
+MODAL_DARKFLAT = 0.20
 SCORE_Y = 222           # scoreboard chip row in the 636x1402 capture
 SCORE_X = {'red': 225, 'green': 302, 'yellow': 380, 'blue': 458, 'purple': 535}
 
@@ -456,15 +463,32 @@ def match_digit(cx, cy, tokens, max_dist=45):
     return int(best) if best is not None else None
 
 
+def modal_darkflat(im):
+    """fraction of the board region that is near-black AND flat (low saturation) —
+    the signature of a popup/modal fill. ~0.34 for modal frames, ~0.05 for clean."""
+    reg = im[BOARD_Y0:BOARD_Y1, :, :].astype(np.int16)
+    mx = reg.max(axis=2); mn = reg.min(axis=2)
+    return float(((mx < 32) & ((mx - mn) < 14)).mean())
+
+
 def parse(img_path):
     im = np.asarray(Image.open(img_path).convert('RGB'))
     warnings = []
-    blobs = detect_blobs(im)
 
-    if len(blobs) < 10:   # board obscured (modal/transition) — return a clearly-invalid state
+    def obscured(reason):   # clearly-invalid state callers can detect + skip
         return {'nodes': [], 'counts': {f: 0 for f in NAMES}, 'scoreboard': {},
                 'grid': {'cols': 0, 'rows': 0, 'dx': 0, 'dy': 0, 'x0': 0, 'y0': 0},
-                'warnings': ['board obscured (%d blobs)' % len(blobs)]}
+                'warnings': [reason]}
+
+    # reject overlay/modal frames BEFORE parsing — they occlude the board and the
+    # blob detector would otherwise hallucinate a full (wrong) board around them.
+    df = modal_darkflat(im)
+    if df > MODAL_DARKFLAT:
+        return obscured('overlay/modal frame rejected (darkflat %.0f%%)' % (df * 100))
+
+    blobs = detect_blobs(im)
+    if len(blobs) < 10:   # board obscured another way (transition / partial)
+        return obscured('board obscured (%d blobs)' % len(blobs))
 
     col_centers = cluster_axis([b['px'] for b in blobs])
     row_centers = cluster_axis([b['py'] for b in blobs])

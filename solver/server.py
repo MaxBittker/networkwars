@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""HTTP server for the browser game — the same C engine the solver uses.
+"""Static host for the browser game + the iOS board-import workflow.
 
-Implements the /api/game/* API that public/index.html speaks, backed by the C
-engine via fastnw (board-gen, the four bots, the power-ratio battle, reinforcement
-all run in C). No game logic lives in the browser or here; this just marshals JSON.
+The browser now runs the C engine itself (compiled to WASM in a Web Worker), so this
+server holds NO game state and implements NO rules — it just serves public/ and the
+two iOS-import endpoints below. (The old /api/game/* API that an earlier server-side
+frontend spoke is gone; see git history if you need it.)
 
 Run:  uv run python solver/server.py [--port 8080]
 then open the printed http://127.0.0.1:<port>/ and play.
 
 GET /grab pulls the CURRENT iOS-mirrored board (via iphone_data/play.py) into a new
-in-browser game — the "grab phone board -> play in sim" workflow. It is best-effort
-and only works while iPhone Mirroring is live; normal play needs none of it.
+in-browser game; GET /load imports a saved board JSON. Both are best-effort and only
+relevant while iPhone Mirroring is live; normal offline play needs neither.
 """
 import argparse
 import json
@@ -27,33 +28,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 INDEX = os.path.join(ROOT, 'public', 'index.html')
 
-GAMES = {}
 _next_id = [0]
 
 
 def _new_id():
     _next_id[0] += 1
     return str(_next_id[0])
-
-
-def _select(g):
-    """Make the C engine's global topology match game g (before any mutation)."""
-    fastnw.set_topology_csr(len(g['owner']), g['adj'])
-
-
-def _update_winner(g):
-    c = fastnw.counts(g['owner'])
-    w = -1
-    for f in range(5):
-        if c[f] >= 24:
-            w = f
-    alive = [f for f in range(5) if c[f] > 0]
-    if len(alive) == 1:
-        w = alive[0]
-    if w >= 0:
-        g['over'] = True
-        g['winner'] = FACTIONS[w]
-        g['youWon'] = (w == 0)
 
 
 def view(g):
@@ -69,18 +49,6 @@ def view(g):
             'turn': g['turn'], 'legalMoves': legal, 'over': g['over'],
             'youWon': g['youWon'], 'redResigned': g['redResigned'],
             'winner': g['winner']}
-
-
-def new_game(seed=None):
-    if seed is None:
-        seed = random.randrange(1, 2 ** 31)
-    d = fastnw.new_game(seed)
-    g = {'id': _new_id(), 'owner': d['owner'], 'strength': d['strength'],
-         'x': d['x'], 'y': d['y'], 'adj': d['adj'], 'links': d['links'],
-         'mb': d['mb'], 'turn': 1, 'over': False, 'youWon': False,
-         'redResigned': False, 'winner': None, 'seed': seed}
-    GAMES[g['id']] = g
-    return g
 
 
 def game_from_board(nodes, mb_seed=None):
@@ -108,105 +76,7 @@ def game_from_board(nodes, mb_seed=None):
          'mb': (mb_seed if mb_seed is not None else random.randrange(1, 2 ** 31)),
          'turn': 1, 'over': False, 'youWon': False, 'redResigned': False,
          'winner': None, 'seed': None}
-    GAMES[g['id']] = g
     return g
-
-
-def do_attack(g, frm, to):
-    _select(g)
-    fastnw.use_mb32(g['mb'])
-    flips, meta = fastnw.attack_logged(g['owner'], g['strength'], frm, to)
-    g['mb'] = fastnw.get_mb32()
-    _update_winner(g)
-    log = [{'type': 'attack', 'attacker': 'red', 'from': frm, 'to': to,
-            'captured': meta['captured'], 'fromStart': meta['fromStart'],
-            'toStart': meta['toStart'], 'flips': flips,
-            'fromStrength': meta['fromStrength'], 'toStrength': meta['toStrength']}]
-    out = view(g); out['log'] = log
-    return out
-
-
-def do_end_turn(g):
-    """RED reinforce + the four bot turns, replayed move-by-move so the browser can
-    animate each step. Drives the SAME C primitives in the SAME order as the engine's
-    atomic end_turn (reinforce is RNG-free; only battles advance the mb32 dice), so
-    the final board + g['mb'] are bit-identical to end_turn — just observable."""
-    _select(g)
-    fastnw.use_mb32(g['mb'])
-    owner, strength = g['owner'], g['strength']
-    events = []
-
-    def reinforce_step(fidx):
-        before = strength.copy()
-        fastnw.reinforce(owner, strength, fidx)
-        ch = [{'id': i, 'to': int(strength[i])}
-              for i in range(len(strength)) if strength[i] != before[i]]
-        if ch:
-            events.append({'type': 'reinforce', 'faction': FACTIONS[fidx], 'changes': ch})
-
-    reinforce_step(0)                                   # RED reinforce
-    if fastnw.check_winner(owner) < 0:
-        for b in range(1, 5):                           # green, yellow, blue, purple
-            if fastnw.counts(owner)[b] == 0:
-                continue                                # eliminated faction takes no turn
-            won = False
-            for _ in range(1000):                       # bot greedily attacks until none
-                mv = fastnw.best_bot_move(owner, strength, b)
-                if mv is None:
-                    break
-                frm, to = mv
-                attacker = FACTIONS[int(owner[frm])]
-                fs, ts = int(strength[frm]), int(strength[to])
-                flips, meta = fastnw.attack_logged(owner, strength, frm, to)
-                events.append({'type': 'attack', 'attacker': attacker, 'from': frm,
-                               'to': to, 'fromStart': fs, 'toStart': ts, 'flips': flips,
-                               'captured': meta['captured'], 'fromStrength': meta['fromStrength'],
-                               'toStrength': meta['toStrength']})
-                if fastnw.check_winner(owner) >= 0:
-                    won = True
-                    break
-            if won:
-                break
-            reinforce_step(b)                           # bot reinforces (no winner check needed)
-
-    g['mb'] = fastnw.get_mb32()
-    g['turn'] += 1
-    _update_winner(g)
-    out = view(g)
-    out['events'] = events
-    return out
-
-
-def do_search(g, sims=5000, c_puct=2.5, nroll=1, sim_seed=0x12345678):
-    """Run the SAME C-UCT MCTS the sim/phone driver uses, for RED's current turn.
-
-    Returns the search's win expectation (backed-up Q of the best move) and the
-    ranked top moves. Rolls out on the private sim stream (never touches g['mb'],
-    the real game dice), so calling this can't leak future dice into play."""
-    _select(g)
-    fastnw.use_sim(sim_seed)
-    acts, visits, q = fastnw.uct_search(g['owner'], g['strength'], g['turn'],
-                                        sims, c_puct, nroll, return_q=True)
-    if len(acts) == 0:
-        return {'winexp': None, 'visits': 0, 'top': [], 'best': None}
-    order = sorted(range(len(acts)), key=lambda k: -int(visits[k]))
-    tv = int(visits.sum())
-    top = []
-    for k in order:
-        a = int(acts[k])
-        frm, to = (None, None) if a == -1 else (a >> 8, a & 0xFF)
-        top.append({'action': a, 'from': frm, 'to': to, 'visits': int(visits[k]),
-                    'frac': (int(visits[k]) / tv) if tv else 0.0, 'q': float(q[k])})
-    best = top[0]
-    return {'winexp': best['q'], 'visits': tv, 'top': top[:8], 'best': best}
-
-
-def do_surrender(g):
-    g['over'] = True
-    g['redResigned'] = True
-    g['youWon'] = False
-    out = view(g); out['log'] = []
-    return out
 
 
 def grab_board():
@@ -238,15 +108,6 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _body(self):
-        n = int(self.headers.get('Content-Length') or 0)
-        if not n:
-            return {}
-        try:
-            return json.loads(self.rfile.read(n) or b'{}')
-        except json.JSONDecodeError:
-            return {}
-
     def do_GET(self):
         path = self.path.split('?', 1)[0]
         if path in ('/', '/index.html'):
@@ -256,8 +117,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, '<h1>public/index.html not found</h1>', 'text/html')
         elif path.endswith('.js') or path.endswith('.wasm'):
             # Serve the WASM engine + worker assets out of public/ (basename only, no
-            # traversal). The browser now runs the C engine in-process, so these are
-            # what actually make play work; the /api/game routes below are legacy.
+            # traversal). The browser runs the C engine in-process via these, so they
+            # are what actually make play work.
             fp = os.path.join(ROOT, 'public', os.path.basename(path))
             ctype = 'application/wasm' if path.endswith('.wasm') else 'text/javascript'
             try:
@@ -288,34 +149,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, view(game_from_board(board)))
             except Exception as e:
                 self._send(500, {'error': f'load error: {e}'})
-        elif path.startswith('/api/game/'):
-            gid = path[len('/api/game/'):]
-            g = GAMES.get(gid)
-            self._send(200 if g else 404, view(g) if g else {'error': 'no such game'})
         else:
             self._send(404, {})
-
-    def do_POST(self):
-        path = self.path.split('?', 1)[0]
-        if path == '/api/game':
-            self._send(200, view(new_game(self._body().get('seed')))); return
-        if path.startswith('/api/game/'):
-            rest = path[len('/api/game/'):]
-            gid, _, action = rest.partition('/')
-            g = GAMES.get(gid)
-            if not g:
-                self._send(404, {'error': 'no such game'}); return
-            if action == 'attack':
-                b = self._body()
-                self._send(200, do_attack(g, int(b['from']), int(b['to']))); return
-            if action == 'end-turn':
-                self._send(200, do_end_turn(g)); return
-            if action == 'search':
-                b = self._body()
-                self._send(200, do_search(g, int(b.get('sims', 6000)))); return
-            if action == 'surrender':
-                self._send(200, do_surrender(g)); return
-        self._send(404, {})
 
 
 def main():
