@@ -602,8 +602,8 @@ function darkFill(hex) {
   if (_darkFill[hex]) return _darkFill[hex];
   const s = hex.replace('#', '');
   const r = parseInt(s.slice(0,2),16), g = parseInt(s.slice(2,4),16), b = parseInt(s.slice(4,6),16);
-  const t = 0.20; // how much color shows through the dark base
-  const mix = (c) => Math.round(2 + c * t);
+  const t = 0.42; // how much color shows through the dark base
+  const mix = (c) => Math.round(4 + c * t);
   return (_darkFill[hex] = `rgb(${mix(r)},${mix(g)},${mix(b)})`);
 }
 
