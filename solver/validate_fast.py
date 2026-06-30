@@ -14,18 +14,18 @@ import fastnw
 # Frozen full-game outcomes (deterministic policies). Regenerate intentionally if
 # the engine is meant to change; an unexpected diff here means a behavior drift.
 GOLDEN = {
-    # Re-frozen 2026-06-29 for BINOMIAL survivors (occupier 1+Binom(a-2,p_occ),
-    # remnant Binom(d,p_rem) with means = the fitted occupier plane / remnant hinge;
-    # BATTLE_FUNCTION.md §7) on top of the single-shot power-ratio battle (G=3.40,
-    # C=1.26) + attacker-strength-first bot. Survivor draws consume the seeded mb32
-    # stream, so outcomes shifted vs the deterministic-survivor freeze but stay
-    # fully reproducible per seed.
-    (1, 'safe_expand'): ('yellow', 10), (1, 'random_all'): ('yellow', 12),
-    (2, 'safe_expand'): ('green', 8),   (2, 'random_all'): ('green', 6),
-    (3, 'safe_expand'): ('green', 5),   (3, 'random_all'): ('green', 6),
-    (7, 'safe_expand'): ('green', 7),   (7, 'random_all'): ('yellow', 8),
-    (42, 'safe_expand'): ('red', 5),    (42, 'random_all'): ('purple', 19),
-    (100, 'safe_expand'): ('purple', 6), (100, 'random_all'): ('green', 10),
+    # Re-frozen 2026-06-30 for the BETA-BINOMIAL occupier (occ = 1 + BetaBinom(a-2,
+    # p_occ, rho=0.21) via Pólya urn; remnant stays Binom(d, p_rem); means = the §7
+    # occupier plane / remnant hinge; BATTLE_FUNCTION.md §8) on top of the single-shot
+    # power-ratio battle (G=3.40, C=1.26) + attacker-strength-first bot. The urn uses
+    # the same n RNG draws as the binomial but different thresholds, so survivor values
+    # shifted the boards vs the 06-29 freeze; still fully reproducible per seed.
+    (1, 'safe_expand'): ('purple', 15), (1, 'random_all'): ('purple', 7),
+    (2, 'safe_expand'): ('blue', 9),    (2, 'random_all'): ('green', 5),
+    (3, 'safe_expand'): ('green', 7),   (3, 'random_all'): ('green', 6),
+    (7, 'safe_expand'): ('yellow', 6),  (7, 'random_all'): ('yellow', 6),
+    (42, 'safe_expand'): ('purple', 13), (42, 'random_all'): ('purple', 9),
+    (100, 'safe_expand'): ('purple', 5), (100, 'random_all'): ('red', 9),
 }
 
 
@@ -80,11 +80,29 @@ def mean_occ(a, d):    # E[occupier | capture], clipped to [1, a-1] (BATTLE_FUNC
 def mean_rem(a, d):    # E[remnant | repel] — hinge, clipped to [0, d] (BATTLE_FUNCTION §7)
     return min(float(d), max(0.0, 0.30 + 0.24 * d + 0.42 * max(0, d - a)))
 
+OCC_RHO = 0.21         # capture-occupier overdispersion (BATTLE_FUNCTION §8)
+
+def var_occ(a, d):     # Var[occupier] — beta-binomial: binomial * (1 + (n-1)*rho)
+    n = a - 2
+    if n <= 0:
+        return 0.0
+    p = min(1.0, max(0.0, (mean_occ(a, d) - 1.0) / n))
+    return n * p * (1 - p) * (1 + (n - 1) * OCC_RHO)
+
+def var_rem(a, d):     # Var[remnant] — plain binomial
+    if d <= 0:
+        return 0.0
+    p = min(1.0, max(0.0, mean_rem(a, d) / d))
+    return d * p * (1 - p)
+
 def check_battle_invariants():
-    """Survivors are now BINOMIAL around the fitted mean. Per (a,d) assert:
+    """Survivors are drawn around the fitted mean (occupier = beta-binomial with
+    overdispersion rho, remnant = binomial). Per (a,d) assert:
       - source node always gutted to 1;
       - capture => occupier in [1, a-1]; repel => defender remnant in [0, d];
-      - the empirical mean survivor over many draws matches mean_occ / mean_rem.
+      - empirical MEAN matches mean_occ / mean_rem;
+      - empirical VARIANCE matches the (beta-)binomial var (this is what
+        distinguishes the overdispersed occupier from a plain binomial).
     Determinism (per seed) is covered by the golden games below."""
     import numpy as np
     fastnw.set_topology_csr(2, [[1], [0]])
@@ -101,6 +119,18 @@ def check_battle_invariants():
         if abs(np.mean(vals) - target) > max(0.08, 4 * se):
             fails += 1
             print(f"  {label}: {np.mean(vals):.3f} vs {target:.3f}  (n={len(vals)})")
+
+    def var_ok(vals, target, label):
+        """empirical variance vs predicted, with a relative + SE-aware tolerance
+        (variance has ~sqrt(2/n) relative noise)."""
+        nonlocal fails
+        if len(vals) < 400 or target < 0.05:
+            return
+        ev = np.var(vals)
+        tol = max(0.04, 0.18 * target, 4 * target * (2 / len(vals)) ** 0.5)
+        if abs(ev - target) > tol:
+            fails += 1
+            print(f"  {label}: var {ev:.3f} vs {target:.3f}  (n={len(vals)})")
 
     for a0 in range(2, 12):
         for d0 in range(1, 12):
@@ -124,8 +154,10 @@ def check_battle_invariants():
                               f"-> own={list(owner)} str={list(strength)}")
             mean_ok(occ, mean_occ(a0, d0), f"occ mean a0={a0} d0={d0}")
             mean_ok(rem, mean_rem(a0, d0), f"rem mean a0={a0} d0={d0}")
+            var_ok(occ, var_occ(a0, d0), f"occ var  a0={a0} d0={d0}")
+            var_ok(rem, var_rem(a0, d0), f"rem var  a0={a0} d0={d0}")
     print(f"battle invariants: {'PASS' if fails == 0 else f'{fails} FAIL'} "
-          f"(range + empirical-mean over {TRIALS}/cell)")
+          f"(range + mean + variance over {TRIALS}/cell)")
     return fails == 0
 
 

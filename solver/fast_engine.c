@@ -37,6 +37,12 @@
  * See solver/BATTLE_FUNCTION.md / iphone_data/refit_emergent.py. */
 #define PR_G  3.40
 #define PR_C  1.26
+/* capture-occupier OVERDISPERSION (BATTLE_FUNCTION.md §8). The attacker survivor
+ * is more spread than a plain Binomial (17/28 cells overdispersed); a beta-binomial
+ * with one intra-class-correlation rho fits it (MLE rho=0.21 over 6,107 captures,
+ * ΔlogL +444, per-cell TVD 0.138->0.110). rho=0 would recover the Binomial. The
+ * defender remnant needs no overdispersion (it is already ~Binomial). */
+#define OCC_RHO 0.21
 /* pow(x, PR_G) lookup for the rollout-hot battle math: x is an integer strength,
  * so cache x^PR_G for x in [0,PR_TBL). The table is filled from the SAME pow()
  * call, so pr_powg(x) == pow((double)x, PR_G) bit-for-bit on each arch — battle
@@ -502,14 +508,25 @@ static int ranked_best_move(const int *owner, const int *strength) {
     return best_act;
 }
 
-/* BINOMIAL survivor draws — each troop survives independently, so the survivor
- * count is Binomial(n, p) with p set so the mean equals the fitted curve. Sampled
- * as a sum of n RNG()<p Bernoullis off the active stream (mb32 real / sm_rand
- * rollout): deterministic per seed, integer-only, no x.5 rounding hazard, so it
- * is WASM-parity-safe. See BATTLE_FUNCTION.md §8. */
+/* survivor draws — each troop survives independently, so the count is (beta-)
+ * Binomial with mean set to the fitted curve. Sampled with n RNG()<p draws off the
+ * active stream (mb32 real / sm_rand rollout): deterministic per seed, integer-only,
+ * no x.5 rounding hazard => WASM-parity-safe. See BATTLE_FUNCTION.md §8. */
 static inline int binomial_draw(int n, double p) {
     int k = 0;
     for (int i = 0; i < n; i++) if (RNG() < p) k++;
+    return k;
+}
+/* beta-binomial via a Pólya urn: start with success mass alpha, failure mass beta;
+ * each of n draws succeeds w.p. (success mass)/(total) then adds 1 to that mass.
+ * E[k]=n*alpha/(alpha+beta) (== the binomial mean), Var inflated by 1+(n-1)*rho.
+ * Same n RNG() draws as binomial_draw, so the seeded stream stays aligned. */
+static inline int betabinom_draw(int n, double alpha, double beta) {
+    double s = alpha, f = beta;
+    int k = 0;
+    for (int i = 0; i < n; i++) {
+        if (RNG() < s / (s + f)) { s += 1.0; k++; } else { f += 1.0; }
+    }
     return k;
 }
 static inline int draw_occ(int a, int d) {        /* occupier on a captured node */
@@ -518,7 +535,8 @@ static inline int draw_occ(int a, int d) {        /* occupier on a captured node
     if (n <= 0) return 1;                         /* a==2 -> occupier always 1 */
     double p = (mean_occ(a, d) - 1.0) / n;
     if (p < 0) p = 0; else if (p > 1) p = 1;
-    return 1 + binomial_draw(n, p);
+    double M = (1.0 - OCC_RHO) / OCC_RHO;         /* beta concentration; rho>0 = overdispersed */
+    return 1 + betabinom_draw(n, p * M, (1.0 - p) * M);
 }
 static inline int draw_defrem(int a, int d) {     /* defender remnant on a repel */
     if (d <= 0) return 0;                         /* support is [0, d] */

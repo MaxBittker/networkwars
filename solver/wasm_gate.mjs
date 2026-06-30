@@ -57,12 +57,17 @@ for (let seed = 1; seed <= N_SEEDS; seed++) {
 console.error(`invariants: ${N_SEEDS - invFails}/${N_SEEDS} seeds clean`);
 console.error(`determinism: ${N_SEEDS - detFails}/${N_SEEDS} seeds reproducible`);
 
-// ---- battle postconditions: survivors are now BINOMIAL around the fitted mean
-// (BATTLE_FUNCTION.md §7). Per (a,d) assert: source always gutted to 1; capture =>
-// occupier in [1,a-1]; repel => remnant in [0,d]; and the empirical mean survivor
-// over many draws tracks meanOcc/meanRem (mirrors validate_fast.check_battle_invariants).
+// ---- battle postconditions: survivors are drawn around the fitted mean (occupier
+// = beta-binomial with overdispersion rho, remnant = binomial; BATTLE_FUNCTION.md §8).
+// Per (a,d) assert: source always gutted to 1; capture => occupier in [1,a-1]; repel
+// => remnant in [0,d]; empirical MEAN tracks meanOcc/meanRem; empirical VARIANCE
+// tracks the (beta-)binomial var (distinguishes the overdispersed occupier from a
+// plain binomial). Mirrors validate_fast.check_battle_invariants.
+const OCC_RHO = 0.21;
 const meanOcc = (a, d) => Math.min(a - 1, Math.max(1.0, 0.82 * a - 0.44 * d + 0.10));
 const meanRem = (a, d) => Math.min(d, Math.max(0.0, 0.30 + 0.24 * d + 0.42 * Math.max(0, d - a)));
+const varOcc = (a, d) => { const n = a - 2; if (n <= 0) return 0; const p = Math.min(1, Math.max(0, (meanOcc(a, d) - 1) / n)); return n * p * (1 - p) * (1 + (n - 1) * OCC_RHO); };
+const varRem = (a, d) => { if (d <= 0) return 0; const p = Math.min(1, Math.max(0, meanRem(a, d) / d)); return d * p * (1 - p); };
 E.setTopologyCsr(2, [[1], [0]]);
 const BT = 4000;
 let bFails = 0;
@@ -72,6 +77,15 @@ const meanOk = (vals, target, label) => {            // |emp-target| within max(
   const sd = Math.sqrt(vals.reduce((s, x) => s + (x - mu) ** 2, 0) / vals.length);
   if (Math.abs(mu - target) > Math.max(0.08, 4 * sd / Math.sqrt(vals.length))) {
     bFails++; console.error(`  ${label}: ${mu.toFixed(3)} vs ${target.toFixed(3)} (n=${vals.length})`);
+  }
+};
+const varOk = (vals, target, label) => {             // relative + SE-aware tolerance
+  if (vals.length < 400 || target < 0.05) return;
+  const mu = vals.reduce((s, x) => s + x, 0) / vals.length;
+  const ev = vals.reduce((s, x) => s + (x - mu) ** 2, 0) / vals.length;
+  const tol = Math.max(0.04, 0.18 * target, 4 * target * Math.sqrt(2 / vals.length));
+  if (Math.abs(ev - target) > tol) {
+    bFails++; console.error(`  ${label}: var ${ev.toFixed(3)} vs ${target.toFixed(3)} (n=${vals.length})`);
   }
 };
 for (let a0 = 2; a0 <= 11; a0++) for (let d0 = 1; d0 <= 11; d0++) {
@@ -88,8 +102,10 @@ for (let a0 = 2; a0 <= 11; a0++) for (let d0 = 1; d0 <= 11; d0++) {
   }
   meanOk(occ, meanOcc(a0, d0), `occ mean a0=${a0} d0=${d0}`);
   meanOk(rem, meanRem(a0, d0), `rem mean a0=${a0} d0=${d0}`);
+  varOk(occ, varOcc(a0, d0), `occ var  a0=${a0} d0=${d0}`);
+  varOk(rem, varRem(a0, d0), `rem var  a0=${a0} d0=${d0}`);
 }
-console.error(`battle invariants: ${bFails === 0 ? 'PASS' : bFails + ' FAIL'} (range + empirical-mean over ${BT}/cell)`);
+console.error(`battle invariants: ${bFails === 0 ? 'PASS' : bFails + ' FAIL'} (range + mean + variance over ${BT}/cell)`);
 
 // ---- search sanity: returns children, q in [0,1] ----
 const gs = E.newGame(42);

@@ -259,18 +259,18 @@ per-margin std 0.5–3.0 troops, and a single value matches the actual outcome o
 ~58% (capture) / ~42% (repel) of the time. That spread is genuine battle
 randomness the deterministic engine threw away.
 
-**The model (zero new free parameters).** Each troop survives independently, so the
-survivor count is **Binomial**, with success probability set so the mean equals the
-§7 curve. The variance `n·p·(1−p)` is then *emergent* — not fit — and the integer
-bounds fall out for free:
+**The model.** Each troop survives ~independently, so the survivor count is a
+**(beta-)Binomial** with success probability set so the mean equals the §7 curve:
 
-- capture occupier:  `occ = 1 + Binomial(a−2, p_occ)`,  `p_occ = (μ_occ − 1)/(a−2)`,  support `[1, a−1]`
-- repel  remnant:    `rem = Binomial(d, p_rem)`,        `p_rem = μ_rem / d`,           support `[0, d]`
+- capture occupier:  `occ = 1 + BetaBinomial(a−2, p_occ, ρ)`,  `p_occ = (μ_occ − 1)/(a−2)`,  support `[1, a−1]`
+- repel  remnant:    `rem = Binomial(d, p_rem)`,                `p_rem = μ_rem / d`,           support `[0, d]`
 - `μ_occ = clip(0.82a − 0.44d + 0.10, 1, a−1)`,  `μ_rem = clip(0.30 + 0.24d + 0.42·max(0,d−a), 0, d)`  (the §7 curves)
 
-`E[occ]=μ_occ` and `E[rem]=μ_rem` **exactly**, so the `CAPES` value table and the
-aggregate win-rate are unchanged from the §7 mean engine — only per-game variance
-is added back.
+The repel remnant is a plain Binomial (`ρ=0`); the capture occupier carries one
+overdispersion parameter `ρ=0.21` (the "**overdispersion refinement**" below — the
+remnant did not need it). `E[occ]=μ_occ` and `E[rem]=μ_rem` hold **exactly** for any
+`ρ`, so the `CAPES` value table and the aggregate win-rate are unchanged — only the
+per-game *spread* is added back.
 
 **Distribution fit** (per-cell pmf vs live, n≥20 cells; total-variation distance,
 0 = identical):
@@ -280,26 +280,42 @@ is added back.
 | capture occupier | 0.19 | **0.12** |
 | repel  remnant   | 0.08 | **0.05** |
 
-The variance the binomial *predicts* lands on the observed variance to <0.2 troops,
-with no spread parameter fit — strong evidence the independent-survival mechanic is
-the right generative story. The dispersion it produces matches the data's own
-(capture is underdispersed, var/mean ≈ 0.1–0.3, because `p` is high and the `a−1`
-ceiling clips spread; repel is broader, var/mean ≈ 0.4–0.7). **Not overfit:** the
-one known stiff spot is high-margin small-`a` captures (e.g. `a=3,d=1`) where `μ_occ`
-pins to the `a−1` ceiling, `p_occ→1`, and the draw collapses to a spike — missing
-the ~12% that land one below. Chasing it needs a noise parameter the data barely
-constrains, so it was left alone.
+(Figures above are the **shipped beta-binomial occupier** + binomial remnant.) The
+remnant binomial's predicted variance lands on the observed to <0.1 troops with *no*
+spread parameter — strong evidence the independent-survival mechanic is the right
+generative story for the defender.
+
+**Overdispersion refinement — the occupier needs a beta-binomial (SHIPPED 2026-06-30).**
+A plain binomial occupier *under-predicts* the spread: **17 of 28** capture cells are
+overdispersed (0 underdispersed; the remnant is fine, 16/20 ~binomial). Physically,
+troops don't survive perfectly independently — there's a shared per-battle luck term.
+The minimal fix is a **beta-binomial**: draw the per-troop survival prob from a
+`Beta(α,β)` once per battle, so `Var = n·p(1−p)·[1 + (n−1)ρ]` with one intra-class
+correlation `ρ`. **MLE over 6,107 captures gives `ρ = 0.21`** (ΔlogL **+444** for the
+one parameter — overwhelmingly significant), cutting the occupier's per-cell pmf
+distance **TVD 0.138 → 0.110** and the std-prediction RMSE 0.193 → 0.179. The mean is
+untouched, so win-rate is unaffected. Drawn WASM-safely via a **Pólya urn** (start
+with masses `α,β`; each of `n` draws succeeds w.p. `s/(s+f)` then adds 1 to that
+mass) — `E[k]=n·p` exactly, same `n` `RNG()` draws as the binomial, only `RNG()<p`
+comparisons. **Not overfit:** one global `ρ`, not per-cell; LRT is ~888 vs χ²(1). The
+old stiff spot (high-margin small-`a` captures like `a=3,d=1`, where `μ_occ` pins to
+the `a−1` ceiling and the draw collapses to a near-spike) remains and is left alone —
+that's a *mean-at-the-boundary* artifact, not a dispersion one. See
+`iphone_data/plot_betabinom_fix.py`.
 
 **Shipped in `fast_engine.c`** — `mean_occ`/`mean_rem` (the curves, used by
-`CAPES`) and `draw_occ`/`draw_defrem` (the binomial, used by `resolve_battle` /
-`resolve_battle_logged`). Each Bernoulli is one `RNG()<p` draw off the active
-stream (`mb32` real game / `sm_rand` rollout), so survivors stay deterministic per
-seed and WASM-parity-safe (integer-only, no rounding hazard). The draws consume the
-seeded stream, so golden outcomes shifted — gates **re-frozen 2026-06-29** and pass:
-`validate_fast.py` (range + empirical-mean over 4000 draws/cell + golden seeds),
-`wasm_gate.mjs` (same), board-gen still 1000/1000 bit-identical, WASM determinism
-1000/1000. **Offline winrate (8000 sims): 94.0% (470/500)** — vs the §7 deterministic
-engine's ~96%; the ~2pt drop is the *real* battle variance the deterministic engine
-was suppressing (it always handed the search the mean outcome). Ship for fidelity to
-the real game's noise, not for score. Distribution-fit tooling:
-`iphone_data/plot_survivor_dist.py`.
+`CAPES`); `binomial_draw` + `betabinom_draw` (Pólya urn, `OCC_RHO=0.21`); and
+`draw_occ` (beta-binomial) / `draw_defrem` (binomial), used by `resolve_battle` /
+`resolve_battle_logged`. Every draw is `RNG()<p` off the active stream (`mb32` real
+game / `sm_rand` rollout), so survivors stay deterministic per seed and
+WASM-parity-safe (integer-only, no rounding hazard). The draws consume the seeded
+stream, so golden outcomes shifted — gates **re-frozen 2026-06-30** and pass:
+`validate_fast.py` (range + empirical-**mean and variance** over 4000 draws/cell +
+golden seeds), `wasm_gate.mjs` (same; the variance check is what distinguishes the
+overdispersed occupier from a plain binomial), board-gen still 1000/1000
+bit-identical, WASM determinism 1000/1000. **Offline winrate (8000 sims):
+95.6% (478/500)** — statistically unchanged from the binomial-survivor engine's
+94.0% (470/500); the 1.6pt gap is ~1.1 SE, i.e. noise, as expected since the
+overdispersion only changes the occupier *spread*, not its mean. It is a fidelity
+fix, not a score lever. Ship for fidelity to the real game's noise, not for score. Distribution-fit tooling: `iphone_data/plot_survivor_dist.py` (overall) and
+`iphone_data/plot_betabinom_fix.py` (the overdispersion before/after).
