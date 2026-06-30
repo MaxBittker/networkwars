@@ -1,15 +1,22 @@
 # Calibrating the sim to the real iOS game
 
+> **STATUS (current).** Everything proposed in this doc has shipped. The battle is the
+> single-shot power-ratio model (`BATTLE_FUNCTION.md` §6) and survivors are (beta-)binomial
+> draws (§7–8). The sim↔live gap is **closed at the current engine**: a 100-game live run
+> scores **94.0%** (CI 87.5–97.2%), matching offline self-play (~94%) at the same C-UCT
+> config (memory `sim-real-gap-closed-2026-06-29`). The historical analysis below records how
+> we got there; its specific numbers (75%/91.5%/91.9%) are from the intermediate engine.
+
 **TL;DR.** Our offline self-play winrate (~75%) was far below our live phone winrate
 (~92%). Mining 100 live games revealed the sim diverged from the real iOS app in two
 measurable ways: (1) the **initial deal** — the real game balances every faction to
 exactly 20 total strength, the old sim dealt strengths i.i.d. (per-faction totals
 swinging ±15); and (2) **battle resolution** — the real attacker wins far more
 decisively than the engine's fixed-probability coin-flip, in a way that scales with the
-*strength ratio*. Fix (1) is shipped and **closes the offline↔live gap entirely**: the calibrated sim now
-scores **91.5%** offline (1000 games), matching the live **91.9%**. Fix (2) is partially
-shipped (`ATTACKER_WIN_P 0.55→0.60`) with a better functional form proposed below (a
-power-ratio duel, γ≈3.3), pending one more data-collection step.
+*strength ratio*. Fix (1) shipped and closed the deal gap: the calibrated sim scored
+**91.5%** offline (1000 games), matching the live **91.9%**. Fix (2) then shipped in full
+— a single-shot power-ratio duel (γ≈3.40) plus fitted (beta-)binomial survivors — see
+`BATTLE_FUNCTION.md` §6–8 and the status banner above.
 
 Source data: `iphone_data/runs/series_20260620_2318.jsonl` (8 games) +
 `series_20260621_200g.jsonl` (92 games) = 100 live C-UCT games, 91.9% decided.
@@ -158,11 +165,12 @@ capture *decision* is pinned down, the *post-battle stacks* are not.
 **Not viable:** keeping ±1 iterated attrition with a smarter per-round `p` — the fits show it
 caps out (AIC 1347) well short of the single-shot fit.
 
-### Shipped vs. proposed
-- **Shipped:** `ATTACKER_WIN_P` 0.55→0.60 in `network_wars.py`, `fast_engine.c`
-  (the MLE best *single value*; winrate-neutral in self-play because it's symmetric).
-- **Proposed:** the power-ratio *shape* (γ≈3.3) — pending one capture-logging run to observe
-  survivors and disambiguate models 2/3.
+### Shipped
+- First, `ATTACKER_WIN_P` 0.55→0.60 (the MLE best *single value*; winrate-neutral in
+  self-play because it's symmetric) — an interim step.
+- Then the full power-ratio *shape* (γ≈3.40, `BATTLE_FUNCTION.md` §6) replaced it, and the
+  capture-logging run that this section called for was done — survivors are now fitted
+  (beta-)binomial draws (§7–8). Nothing in this doc remains merely proposed.
 
 ---
 

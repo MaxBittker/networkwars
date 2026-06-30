@@ -145,13 +145,13 @@ mechanic against all 3,187 battles:
    function would fit the outcome curve better while keeping survivors. Worth a joint refit that
    weights the contested region, then a small offline A/B — but the live effect is likely tiny
    (capture curves differ ≤2 pts).
-2. **The big one — why is live winrate ~77% when offline-corrected self-play is ~96%?** This is
-   NOT the battle model (now accurate), NOT the deal (balanced/correct), and NOT execution
-   (~1% tap misses, no parse failures). The leading hypothesis is that the **real iOS bots are
-   stronger than our `best_bot_move` model** beyond targeting (e.g. reinforcement, or
-   coordination) — offline, red faces our weaker bot model and over-performs. Secondary
-   suspects: silent OCR strength-misreads that produce legal-but-suboptimal live moves. This
-   gap, not the battle function, is now the main lever for understanding true strength.
+2. ~~**The big one — why is live winrate ~77% when offline-corrected self-play is ~96%?**~~
+   **RESOLVED (2026-06-29): the gap is closed.** It was the battle/survivor model after all,
+   not stronger bots. Once the single-shot power-ratio (§6) and the (beta-)binomial survivors
+   (§7–8) shipped, a fresh 100-game live run scored **94.0%** (CI 87.5–97.2%), matching offline
+   self-play at the same C-UCT config. The earlier "~77–81% plateau" was measured against the
+   pre-recalibration engine. The few remaining losses are mostly early dice-snowballs, not a
+   systematic bot-strength deficit. (Memory `sim-real-gap-closed-2026-06-29`.)
 3. **Survivor stochasticity.** Is the capture-remnant spread a real attrition distribution or
    OCR noise? Distinguishing them needs repeated identical (a,d) matchups, which red rarely
    produces.

@@ -1,13 +1,15 @@
 # Network Wars — Design Doc
 
-A faithful, minimal reproduction of Jim Rutt's **Network Wars** as a server + thin web
-frontend. The server owns all game state and rules; the frontend only renders state and
-sends player actions. The same HTTP API can be driven by a human (via the web UI) or by a
-program (bot / script).
+A faithful, minimal reproduction of Jim Rutt's **Network Wars**. All rules live in one C
+implementation (`solver/fast_engine.c`); the browser frontend runs that engine in-process
+as WASM, and a Python ctypes client drives it headlessly. The same game can be driven by a
+human (via the web UI) or by a program (bot / search).
 
 > This doc is the single source of truth for the rules. If any rule below is wrong, tell me
-> and I'll fix it here first, then in the code. Assumptions I had to make are marked
-> **[ASSUMPTION]** — these are the most likely things to want tweaking.
+> and I'll fix it here first, then in the code. The original game's exact rules aren't
+> published; the battle model and deal here were **fit to thousands of live iOS battles**
+> (see `solver/BATTLE_FUNCTION.md` / `solver/IOS_CALIBRATION.md`). Remaining guesses are
+> marked **[ASSUMPTION]**.
 
 ---
 
@@ -22,10 +24,15 @@ program (bot / script).
 - A graph of **Nodes** connected by **Links**.
 - Each node has an `owner` (faction) and a `strength` (army size, integer ≥ 1 while owned).
 - Links are undirected. Two nodes can attack each other only if a link connects them.
-- **[ASSUMPTION]** Board starts with **30 nodes**, **6 per faction** (the 2:32 screenshot
-  shows a 6/6/6/6/6 opening). Win condition is 24 nodes, so total must exceed 24.
+- Board is **30 nodes, 6 per faction** (confirmed from the real app: a 6×7 grid of 42 cells
+  with 12 removed = 30). Win condition is 24 nodes.
+- **The deal** (calibrated to the real app, `IOS_CALIBRATION.md` §2): each faction's 6 nodes
+  are one of **4 fixed templates** that each sum to **20** total strength, so every faction
+  starts perfectly balanced (board total always 100). Templates and frequencies: `[1,1,1,5,6,6]`
+  38.5%, `[1,1,1,1,8,8]` 32.7%, `[1,1,4,4,5,5]` 22.2%, `[1,3,4,4,4,4]` 6.6%. (Strengths reach 8;
+  there are no 7s.)
 - **[ASSUMPTION]** Layout: nodes are placed on a diamond/triangular lattice (offset rows,
-  diagonal links) to mimic the look of the screenshots. Exact generator is procedural and
+  diagonal links) to mimic the look of the screenshots. The generator is procedural and
   seedable; the precise topology of the original isn't published, so we approximate it with
   a connected, planar-ish mesh.
 
@@ -40,18 +47,19 @@ program (bot / script).
 
 - You may attack from any node you own with **strength > 1**, along a link, into an enemy
   node. A node with strength 1 cannot attack.
-- One attack action resolves a **full battle** between the two nodes (not a single coin flip):
-  - Model each side's strength as a stack of units.
-  - Repeat: flip a biased coin. On an attacker win, the **defender** loses 1 unit; on a
-    defender win, the **attacker** loses 1 unit.
-  - The battle ends when either:
-    - **Defender reaches 0** → attacker **captures** the node. The attacker leaves 1 unit
-      behind and moves the rest in: captured node strength = (attacker's current strength − 1),
-      attacker node strength = 1.
-    - **Attacker reaches 1** → attacker can no longer fight; battle stops. Attacker stays at
-      1, defender keeps whatever it has left (no ownership change).
-- **[ASSUMPTION]** Attacker coin-win probability = **0.55** ("a slight advantage for the
-  attacker"). Configurable server-side.
+- One attack action resolves a **single decisive battle** (this is what the real app does, fit
+  from ~9,400 live battles — see `BATTLE_FUNCTION.md`). Let `a` = attacker strength, `d` =
+  defender strength:
+  - **Who wins** is one Bernoulli draw: `P(capture) = a^3.40 / (a^3.40 + 1.26·d^3.40)`. The
+    power-of-~3.4 ratio makes strength far more decisive than a coin flip (2:1 ≈ 90%, equal ≈
+    47%).
+  - **On capture** the attacker takes the node and the **source node always drops to 1**. The
+    captured node's new strength (the occupier) is a draw around the fitted mean
+    `clip(0.82a − 0.44d + 0.10, 1, a−1)` — specifically `1 + BetaBinomial(a−2, …)` (one
+    overdispersion param, ρ=0.21).
+  - **On repel** the source node still drops to 1; the **defender is gutted** to a draw around
+    `clip(0.30 + 0.24d + 0.42·max(0, d−a), 0, d)` — `Binomial(d, …)`. (Capture requires a
+    surviving occupier; a fully-spent attacker does **not** flip ownership.)
 - A turn can contain any number of attacks.
 
 ## 5. Reinforcements
@@ -76,39 +84,40 @@ Applied to a faction at the end of that faction's turn:
 
 ## 7. Bot AI (deterministic, transparent — this is the heart of the game)
 
-On a bot's turn, repeatedly:
+On a bot's turn, repeatedly (this ordering was matched to the observed real iOS bot):
 
-- Consider every owned node with strength > 1 that has an adjacent enemy node it can beat
-  (attacker strength **>** that neighbor's strength).
-- The bot **attacks the weakest beatable enemy** it can reach.
-- **[ASSUMPTION]** Tie-breaks (equal-strength targets, multiple attackers): choose the
-  attack with the largest attacker strength first, then lowest target node id — fully
-  deterministic so a human can predict bots (the blog calls this out as intended).
-- Repeat until no node has strength > a beatable neighbor. Then end turn (reinforcements apply).
-- Bots only attack when strictly stronger, so they never start a coin-flip they can't be
-  favored to win on the first exchange — matching "attack whenever a node is stronger than a
-  neighboring enemy."
+- Pick the bot's **strongest own node** with strength > 1 that has a beatable enemy neighbor
+  (attacker strength **>** the neighbor's strength).
+- From that node, attack its **weakest reachable enemy target**.
+- **Ties are broken at random** (per-game seeded RNG, so outcomes stay reproducible) — this
+  matches the real app better than the old deterministic id-order tie-break.
+- Repeat until no owned node is stronger than a reachable enemy. Then end turn (reinforcements
+  apply).
+- Bots only attack when strictly stronger, so they never start a fight they aren't favored to
+  win — matching "attack whenever a node is stronger than a neighboring enemy."
 
 ## 8. Architecture
 
 - **Engine**: a single C implementation (`solver/fast_engine.c`) of all rules + board
-  generation + the C-UCT search. This is the source of truth; there is no separate
-  JS rules engine.
-- **Server**: `solver/server.py` — Python standard library only (`http.server`, no deps),
-  a thin client that drives the C engine via ctypes (`fastnw.py`). In-memory games keyed
-  by `gameId`; seeded mulberry32 per game for reproducibility.
-- **Frontend**: single static `public/index.html` + vanilla JS canvas render. Thin: it
-  only draws server state and posts actions. No game logic client-side.
+  generation + the C-UCT search. This is the source of truth; there is no separate JS
+  rules engine. It is compiled two ways: natively (`fast_engine.so`, driven by Python
+  ctypes via `fastnw.py`) and to **WASM** (`public/fast_engine.js`).
+- **Browser frontend**: `public/` is self-contained. The WASM engine + search run in a Web
+  Worker (`engine.worker.js`, which holds game state and speaks the `/api/game/*` contract
+  over postMessage); `index.html` is just canvas rendering and input. **No backend needed**
+  — serve `public/` statically. Seeded mulberry32 per game for reproducibility.
+- **Server (optional)**: `solver/server.py` — stdlib `http.server`, drives the native engine
+  via ctypes. Only used for the live iOS `/grab` workflow; the browser game does not need it.
 
-### HTTP API
+### Game API (postMessage in the browser; HTTP on the optional server)
 
-| Method | Path                       | Body                  | Effect |
-|--------|----------------------------|-----------------------|--------|
-| POST   | `/api/game`                | `{seed?}`             | New game, returns full state |
-| GET    | `/api/game/:id`            | —                     | Current state |
-| POST   | `/api/game/:id/attack`     | `{from, to}`          | Resolve one battle (RED's turn only) |
-| POST   | `/api/game/:id/end-turn`   | —                     | Run all bot turns + reinforcements |
-| POST   | `/api/game/:id/surrender`  | —                     | End game as RED loss |
+| Path                       | Body                  | Effect |
+|----------------------------|-----------------------|--------|
+| POST `/api/game`           | `{seed?}`             | New game, returns full state |
+| GET  `/api/game/:id`       | —                     | Current state |
+| POST `/api/game/:id/attack`| `{from, to}`          | Resolve one battle (RED's turn only) |
+| POST `/api/game/:id/end-turn` | —                  | Run all bot turns + reinforcements |
+| POST `/api/game/:id/surrender` | —                 | End game as RED loss |
 
 State payload: `{ id, nodes:[{id,x,y,owner,strength}], links:[[a,b]], counts:{red,...},
 turn, phase, winner, log:[...], legalMoves:[{from,to}] }`. `legalMoves` lets a UI or API

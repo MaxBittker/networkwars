@@ -24,8 +24,9 @@
     BROWSER inside a Web Worker. `public/fastnw.js` is the JS marshalling layer (port
     of `fastnw.py`); `public/engine.worker.js` is the game/orchestration layer (port
     of `server.py`'s handlers) — it holds game state and speaks the same `/api/game/*`
-    contract via postMessage, so `index.html` needs no server to play. Search (6000
-    sims, ~170 ms) runs in the worker so the UI never blocks.
+    contract via postMessage, so `index.html` needs no server to play. Search runs
+    in the worker so the UI never blocks (adaptive budget: floor ~2000 sims, ceiling
+    ~150k, visit-margin early stop — see memory `adaptive-sims`).
   - `solver/server.py` — now OPTIONAL: it serves `public/` static assets and the
     legacy `/api/game/*` (no longer used by the browser), and is only needed for the
     iOS `/grab` and `/load` workflow (live iPhone Mirroring). Pure offline play needs
@@ -39,10 +40,14 @@
 - Two things were recalibrated from live play: the deal (every faction totals 20, 4
   fixed templates) and battle. BATTLE is the **single-shot power-ratio** model
   (re-fit 2026-06-23 from 7,222 live red battles, see solver/BATTLE_FUNCTION.md §6):
-  one Bernoulli decides the whole fight, `P(capture)=a^3.40/(a^3.40 + 1.26·d^3.40)`;
-  on capture the occupier = `max(1, a−d)` (source→1), on repel the defender is gutted
-  to `max(0, d−a+1)` (source→1). This is simplest + best-fitting (AIC 5941 vs the old
-  iterated k=0.62 model's 6077, which was too soft at the contested margins).
+  one Bernoulli decides the whole fight, `P(capture)=a^3.40/(a^3.40 + 1.26·d^3.40)`
+  (simplest + best-fitting, AIC 5941 vs the old iterated k=0.62 model's 6077). The
+  source node always keeps 1. SURVIVORS are then a **(beta-)binomial draw** around
+  fitted `(a,d)` means (BATTLE_FUNCTION.md §7–8): occupier `1+BetaBinomial(a−2,·)`
+  with overdispersion `ρ=0.21` (mean `clip(0.82a−0.44d+0.10, 1, a−1)`), repel remnant
+  `Binomial(d,·)` (mean `clip(0.30+0.24d+0.42·max(0,d−a), 0, d)`) — matches the live
+  *distribution*, not just the mean; means are unchanged so win-rate is unaffected.
+  All draws are integer/`RNG()<p` for WASM bit-parity.
 - BOTS: each of the four bots greedily attacks **strongest-own-node first**, then that
   node's **weakest reachable target**, ties broken at random (matches observed iOS
   bot ordering); then reinforces its largest component's border. The RNG is seeded
@@ -53,12 +58,12 @@
   the in-browser engine; NOTE: **no `-ffast-math`** — it breaks cross-arch board-gen
   bit-parity, and the search doesn't need it): run `solver/build_wasm.sh` (emcc
   single-file ESM → `public/fast_engine.js`), then validate with `python3
-  solver/validate_wasm.py`. On the
-  iOS-faithful deal, offline self-play winrate is ~91–96%. NOTE: measured LIVE
-  winrate is ~77-81% (last-50 ≈76%, matching the phone's own stats screen) — offline
-  OVER-predicts live, an open gap (likely real iOS bots stronger than best_bot_move;
-  see BATTLE_FUNCTION.md §4 + memories sim-vs-real-deal-imbalance,
-  sim-vs-real-battle-mismatch). Don't quote 88-92% as the live number.
+  solver/validate_wasm.py`. On the iOS-faithful deal, offline self-play winrate is
+  **~94–95%** (8000 sims). The old offline-over-predicts-live gap is **CLOSED**: after
+  the battle/survivor recalibration above, a 100-game live run scored **94.0%** (CI
+  87.5–97.2%), matching offline at the same C-UCT config (memory
+  `sim-real-gap-closed-2026-06-29`, supersedes the old ~77–81% plateau). Most of the
+  few losses are early dice-snowballs, not search errors.
 
 ## Driving the real iOS app
 - `solver/iphone_data/` captures/parses/taps the real app via macOS iPhone Mirroring.
