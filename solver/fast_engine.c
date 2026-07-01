@@ -545,8 +545,41 @@ static inline int draw_defrem(int a, int d) {     /* defender remnant on a repel
     return binomial_draw(d, p);
 }
 
+/* OPTIONAL "hybrid loop + hinge remnant" battle model (ITERATED_BATTLE_MODELS.md
+ * model A) — OFF by default so the shipped closed-form gates/golden-seeds hold.
+ * Outcome + occupier EMERGE from single-casualty proportional attrition (Lanchester
+ * square): each round the attacker wins the exchange w.p. a/(a + HB_TIE*d) and the
+ * loser drops one troop, until the attacker is down to 1 (repel) or the defender
+ * hits 0 (capture, occupier = a-1). The repel remnant is the one-line HINGE patch
+ * max(0, d - (a0-1)) — "the whole assault guts the defender" — which the pure loop
+ * can't produce emergently (Theorem 2 in the writeup). HB_TIE=1.07 ~ "defender wins
+ * ties". This is the historically-plausible original loop; ~ties the closed form on
+ * outcome (dAIC 140) with a tighter occupier and a patched remnant. */
+#define HB_TIE 1.07
+static int HYBRID_BATTLE = 0;
+void use_hybrid_battle(int on) { HYBRID_BATTLE = on; }
+int  get_hybrid_battle(void)  { return HYBRID_BATTLE; }
+
+static void resolve_battle_hybrid(int *owner, int *strength, int frm, int to) {
+    int a0 = strength[frm], a = a0, d = strength[to];
+    while (a > 1 && d > 0) {                 /* proportional single-casualty attrition */
+        if (RNG() < (double)a / ((double)a + HB_TIE * (double)d)) d--;   /* attacker wins exchange */
+        else                                                       a--;   /* attacker loses one */
+    }
+    if (d == 0) {                            /* capture: occupier = a-1 (>=1), source keeps 1 */
+        owner[to] = owner[frm];
+        strength[to] = a - 1;
+        strength[frm] = 1;
+    } else {                                 /* repel: hinge remnant, gutted by the whole assault */
+        int rem = d - (a0 - 1);
+        strength[frm] = 1;
+        strength[to] = rem < 0 ? 0 : rem;
+    }
+}
+
 /* dice battle, frm attacks to — fitted iOS power-ratio mechanic */
 static void resolve_battle(int *owner, int *strength, int frm, int to) {
+    if (HYBRID_BATTLE) { resolve_battle_hybrid(owner, strength, frm, to); return; }
     int a = strength[frm], d = strength[to];
     if (RNG() < pr_cap(a, d)) {       /* capture: binomial occupier */
         owner[to] = owner[frm];
@@ -947,6 +980,22 @@ void uct_set_value_stop(double lo, double hi, double gap, int min_vis) {
     VS_LO = lo; VS_HI = hi; VS_GAP = gap; VS_MINVIS = min_vis;
 }
 
+/* Optional "deep-think" relative-margin early stop — OFF by default. Unlike the
+ * absolute visit-margin (b1-b2 > remaining), which scales with the ceiling and so
+ * spends ~half a high ceiling on EVERY position, this fires as soon as the leading
+ * root move DOMINATES the runner-up by a fixed ratio (b1 >= ratio*b2) — independent
+ * of the ceiling. So a decided position stops at the floor (cheap) while a genuinely
+ * contested one (b1 ~= b2) never satisfies it and runs to the high ceiling = deep
+ * search exactly where the move is unresolved. Keys on MOVE dominance, not win-prob
+ * (probe finding: value-drift does NOT predict where deeper search changes the
+ * outcome; move-choice instability does). Enable via uct_set_deepthink. */
+static double DT_RATIO = 0.0;          /* 0 disabled */
+static int    DT_MINVIS = 1 << 30;
+static double DT_BEHIND = 2.0;         /* leader win-prob >= this => not behind => stop (2.0 = off) */
+void uct_set_deepthink(double ratio, int min_vis, double behind) {
+    DT_RATIO = ratio; DT_MINVIS = min_vis; DT_BEHIND = behind;
+}
+
 /* early-stop test: stop when the move is locked by visit-margin (runner-up can't
  * catch the leader in the sims remaining — move-identical) or, if value-stop is
  * enabled, when the leader is a clear winner by win-prob. */
@@ -962,6 +1011,12 @@ static int uct_should_stop(void) {
     }
     long remaining = (long)S_max_sims - S_sims;
     if (rnc0 <= 1 || b1 - b2 > remaining) return 1;     /* visit-margin (move-identical) */
+    if (DT_RATIO > 0.0 && b1 >= DT_MINVIS) {             /* deep-think gating */
+        if (b1 >= DT_RATIO * (double)(b2 + 1)) return 1;         /* move dominates -> stop cheap */
+        double q1 = E_W[off0 + b1k] / (double)b1;                /* leader RED win-prob */
+        if (q1 >= DT_BEHIND) return 1;         /* red NOT behind -> no need to grind, stop cheap */
+        /* else: move contested AND red behind (comeback position) -> keep searching to ceiling */
+    }
     if (b1 >= VS_MINVIS && b1k >= 0) {                  /* value-based "clear winner" */
         double q1 = E_W[off0 + b1k] / (double)b1;       /* leader's RED win-prob */
         if (q1 <= VS_LO || q1 >= VS_HI) return 1;        /* decided outcome */

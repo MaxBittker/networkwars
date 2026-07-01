@@ -177,7 +177,9 @@ PYTHON = os.path.join(os.path.dirname(HERE), '.venv', 'bin', 'python')
 
 
 def mcts_move(st, rollout, engine='fast', sims=8000, turns=1,
-              wset='C1', c_puct=2.5, nroll=1, workers=1):
+              wset='C1', c_puct=2.5, nroll=1, workers=1,
+              max_sims=0, deepthink_ratio=0.0, deepthink_minvis=3000,
+              deepthink_behind=2.0):
     """Pure C-UCT move (fast_engine.so, no net) — the ~78-80% config. The `rollout`
     and `engine` args are vestigial (kept for the call signature).
 
@@ -193,6 +195,12 @@ def mcts_move(st, rollout, engine='fast', sims=8000, turns=1,
     else:
         script = os.path.join(HERE, 'nwmove_fast.py')
         extra = []
+        if max_sims and max_sims > sims:
+            extra += ['--max-sims', str(max_sims)]
+        if deepthink_ratio and deepthink_ratio > 0:
+            extra += ['--deepthink-ratio', str(deepthink_ratio),
+                      '--deepthink-minvis', str(deepthink_minvis),
+                      '--deepthink-behind', str(deepthink_behind)]
     # retry: a transient empty stdout (subprocess hiccup) must NOT be misread as
     # 'stop' — that silently passes the turn and can stall a whole game.
     for attempt in range(3):

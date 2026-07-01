@@ -145,9 +145,21 @@ def wait_connected(tag='reconnect', timeout=1800):
         st = PL.P.parse(path)
         if sum(st['counts'].values()) >= 12:
             return True
-        stage('⚠ mirror link DOWN — lock the phone to reconnect')
-        print('   …mirror link down ("iPhone in Use"?) — lock the phone to reconnect; retrying')
-        time.sleep(10)
+        # auto-recover from the "Connection Interrupted" / "iPhone in Use" modal by
+        # tapping its reconnect button (Try Again / Continue / Resume) instead of only
+        # waiting for the user to lock the phone. Falls back to the known Try-Again spot.
+        btn = find_button(path, ('try again', 'continue', 'resume', 'reconnect'))
+        if btn is not None:
+            print(f'   mirror link down — tapping reconnect button {btn}')
+            PL.tap(*btn); time.sleep(6)
+            st2 = PL.P.parse(PL.shot(f'{tag}_recheck.png'))
+            if sum(st2['counts'].values()) >= 12:
+                return True
+        else:
+            PL.tap(160, 468); time.sleep(6)   # known "Try Again" spot (px 319,937 /2)
+        stage('⚠ mirror link DOWN — reconnecting (tap Try Again)')
+        print('   …mirror link down ("iPhone in Use"?) — retrying reconnect')
+        time.sleep(8)
     return False
 
 
@@ -251,11 +263,16 @@ def play_one_game(args, gi):
             stage(f'searching · game {gi + 1} round {rnd + 1} move {a + 1}')
             mv = PL.mcts_move(st, args.rollout, engine='fast', sims=args.sims,
                               turns=rnd + 1, wset=args.wset, c_puct=args.c_puct,
-                              nroll=args.nroll, workers=args.workers)
+                              nroll=args.nroll, workers=args.workers,
+                              max_sims=args.max_sims,
+                              deepthink_ratio=args.deepthink_ratio,
+                              deepthink_minvis=args.deepthink_minvis,
+                              deepthink_behind=args.deepthink_behind)
             publish_move(st, mv, rnd + 1, shot=cur_shot)
             if mv.get('action') == 'stop':
                 turn['moves'].append({'action': 'stop', 'winexp': mv.get('winexp'),
-                                      'visits': mv.get('visits')})
+                                      'visits': mv.get('visits'),
+                                      'simsDone': mv.get('simsDone')})
                 break
             fx, fy = mv['fromPx']; tx, ty = mv['toPx']
             cb = dict(st['counts'])
@@ -282,7 +299,7 @@ def play_one_game(args, gi):
             move_rec = {'from': mv['from'], 'to': mv['to'],
                         'winexp': mv.get('winexp'),
                         'visits': mv.get('visits'), 'moveVisits': mv.get('moveVisits'),
-                        'counts_before': cb}
+                        'simsDone': mv.get('simsDone'), 'counts_before': cb}
             if tap_retries:
                 move_rec['tapRetries'] = tap_retries
             if st2 == 'over':
@@ -386,10 +403,22 @@ def main():
     ap.add_argument('--max-attacks', type=int, default=14)
     ap.add_argument('--out', default=os.path.join(RUNS, 'series_b8k.jsonl'))
     ap.add_argument('--start-index', type=int, default=0)
+    # adaptive compute: --sims is the floor; --max-sims the ceiling. Since the phone
+    # (taps + OCR) dominates wall-clock, search compute is ~free live, so grind hard
+    # on contested moves. deep-think grinds toward the ceiling while the leading root
+    # move stays contested (b1 < ratio*b2) AND red win-prob < --deepthink-behind.
+    ap.add_argument('--max-sims', type=int, default=0,
+                    help='0 = fixed budget (=sims); >sims = adaptive ceiling')
+    ap.add_argument('--deepthink-ratio', type=float, default=0.0,
+                    help='0 = off; >0 grinds while leading move is contested (b1<ratio*b2)')
+    ap.add_argument('--deepthink-minvis', type=int, default=3000)
+    ap.add_argument('--deepthink-behind', type=float, default=2.0,
+                    help='grind only when leader win-prob < this (2.0 = behind-gate off)')
     args = ap.parse_args()
 
     import sys
     sys.path.insert(0, os.path.dirname(HERE))
+    import fastnw   # for battle-model readout (hybrid via NW_HYBRID_BATTLE=1 env)
     config = {
         'engine': 'fast_c_uct', 'neural_net': False, 'sims': args.sims,
         'wset': args.wset, 'ranked_weights': 'C1 (baked into fast_engine.c)',
@@ -402,6 +431,15 @@ def main():
         'engine_build': 'fast_engine.so (-O3 -ffast-math)', 'role': 'red',
         'winexp_def': 'backed-up Q of the chosen root child = RED win-prob estimate',
         'seed_exploitation': False, 'never_surrender': True,
+        'battle_model': 'hybrid_loop_hinge_remnant' if fastnw.hybrid_battle_on()
+                        else 'closed_form_singleshot',
+        'adaptive_compute': {
+            'floor_sims': args.sims,
+            'ceiling_sims': args.max_sims if args.max_sims > args.sims else args.sims,
+            'deepthink_ratio': args.deepthink_ratio,
+            'deepthink_minvis': args.deepthink_minvis,
+            'deepthink_behind': args.deepthink_behind,
+        },
     }
 
     print(f'=== SERIES: {args.games} games, pure C-UCT sims={args.sims} '

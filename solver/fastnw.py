@@ -55,6 +55,33 @@ _lib.ext_check_winner.argtypes = [_i32p]
 _lib.ext_check_winner.restype = ctypes.c_int
 _lib.uct_set_value_stop.argtypes = [ctypes.c_double, ctypes.c_double,
                                     ctypes.c_double, ctypes.c_int]
+_lib.uct_set_deepthink.argtypes = [ctypes.c_double, ctypes.c_int, ctypes.c_double]
+_lib.uct_sims_done.restype = ctypes.c_int
+_lib.use_hybrid_battle.argtypes = [ctypes.c_int]
+_lib.get_hybrid_battle.restype = ctypes.c_int
+
+
+def use_hybrid_battle(on=True):
+    """Toggle the OPTIONAL 'hybrid loop + hinge remnant' battle model (OFF by default;
+    the shipped closed-form single-shot + survivor planes otherwise). The hybrid model
+    resolves each fight as single-casualty proportional attrition (outcome + occupier
+    emerge) with a hinge repel remnant — the historically-plausible original iOS loop
+    (see solver/ITERATED_BATTLE_MODELS.md, model A). Affects the search's rollout world."""
+    _lib.use_hybrid_battle(1 if on else 0)
+
+
+def hybrid_battle_on():
+    return bool(_lib.get_hybrid_battle())
+
+
+# opt-in via env so offline eval (par_eval/fmcts) and the live driver both pick it up
+if os.environ.get('NW_HYBRID_BATTLE') == '1':
+    use_hybrid_battle(True)
+
+
+def sims_done():
+    """Sims actually spent by the most recent uct_search (for adaptive accounting)."""
+    return int(_lib.uct_sims_done())
 
 
 def set_value_stop(lo=-1.0, hi=2.0, gap=2.0, min_vis=1 << 30):
@@ -62,6 +89,16 @@ def set_value_stop(lo=-1.0, hi=2.0, gap=2.0, min_vis=1 << 30):
     Settle once the leading move has >= min_vis visits AND its RED win-prob is
     decisive (<= lo or >= hi) or beats the runner-up by >= gap."""
     _lib.uct_set_value_stop(float(lo), float(hi), float(gap), int(min_vis))
+
+
+def set_deepthink(ratio=0.0, min_vis=1 << 30, behind=2.0):
+    """Enable/configure the 'deep-think' early stop (default = OFF). Use with
+    uct_search(sims=floor, max_sims=BIG ceiling): keep searching toward the ceiling
+    ONLY while the leading root move is contested (b1 < ratio*b2) AND red is behind
+    (leader win-prob < `behind`); otherwise stop at the floor (cheap). So compute is
+    spent on comeback positions (contested + behind) and nowhere else. behind=2.0
+    disables the behind-gate (pure move-dominance). ratio=0 disables entirely."""
+    _lib.uct_set_deepthink(float(ratio), int(min_vis), float(behind))
 
 
 def _p(a):

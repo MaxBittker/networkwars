@@ -51,6 +51,16 @@ def main():
     ap.add_argument('--policy', type=int, default=1, help='accepted for back-compat; ignored')
     ap.add_argument('--turns', type=int, default=1)
     ap.add_argument('--sim-seed', type=int, default=0x12345678)
+    # adaptive compute: --sims is the floor; --max-sims the ceiling. deep-think grinds
+    # toward the ceiling only while the leading root move stays contested (b1 <
+    # ratio*b2) AND red is behind (leader win-prob < --deepthink-behind; 2.0 = off).
+    ap.add_argument('--max-sims', type=int, default=0,
+                    help='0 = fixed budget (=sims); >sims = adaptive ceiling')
+    ap.add_argument('--deepthink-ratio', type=float, default=0.0,
+                    help='0 = off; >0 grinds while b1 < ratio*b2 (move contested)')
+    ap.add_argument('--deepthink-minvis', type=int, default=3000)
+    ap.add_argument('--deepthink-behind', type=float, default=2.0,
+                    help='grind only when leader win-prob < this (2.0 = behind-gate off)')
     args = ap.parse_args()
 
     js = json.load(open(args.state))
@@ -60,11 +70,20 @@ def main():
     # pure C-UCT with the baked-in ranked C1 rollout policy (no neural net)
     fastnw.set_topology(state)
     fastnw.use_sim(args.sim_seed)        # private seed-free sim rng (no seed exploitation)
+    # adaptive compute: enable deep-think early stop + set the ceiling
+    if args.deepthink_ratio and args.deepthink_ratio > 0:
+        fastnw.set_deepthink(args.deepthink_ratio, args.deepthink_minvis,
+                             args.deepthink_behind)
+    else:
+        fastnw.set_deepthink(0.0, 1 << 30, 2.0)
+    max_sims = args.max_sims if args.max_sims and args.max_sims > args.sims else args.sims
     owner, strength = fastnw.board_arrays(state)
     acts, visits, q = fastnw.uct_search(owner, strength, args.turns, args.sims,
-                                        args.c_puct, args.nroll, return_q=True)
+                                        args.c_puct, args.nroll, return_q=True,
+                                        max_sims=max_sims)
+    sims_spent = fastnw.sims_done()      # actual sims (adaptive: <= max_sims)
     if len(acts) == 0:
-        print(json.dumps({'action': 'stop', 'winexp': None}))
+        print(json.dumps({'action': 'stop', 'winexp': None, 'simsDone': sims_spent}))
         return
     best = int(np.argmax(visits))
     action = int(acts[best])
@@ -96,13 +115,14 @@ def main():
 
     if action == -1:                     # END_TURN won the search
         print(json.dumps({'action': 'stop', 'winexp': winexp,
-                          'visits': tv, 'top': top}))
+                          'visits': tv, 'simsDone': sims_spent, 'top': top}))
         return
     frm, to = action >> 8, action & 0xFF
     print(json.dumps({
         'action': 'attack', 'from': frm, 'to': to,
         'fromPx': px[frm], 'toPx': px[to],
-        'winexp': winexp, 'visits': tv, 'moveVisits': int(visits[best]), 'top': top,
+        'winexp': winexp, 'visits': tv, 'moveVisits': int(visits[best]),
+        'simsDone': sims_spent, 'top': top,
     }))
 
 
