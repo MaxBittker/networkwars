@@ -3,6 +3,15 @@
 _Companion to `BATTLE_FUNCTION.md`. Implementation: `iterated_battle.py`.
 Figures: `iphone_data/make_battle_pdf.py` → `battle_model_comparison.pdf`._
 
+> **2026-07-02 update: superseded by ground truth.** The real battle was
+> decompiled from the shipped IPA (see `REAL_BATTLE_DECOMPILED.md`): iterated
+> **fair-coin** attrition — two guarded attacker pre-fires, then a symmetric
+> loop where each side's coin can drop one enemy troop, keep-1, survivors
+> emergent, zero parameters. So the original IS a single attrition loop doing
+> both outcome and survivors — but an *inhomogeneous, guarded* one (pre-fires +
+> per-round two-coin exchange), outside the homogeneous single-casualty
+> families analyzed below. This document stands as the record of the hunt.
+
 ## Question
 
 The shipped engine resolves a battle with a **closed form** — one Bernoulli for the

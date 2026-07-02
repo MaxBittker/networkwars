@@ -8,6 +8,18 @@ __pycache__/
 # Generated/regenerable artifacts (fitted weights, logs)
 solver/*.npy
 solver/*.log
+solver/iphone_data/*.log
+
+# IPA reverse-engineering workspace — contains the copyrighted iOS app binary
+# (networkwars.ipa + extracted/decompiled payload), so it stays local-only.
+# The recovered mechanics are committed as solver/REAL_BATTLE_DECOMPILED.md
+# and solver/MAP_DEAL_DECOMPILED.md.
+ipa_decompile/
+
+# hard-set A/B arm outputs (regenerable: iphone_data/hard_ab.py --name <arm>);
+# hard_set.jsonl itself is the scored benchmark and IS committed
+solver/iphone_data/hard_*.jsonl
+!solver/iphone_data/hard_set.jsonl
 
 # iPhone-capture artifacts — screenshots/captures are debug output;
 # ocr/tap/wininfo are binaries built from the *.swift sources via build.sh

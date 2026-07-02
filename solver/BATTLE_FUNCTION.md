@@ -155,6 +155,15 @@ mechanic against all 3,187 battles:
 3. **Survivor stochasticity.** Is the capture-remnant spread a real attrition distribution or
    OCR noise? Distinguishing them needs repeated identical (a,d) matchups, which red rarely
    produces.
+4. **What is the REAL source code?** ANSWERED 2026-07-02: we recovered the
+   shipped app's own battle from the IPA (Mono-AOT ARM64, verified bit-exact
+   under emulation) — **iterated fair-coin attrition**: two guarded attacker
+   pre-fires, then a symmetric loop where each side's fair coin can drop one
+   enemy troop, until `d==0` or `a==1`; keep-1; survivors emergent; zero
+   parameters. See `REAL_BATTLE_DECOMPILED.md`. That mechanic is now the
+   shipped engine, superseding every fitted model in this document — this file
+   stands as the record of the statistical hunt (the fits were good surrogates,
+   but the loop is ground truth).
 
 ---
 
