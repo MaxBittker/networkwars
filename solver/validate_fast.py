@@ -14,18 +14,17 @@ import fastnw
 # Frozen full-game outcomes (deterministic policies). Regenerate intentionally if
 # the engine is meant to change; an unexpected diff here means a behavior drift.
 GOLDEN = {
-    # Re-frozen 2026-06-30 for the BETA-BINOMIAL occupier (occ = 1 + BetaBinom(a-2,
-    # p_occ, rho=0.21) via Pólya urn; remnant stays Binom(d, p_rem); means = the §7
-    # occupier plane / remnant hinge; BATTLE_FUNCTION.md §8) on top of the single-shot
-    # power-ratio battle (G=3.40, C=1.26) + attacker-strength-first bot. The urn uses
-    # the same n RNG draws as the binomial but different thresholds, so survivor values
-    # shifted the boards vs the 06-29 freeze; still fully reproducible per seed.
-    (1, 'safe_expand'): ('purple', 15), (1, 'random_all'): ('purple', 7),
-    (2, 'safe_expand'): ('blue', 9),    (2, 'random_all'): ('green', 5),
-    (3, 'safe_expand'): ('green', 7),   (3, 'random_all'): ('green', 6),
-    (7, 'safe_expand'): ('yellow', 6),  (7, 'random_all'): ('yellow', 6),
-    (42, 'safe_expand'): ('purple', 13), (42, 'random_all'): ('purple', 9),
-    (100, 'safe_expand'): ('purple', 5), (100, 'random_all'): ('red', 9),
+    # Re-frozen 2026-07-02 for the REAL DECOMPILED battle: iterated fair-coin
+    # attrition (two attacker pre-fires + symmetric fair-coin exchange, keep-1;
+    # occupier = surviving a-1, no separate survivor draw). See
+    # REAL_BATTLE_DECOMPILED.md. Per-battle RNG consumption changed (variable # of
+    # coin flips), so the boards shifted vs the 06-30 freeze; still reproducible.
+    (1, 'safe_expand'): ('yellow', 13), (1, 'random_all'): ('purple', 7),
+    (2, 'safe_expand'): ('green', 6),   (2, 'random_all'): ('green', 5),
+    (3, 'safe_expand'): ('purple', 7),  (3, 'random_all'): ('green', 5),
+    (7, 'safe_expand'): ('yellow', 8),  (7, 'random_all'): ('green', 11),
+    (42, 'safe_expand'): ('yellow', 17),(42, 'random_all'): ('blue', 9),
+    (100, 'safe_expand'): ('yellow', 6),(100, 'random_all'): ('purple', 9),
 }
 
 
@@ -74,26 +73,52 @@ def check_invariants(nseeds):
     return fails == 0
 
 
-def mean_occ(a, d):    # E[occupier | capture], clipped to [1, a-1] (BATTLE_FUNCTION §7)
-    return min(a - 1, max(1.0, 0.82 * a - 0.44 * d + 0.10))
+# EXACT reference for the REAL decompiled battle (iterated fair coins, keep-1;
+# see REAL_BATTLE_DECOMPILED.md). No fitted parameters — these are the closed-form
+# DP moments of the actual loop, so the gate checks the engine against ground truth.
+from functools import lru_cache
 
-def mean_rem(a, d):    # E[remnant | repel] — hinge, clipped to [0, d] (BATTLE_FUNCTION §7)
-    return min(float(d), max(0.0, 0.30 + 0.24 * d + 0.42 * max(0, d - a)))
+@lru_cache(None)
+def _cp(a, d):                 # main-loop P(capture) from (a,d)
+    if d <= 0: return 1.0 if a > 1 else 0.0
+    if a <= 1: return 0.0
+    return (_cp(a-1, d-1) + _cp(a, d-1) + _cp(a-1, d)) / 3.0
 
-OCC_RHO = 0.21         # capture-occupier overdispersion (BATTLE_FUNCTION §8)
+@lru_cache(None)
+def _cs(a, d, k):              # main-loop E[occupier^k * 1{capture}] (occupier=final a-1)
+    if d <= 0: return float((a-1) ** k) if a > 1 else 0.0
+    if a <= 1: return 0.0
+    return (_cs(a-1, d-1, k) + _cs(a, d-1, k) + _cs(a-1, d, k)) / 3.0
 
-def var_occ(a, d):     # Var[occupier] — beta-binomial: binomial * (1 + (n-1)*rho)
-    n = a - 2
-    if n <= 0:
-        return 0.0
-    p = min(1.0, max(0.0, (mean_occ(a, d) - 1.0) / n))
-    return n * p * (1 - p) * (1 + (n - 1) * OCC_RHO)
+@lru_cache(None)
+def _rs(a, d, k):             # main-loop E[remnant^k * 1{repel}] (remnant=final d)
+    if d <= 0: return 0.0     # d==0 is a capture (a>1) or (1,0) repel with rem 0
+    if a <= 1: return float(d ** k)
+    return (_rs(a-1, d-1, k) + _rs(a, d-1, k) + _rs(a-1, d, k)) / 3.0
 
-def var_rem(a, d):     # Var[remnant] — plain binomial
-    if d <= 0:
-        return 0.0
-    p = min(1.0, max(0.0, mean_rem(a, d) / d))
-    return d * p * (1 - p)
+def _prefire(a, d, fn):       # fold the two guarded attacker pre-fires on d (a fixed)
+    tot = 0.0
+    for c1 in (0, 1):
+        for c2 in (0, 1):
+            dd = d
+            if dd > 0 and c1: dd -= 1
+            if dd > 0 and c2: dd -= 1
+            tot += 0.25 * fn(a, dd)
+    return tot
+
+def pcap(a, d):     return _prefire(a, d, _cp)                     # P(capture)
+def mean_occ(a, d):                                               # E[occupier | capture]
+    p = pcap(a, d);  return _prefire(a, d, lambda A, D: _cs(A, D, 1)) / p if p > 0 else 0.0
+def mean_rem(a, d):                                              # E[remnant | repel]
+    pr = 1.0 - pcap(a, d);  return _prefire(a, d, lambda A, D: _rs(A, D, 1)) / pr if pr > 0 else 0.0
+def var_occ(a, d):
+    p = pcap(a, d)
+    if p <= 0: return 0.0
+    m = mean_occ(a, d);  return max(0.0, _prefire(a, d, lambda A, D: _cs(A, D, 2)) / p - m * m)
+def var_rem(a, d):
+    pr = 1.0 - pcap(a, d)
+    if pr <= 0: return 0.0
+    m = mean_rem(a, d);  return max(0.0, _prefire(a, d, lambda A, D: _rs(A, D, 2)) / pr - m * m)
 
 def check_battle_invariants():
     """Survivors are drawn around the fitted mean (occupier = beta-binomial with
@@ -132,9 +157,22 @@ def check_battle_invariants():
             fails += 1
             print(f"  {label}: var {ev:.3f} vs {target:.3f}  (n={len(vals)})")
 
+    def cap_ok(ncap, ntot, a0, d0):
+        """empirical capture rate vs the exact DP P(capture), SE-aware."""
+        nonlocal fails
+        if ntot < 150:
+            return
+        emp = ncap / ntot
+        target = pcap(a0, d0)
+        se = (max(target * (1 - target), 1e-6) / ntot) ** 0.5
+        if abs(emp - target) > max(0.03, 4 * se):
+            fails += 1
+            print(f"  cap rate a0={a0} d0={d0}: {emp:.3f} vs {target:.3f}  (n={ntot})")
+
     for a0 in range(2, 12):
         for d0 in range(1, 12):
             occ, rem = [], []
+            ncap = 0
             for k in range(TRIALS):
                 owner = np.array([0, 1], dtype=np.int32)
                 strength = np.array([a0, d0], dtype=np.int32)
@@ -142,6 +180,7 @@ def check_battle_invariants():
                 _, meta = fastnw.attack_logged(owner, strength, 0, 1)
                 bad = (strength[0] != 1)
                 if meta['captured']:
+                    ncap += 1
                     bad |= (owner[1] != 0 or not (1 <= strength[1] <= a0 - 1))
                     occ.append(int(strength[1]))
                 else:
@@ -152,6 +191,7 @@ def check_battle_invariants():
                     if fails <= 5:
                         print(f"  battle a0={a0} d0={d0}: cap={meta['captured']} "
                               f"-> own={list(owner)} str={list(strength)}")
+            cap_ok(ncap, TRIALS, a0, d0)
             mean_ok(occ, mean_occ(a0, d0), f"occ mean a0={a0} d0={d0}")
             mean_ok(rem, mean_rem(a0, d0), f"rem mean a0={a0} d0={d0}")
             var_ok(occ, var_occ(a0, d0), f"occ var  a0={a0} d0={d0}")

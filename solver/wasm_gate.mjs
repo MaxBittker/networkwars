@@ -57,17 +57,32 @@ for (let seed = 1; seed <= N_SEEDS; seed++) {
 console.error(`invariants: ${N_SEEDS - invFails}/${N_SEEDS} seeds clean`);
 console.error(`determinism: ${N_SEEDS - detFails}/${N_SEEDS} seeds reproducible`);
 
-// ---- battle postconditions: survivors are drawn around the fitted mean (occupier
-// = beta-binomial with overdispersion rho, remnant = binomial; BATTLE_FUNCTION.md §8).
-// Per (a,d) assert: source always gutted to 1; capture => occupier in [1,a-1]; repel
-// => remnant in [0,d]; empirical MEAN tracks meanOcc/meanRem; empirical VARIANCE
-// tracks the (beta-)binomial var (distinguishes the overdispersed occupier from a
-// plain binomial). Mirrors validate_fast.check_battle_invariants.
-const OCC_RHO = 0.21;
-const meanOcc = (a, d) => Math.min(a - 1, Math.max(1.0, 0.82 * a - 0.44 * d + 0.10));
-const meanRem = (a, d) => Math.min(d, Math.max(0.0, 0.30 + 0.24 * d + 0.42 * Math.max(0, d - a)));
-const varOcc = (a, d) => { const n = a - 2; if (n <= 0) return 0; const p = Math.min(1, Math.max(0, (meanOcc(a, d) - 1) / n)); return n * p * (1 - p) * (1 + (n - 1) * OCC_RHO); };
-const varRem = (a, d) => { if (d <= 0) return 0; const p = Math.min(1, Math.max(0, meanRem(a, d) / d)); return d * p * (1 - p); };
+// ---- battle postconditions: the REAL decompiled battle (iterated fair-coin
+// attrition, keep-1; REAL_BATTLE_DECOMPILED.md). No fitted parameters — the
+// reference moments are the exact closed-form DP of the actual loop. Per (a,d)
+// assert: source always gutted to 1; capture => occupier in [1,a-1]; repel =>
+// remnant in [0,d]; empirical capture-rate / MEAN / VARIANCE track the DP.
+// Mirrors validate_fast.check_battle_invariants.
+const _memo = new Map();
+const _dp = (fn, a, d, k) => {   // memoised main-loop DP (no pre-fires)
+  const key = fn + ':' + a + ':' + d + ':' + k;
+  if (_memo.has(key)) return _memo.get(key);
+  let v;
+  if (fn === 'cp')      v = d <= 0 ? (a > 1 ? 1 : 0) : (a <= 1 ? 0 : (_dp('cp',a-1,d-1,k)+_dp('cp',a,d-1,k)+_dp('cp',a-1,d,k))/3);
+  else if (fn === 'cs') v = d <= 0 ? (a > 1 ? (a-1)**k : 0) : (a <= 1 ? 0 : (_dp('cs',a-1,d-1,k)+_dp('cs',a,d-1,k)+_dp('cs',a-1,d,k))/3);
+  else /* rs */         v = d <= 0 ? 0 : (a <= 1 ? d**k : (_dp('rs',a-1,d-1,k)+_dp('rs',a,d-1,k)+_dp('rs',a-1,d,k))/3);
+  _memo.set(key, v); return v;
+};
+const _pre = (a, d, fn, k) => {  // fold the two guarded attacker pre-fires on d
+  let t = 0;
+  for (const c1 of [0,1]) for (const c2 of [0,1]) { let dd = d; if (dd>0&&c1) dd--; if (dd>0&&c2) dd--; t += 0.25*_dp(fn,a,dd,k); }
+  return t;
+};
+const pCap    = (a, d) => _pre(a, d, 'cp', 0);
+const meanOcc = (a, d) => { const p = pCap(a,d); return p > 0 ? _pre(a,d,'cs',1)/p : 0; };
+const meanRem = (a, d) => { const q = 1 - pCap(a,d); return q > 0 ? _pre(a,d,'rs',1)/q : 0; };
+const varOcc  = (a, d) => { const p = pCap(a,d); if (p<=0) return 0; const m = meanOcc(a,d); return Math.max(0, _pre(a,d,'cs',2)/p - m*m); };
+const varRem  = (a, d) => { const q = 1 - pCap(a,d); if (q<=0) return 0; const m = meanRem(a,d); return Math.max(0, _pre(a,d,'rs',2)/q - m*m); };
 E.setTopologyCsr(2, [[1], [0]]);
 const BT = 4000;
 let bFails = 0;
@@ -88,18 +103,28 @@ const varOk = (vals, target, label) => {             // relative + SE-aware tole
     bFails++; console.error(`  ${label}: var ${ev.toFixed(3)} vs ${target.toFixed(3)} (n=${vals.length})`);
   }
 };
+const capOk = (ncap, ntot, a0, d0) => {              // empirical cap-rate vs exact DP
+  if (ntot < 150) return;
+  const emp = ncap / ntot, t = pCap(a0, d0);
+  const se = Math.sqrt(Math.max(t * (1 - t), 1e-6) / ntot);
+  if (Math.abs(emp - t) > Math.max(0.03, 4 * se)) {
+    bFails++; console.error(`  cap rate a0=${a0} d0=${d0}: ${emp.toFixed(3)} vs ${t.toFixed(3)} (n=${ntot})`);
+  }
+};
 for (let a0 = 2; a0 <= 11; a0++) for (let d0 = 1; d0 <= 11; d0++) {
   const occ = [], rem = [];
+  let ncap = 0;
   for (let k = 0; k < BT; k++) {
     const owner = Int32Array.from([0, 1]);
     const strength = Int32Array.from([a0, d0]);
     E.useSim(0x1234 + a0 * 131 + d0 * 7 + k);
     const { meta } = E.attackLogged(owner, strength, 0, 1);
     let bad = strength[0] !== 1;
-    if (meta.captured) { bad ||= owner[1] !== 0 || !(strength[1] >= 1 && strength[1] <= a0 - 1); occ.push(strength[1]); }
+    if (meta.captured) { ncap++; bad ||= owner[1] !== 0 || !(strength[1] >= 1 && strength[1] <= a0 - 1); occ.push(strength[1]); }
     else { bad ||= owner[1] !== 1 || !(strength[1] >= 0 && strength[1] <= d0); rem.push(strength[1]); }
     if (bad) { bFails++; if (bFails <= 5) console.error(`  battle a0=${a0} d0=${d0}: cap=${meta.captured} own=${[...owner]} str=${[...strength]}`); }
   }
+  capOk(ncap, BT, a0, d0);
   meanOk(occ, meanOcc(a0, d0), `occ mean a0=${a0} d0=${d0}`);
   meanOk(rem, meanRem(a0, d0), `rem mean a0=${a0} d0=${d0}`);
   varOk(occ, varOcc(a0, d0), `occ var  a0=${a0} d0=${d0}`);

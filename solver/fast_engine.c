@@ -26,64 +26,18 @@
 #define NF 5            /* factions: 0=red, 1..4 bots */
 #define WIN_NODES 24
 #define MAX_TURNS 300
-/* SINGLE-SHOT power-ratio (fitted iOS) battle — the simplest model that best
- * explains the live capture data. One Bernoulli decides capture vs repel:
- *   P(capture) = a^PR_G / (a^PR_G + PR_C * d^PR_G)
- * Survivors are BINOMIAL around the fitted conditional mean (see §8 below):
- *   capture: occupier = 1 + Binomial(a-2, p_occ), source = 1
- *   repel:   source   = 1,           defender remnant = Binomial(d, p_rem)
- * MLE on 7,222 live red-attacker battles: G=3.40, C=1.26 (AIC 5941 vs the old
- * iterated k=0.62 model's 6077; nails the contested +1 margin 76% vs 74% obs).
- * See solver/BATTLE_FUNCTION.md / iphone_data/refit_emergent.py. */
-#define PR_G  3.40
-#define PR_C  1.26
-/* capture-occupier OVERDISPERSION (BATTLE_FUNCTION.md §8). The attacker survivor
- * is more spread than a plain Binomial (17/28 cells overdispersed); a beta-binomial
- * with one intra-class-correlation rho fits it (MLE rho=0.21 over 6,107 captures,
- * ΔlogL +444, per-cell TVD 0.138->0.110). rho=0 would recover the Binomial. The
- * defender remnant needs no overdispersion (it is already ~Binomial). */
-#define OCC_RHO 0.21
-/* pow(x, PR_G) lookup for the rollout-hot battle math: x is an integer strength,
- * so cache x^PR_G for x in [0,PR_TBL). The table is filled from the SAME pow()
- * call, so pr_powg(x) == pow((double)x, PR_G) bit-for-bit on each arch — battle
- * outcomes (hence golden seeds + WASM parity) are unchanged; this only removes a
- * pow() per battle from the inner rollout loop. Strengths >= PR_TBL fall back. */
-#define PR_TBL 1024
-static double PR_POW[PR_TBL];
-static int    PR_POW_READY = 0;
-static inline double pr_powg(int x) {
-    if (__builtin_expect(!PR_POW_READY, 0)) {
-        for (int i = 0; i < PR_TBL; i++) PR_POW[i] = pow((double)i, PR_G);
-        PR_POW_READY = 1;
-    }
-    return (unsigned)x < (unsigned)PR_TBL ? PR_POW[x] : pow((double)x, PR_G);
-}
-static inline double pr_cap(int a, int d) {
-    if (a < 1) return 0.0;
-    if (d < 1) return 1.0;
-    double ag = pr_powg(a), dg = pr_powg(d);
-    return ag / (ag + PR_C * dg);
-}
-/* FITTED survivor MEANS — conditional-mean troops remaining after a resolved
- * battle (re-fit on 9,445 live battles; see BATTLE_FUNCTION.md §7). The actual
- * survivor is drawn Binomial around these means (draw_occ/draw_defrem below);
- * because each troop survives independently, E[survivor] == these curves exactly,
- * so the search value table (CAPES) and aggregate win-rate are set by the mean
- * while the spread is emergent. Clipped to the feasible range (occupier in
- * [1,a-1] since the source always keeps 1; remnant in [0,d]). */
-static inline double mean_occ(int a, int d) {    /* E[occupier | capture] */
-    double m = 0.82 * a - 0.44 * d + 0.10;
-    double hi = (double)(a - 1);                 /* a==2 -> hi==1 -> occ==1 */
-    if (m < 1.0) m = 1.0;
-    if (m > hi)  m = hi;
-    return m;
-}
-static inline double mean_rem(int a, int d) {    /* E[remnant | repel] (hinge) */
-    double m = 0.30 + 0.24 * d + 0.42 * (d > a ? (d - a) : 0);
-    if (m < 0.0)        m = 0.0;
-    if (m > (double)d)  m = (double)d;
-    return m;
-}
+/* REAL battle — decompiled bit-exact from the shipped iOS app (Xamarin/Mono
+ * ARM64; see solver/REAL_BATTLE_DECOMPILED.md and ipa_decompile/). It is ITERATED
+ * FAIR-COIN ATTRITION with NO fitted parameters and NO separate survivor draw:
+ *   - the atomic op is killflip(team) = teamRandom.Next(2) = a FAIR coin (p=0.5);
+ *   - two guarded attacker "pre-fires" (each: coin -> defender loses one),
+ *   - then a symmetric loop: every round the attacker's coin can drop a defender
+ *     and the defender's coin can drop an attacker, until d==0 or a==1;
+ *   - CAPTURE iff a>1 && d==0: occupier = a-1, source keeps exactly 1;
+ *     REPEL otherwise: source ground down to 1, defender keeps its remnant d.
+ * Survivors are whatever the coin war leaves — the attrition loop *is* the
+ * survivor distribution (no beta-binomial). resolve_battle() below is the exact
+ * loop; the search's CAPP/CAPES tables are the exact DP of that loop. */
 #define A_END (-1)          /* action sentinel: distinct from any frm<<8|to (>=0) */
 #define MAXCHILD 512        /* max legal RED actions at one node */
 #define UCT_CHECK_EVERY 256 /* adaptive-stop: re-check root visit margin this often */
@@ -344,34 +298,52 @@ static int check_winner(const int *owner) {
 }
 
 /* ---- exact battle-outcome tables (variance-free policy estimates) ----
- * Models resolve_battle exactly: from (a,d) with a>1,d>0 go to (a,d-1) w.p. p,
- * (a-1,d) w.p. q. Capture iff d reaches 0. DP recurrences:
- *   P(a,d)=p*P(a,d-1)+q*P(a-1,d), P(a,0)=1 (a>=1), P(1,d>=1)=0
- *   S(a,d)=p*S(a,d-1)+q*S(a-1,d), S(a,0)=a-1, S(1,d>=1)=0   (S = E[toStr * 1cap])
- * capES = S/P (expected attacker strength after a capture). */
+ * The EXACT DP of resolve_battle's iterated fair-coin loop.
+ * Main-loop tables (no pre-fires), for a>1,d>0:
+ *   CP[a][d] = P(capture)          = ( CP[a-1][d-1]+CP[a][d-1]+CP[a-1][d] ) / 3
+ *   CS[a][d] = E[occupier*1{cap}]  = ( CS[a-1][d-1]+CS[a][d-1]+CS[a-1][d] ) / 3
+ * (the /3 conditions the two coins on at-least-one-hit; the no-hit case just
+ *  repeats the state). Boundaries: CP[a][0]=CS bases at (a>1); a==1 -> 0.
+ * The occupier is the terminal a-1, so CS bases CS[a][0]=a-1.
+ * CAPP/CAPES then fold in the two guarded attacker pre-fires on d (a fixed).
+ * capES = CAPES/CAPP (expected occupier strength after a capture). */
 #define MAXS 160
 static double CAPP[MAXS][MAXS];
 static double CAPES[MAXS][MAXS];
 static int CAP_READY = 0;
 
 static void build_cap_tables(void) {
-    if (CAP_READY) return;   /* single-shot closed form; build once */
+    if (CAP_READY) return;
+    static double CP[MAXS][MAXS], CS[MAXS][MAXS];
     for (int a = 0; a < MAXS; a++) {
-        CAPP[a][0] = (a >= 1) ? 1.0 : 0.0;
-        CAPES[a][0] = (a >= 1) ? (double)(a - 1) : 0.0;
+        CP[a][0] = (a > 1) ? 1.0 : 0.0;
+        CS[a][0] = (a > 1) ? (double)(a - 1) : 0.0;
     }
     for (int d = 1; d < MAXS; d++) {
-        CAPP[0][d] = 0.0; CAPES[0][d] = 0.0;
-        CAPP[1][d] = 0.0; CAPES[1][d] = 0.0;
+        CP[0][d] = CS[0][d] = 0.0;
+        CP[1][d] = CS[1][d] = 0.0;
     }
-    for (int a = 2; a < MAXS; a++) {
+    for (int a = 2; a < MAXS; a++)
         for (int d = 1; d < MAXS; d++) {
-            CAPP[a][d]  = pr_cap(a, d);
-            /* expected occupier strength after a capture = fitted mean curve;
-             * CAPES holds P*E[str] so exp_cap_strength returns it directly. */
-            CAPES[a][d] = CAPP[a][d] * mean_occ(a, d);
+            CP[a][d] = (CP[a-1][d-1] + CP[a][d-1] + CP[a-1][d]) / 3.0;
+            CS[a][d] = (CS[a-1][d-1] + CS[a][d-1] + CS[a-1][d]) / 3.0;
         }
-    }
+    /* fold in the two guarded attacker pre-fires (each: coin drops d if d>0) */
+    for (int a = 0; a < MAXS; a++)
+        for (int d = 0; d < MAXS; d++) {
+            if (a <= 1) { CAPP[a][d] = CAPES[a][d] = 0.0; continue; }
+            double pp = 0.0, ps = 0.0;
+            for (int c1 = 0; c1 < 2; c1++)
+                for (int c2 = 0; c2 < 2; c2++) {
+                    int dd = d;
+                    if (dd > 0 && c1) dd--;
+                    if (dd > 0 && c2) dd--;
+                    pp += 0.25 * CP[a][dd];
+                    ps += 0.25 * CS[a][dd];
+                }
+            CAPP[a][d] = pp;
+            CAPES[a][d] = ps;   /* already P*E[occupier]: matches exp_cap_strength */
+        }
     CAP_READY = 1;
 }
 
@@ -508,86 +480,31 @@ static int ranked_best_move(const int *owner, const int *strength) {
     return best_act;
 }
 
-/* survivor draws — each troop survives independently, so the count is (beta-)
- * Binomial with mean set to the fitted curve. Sampled with n RNG()<p draws off the
- * active stream (mb32 real / sm_rand rollout): deterministic per seed, integer-only,
- * no x.5 rounding hazard => WASM-parity-safe. See BATTLE_FUNCTION.md §8. */
-static inline int binomial_draw(int n, double p) {
-    int k = 0;
-    for (int i = 0; i < n; i++) if (RNG() < p) k++;
-    return k;
-}
-/* beta-binomial via a Pólya urn: start with success mass alpha, failure mass beta;
- * each of n draws succeeds w.p. (success mass)/(total) then adds 1 to that mass.
- * E[k]=n*alpha/(alpha+beta) (== the binomial mean), Var inflated by 1+(n-1)*rho.
- * Same n RNG() draws as binomial_draw, so the seeded stream stays aligned. */
-static inline int betabinom_draw(int n, double alpha, double beta) {
-    double s = alpha, f = beta;
-    int k = 0;
-    for (int i = 0; i < n; i++) {
-        if (RNG() < s / (s + f)) { s += 1.0; k++; } else { f += 1.0; }
-    }
-    return k;
-}
-static inline int draw_occ(int a, int d) {        /* occupier on a captured node */
-    if (d <= 0) return a - 1;                     /* no defender -> no losses */
-    int n = a - 2;                                /* support is [1, a-1] */
-    if (n <= 0) return 1;                         /* a==2 -> occupier always 1 */
-    double p = (mean_occ(a, d) - 1.0) / n;
-    if (p < 0) p = 0; else if (p > 1) p = 1;
-    double M = (1.0 - OCC_RHO) / OCC_RHO;         /* beta concentration; rho>0 = overdispersed */
-    return 1 + betabinom_draw(n, p * M, (1.0 - p) * M);
-}
-static inline int draw_defrem(int a, int d) {     /* defender remnant on a repel */
-    if (d <= 0) return 0;                         /* support is [0, d] */
-    double p = mean_rem(a, d) / d;
-    if (p < 0) p = 0; else if (p > 1) p = 1;
-    return binomial_draw(d, p);
-}
+/* Inert shims — the OPTIONAL fitted "hybrid" battle model was removed once we
+ * decompiled the app: the real game IS an iterated fair-coin loop (resolve_battle
+ * below), so there is nothing to toggle. Kept only so fastnw.py's ctypes bindings
+ * still resolve. */
+void use_hybrid_battle(int on) { (void)on; }
+int  get_hybrid_battle(void)  { return 0; }
 
-/* OPTIONAL "hybrid loop + hinge remnant" battle model (ITERATED_BATTLE_MODELS.md
- * model A) — OFF by default so the shipped closed-form gates/golden-seeds hold.
- * Outcome + occupier EMERGE from single-casualty proportional attrition (Lanchester
- * square): each round the attacker wins the exchange w.p. a/(a + HB_TIE*d) and the
- * loser drops one troop, until the attacker is down to 1 (repel) or the defender
- * hits 0 (capture, occupier = a-1). The repel remnant is the one-line HINGE patch
- * max(0, d - (a0-1)) — "the whole assault guts the defender" — which the pure loop
- * can't produce emergently (Theorem 2 in the writeup). HB_TIE=1.07 ~ "defender wins
- * ties". This is the historically-plausible original loop; ~ties the closed form on
- * outcome (dAIC 140) with a tighter occupier and a patched remnant. */
-#define HB_TIE 1.07
-static int HYBRID_BATTLE = 0;
-void use_hybrid_battle(int on) { HYBRID_BATTLE = on; }
-int  get_hybrid_battle(void)  { return HYBRID_BATTLE; }
-
-static void resolve_battle_hybrid(int *owner, int *strength, int frm, int to) {
-    int a0 = strength[frm], a = a0, d = strength[to];
-    while (a > 1 && d > 0) {                 /* proportional single-casualty attrition */
-        if (RNG() < (double)a / ((double)a + HB_TIE * (double)d)) d--;   /* attacker wins exchange */
-        else                                                       a--;   /* attacker loses one */
+/* dice battle, frm attacks to — the REAL decompiled iOS mechanic (fair coins).
+ * Bit-exact to Utils.doAttack/doAttackConsole (see REAL_BATTLE_DECOMPILED.md):
+ * two guarded attacker pre-fires, then a symmetric fair-coin exchange, keep-1. */
+static void resolve_battle(int *owner, int *strength, int frm, int to) {
+    int a = strength[frm], d = strength[to];
+    if (d > 0 && a > 1 && RNG() < 0.5) d--;             /* attacker pre-fire 1 */
+    if (d > 0 && a > 1 && RNG() < 0.5) d--;             /* attacker pre-fire 2 */
+    while (d > 0 && a > 1) {
+        if (RNG() < 0.5) d--;                           /* attacker coin -> defender loses one */
+        if (RNG() < 0.5) a--;                           /* defender coin -> attacker loses one */
     }
-    if (d == 0) {                            /* capture: occupier = a-1 (>=1), source keeps 1 */
+    if (a > 1 && d == 0) {           /* capture: occupier = a-1, source keeps 1 */
         owner[to] = owner[frm];
         strength[to] = a - 1;
         strength[frm] = 1;
-    } else {                                 /* repel: hinge remnant, gutted by the whole assault */
-        int rem = d - (a0 - 1);
+    } else {                         /* repel: source ground to 1, defender keeps remnant */
         strength[frm] = 1;
-        strength[to] = rem < 0 ? 0 : rem;
-    }
-}
-
-/* dice battle, frm attacks to — fitted iOS power-ratio mechanic */
-static void resolve_battle(int *owner, int *strength, int frm, int to) {
-    if (HYBRID_BATTLE) { resolve_battle_hybrid(owner, strength, frm, to); return; }
-    int a = strength[frm], d = strength[to];
-    if (RNG() < pr_cap(a, d)) {       /* capture: binomial occupier */
-        owner[to] = owner[frm];
-        strength[to] = draw_occ(a, d);
-        strength[frm] = 1;
-    } else {                          /* repel: binomial defender remnant */
-        strength[frm] = 1;
-        strength[to] = draw_defrem(a, d);
+        strength[to] = d;
     }
 }
 
@@ -598,28 +515,24 @@ static void resolve_battle(int *owner, int *strength, int frm, int to) {
 void resolve_battle_logged(int *owner, int *strength, int frm, int to,
                            int *out_flips, int *out_len, int *out_meta) {
     int a0 = strength[frm], d0 = strength[to];
-    int captured = (RNG() < pr_cap(a0, d0)) ? 1 : 0;
-    int def_loss, atk_loss;
+    int a = a0, d = d0, nf = 0;
+    /* the TRUE per-round loss sequence (each real coin that lands a hit):
+     * 1 = defender lost a unit, 0 = attacker lost a unit. */
+    if (d > 0 && a > 1 && RNG() < 0.5) { d--; if (nf < 2 * MAXS) out_flips[nf++] = 1; }
+    if (d > 0 && a > 1 && RNG() < 0.5) { d--; if (nf < 2 * MAXS) out_flips[nf++] = 1; }
+    while (d > 0 && a > 1) {
+        if (RNG() < 0.5) { d--; if (nf < 2 * MAXS) out_flips[nf++] = 1; }
+        if (RNG() < 0.5) { a--; if (nf < 2 * MAXS) out_flips[nf++] = 0; }
+    }
+    int captured = (a > 1 && d == 0) ? 1 : 0;
     if (captured) {
         owner[to] = owner[frm];
-        int occ = draw_occ(a0, d0);
-        strength[to] = occ;
+        strength[to] = a - 1;
         strength[frm] = 1;
-        def_loss = d0;                 /* defender wiped */
-        atk_loss = a0 - occ - 1;       /* troops lost reaching the node */
-        if (atk_loss < 0) atk_loss = 0;
     } else {
         strength[frm] = 1;
-        int rem = draw_defrem(a0, d0);
-        strength[to] = rem;
-        def_loss = d0 - rem;
-        atk_loss = a0 - 1;             /* source gutted to 1 */
+        strength[to] = d;
     }
-    /* synthesize a flip sequence consistent with the survivors (cosmetic only):
-     * defender losses (1) then attacker losses (0). */
-    int nf = 0;
-    for (int i = 0; i < def_loss && nf < 2 * MAXS; i++) out_flips[nf++] = 1;
-    for (int i = 0; i < atk_loss && nf < 2 * MAXS; i++) out_flips[nf++] = 0;
     *out_len = nf;
     out_meta[0] = captured;
     out_meta[1] = a0;
@@ -804,11 +717,23 @@ typedef struct {
 static MNode  *NODES = NULL;
 static int    *E_ACT = NULL;
 static int    *E_CHILD = NULL;     /* node index of child, -1 = none */
+static int    *E_CHILD2 = NULL;    /* repel-outcome child (chance-split mode), -1 = none */
 static int    *E_N = NULL;
 static double *E_W = NULL;
 static double *E_P = NULL;
 static long NODE_CAP = 0, EDGE_CAP = 0;
 static long next_node = 0, next_edge = 0;
+
+/* Chance-split tree: an attack edge's child is keyed on the SAMPLED battle
+ * outcome (capture -> E_CHILD, repel -> E_CHILD2) instead of funnelling both
+ * outcomes into one node. Edge stats (E_N/E_W, used by PUCT) stay
+ * action-level, so selection still ranks actions by their outcome-averaged
+ * value; only the subtree below is outcome-coherent (the follow-up plan after
+ * a capture doesn't share a node with the plan after a repel). END keeps one
+ * child (the bot-turn chance space is too big to key). Adopted 2026-07-02
+ * after the SEARCH_VARIANTS.md study: non-negative everywhere (~+0.4pt ns),
+ * zero per-sim cost, and merged-outcome trees were shown to carry real bias
+ * (the reuse experiment lost 12pt off that incoherence). */
 
 static int ensure_pools(long ncap, long ecap) {
     if (ncap > NODE_CAP) {
@@ -817,13 +742,14 @@ static int ensure_pools(long ncap, long ecap) {
         if (!NODES) return 0;
     }
     if (ecap > EDGE_CAP) {
-        E_ACT   = (int*)realloc(E_ACT,   ecap * sizeof(int));
-        E_CHILD = (int*)realloc(E_CHILD, ecap * sizeof(int));
-        E_N     = (int*)realloc(E_N,     ecap * sizeof(int));
-        E_W     = (double*)realloc(E_W,  ecap * sizeof(double));
-        E_P     = (double*)realloc(E_P,  ecap * sizeof(double));
+        E_ACT    = (int*)realloc(E_ACT,    ecap * sizeof(int));
+        E_CHILD  = (int*)realloc(E_CHILD,  ecap * sizeof(int));
+        E_CHILD2 = (int*)realloc(E_CHILD2, ecap * sizeof(int));
+        E_N      = (int*)realloc(E_N,      ecap * sizeof(int));
+        E_W      = (double*)realloc(E_W,   ecap * sizeof(double));
+        E_P      = (double*)realloc(E_P,   ecap * sizeof(double));
         EDGE_CAP = ecap;
-        if (!E_ACT || !E_CHILD || !E_N || !E_W || !E_P) return 0;
+        if (!E_ACT || !E_CHILD || !E_CHILD2 || !E_N || !E_W || !E_P) return 0;
     }
     return 1;
 }
@@ -909,6 +835,7 @@ static void uct_sim_once(void) {
                 int off = node->child_off + k;
                 E_ACT[off] = legal[k];
                 E_CHILD[off] = -1;
+                E_CHILD2[off] = -1;
                 E_N[off] = 0;
                 E_W[off] = 0.0;
                 E_P[off] = 1.0 / nc;     /* uniform priors */
@@ -941,21 +868,26 @@ static void uct_sim_once(void) {
         int act = E_ACT[off];
         int winner = 0;
         int term = apply_red(owner, strength, act, &turns, &winner);
+        /* chance-split: an attack's child is keyed on the sampled outcome so the
+         * subtree below is outcome-coherent. Repel leaves `to` enemy-owned. */
+        int *slot = &E_CHILD[off];
+        if (act != A_END && owner[act & 0xFF] != 0)
+            slot = &E_CHILD2[off];
         if (term) {
             leaf_value = winner ? 1.0 : 0.0; leaf_value_set = 1;
-            if (E_CHILD[off] < 0) {
+            if (*slot < 0) {
                 int cn = new_node();
-                if (cn >= 0) { NODES[cn].expanded = 1; NODES[cn].terminal = 1; NODES[cn].v = leaf_value; E_CHILD[off] = cn; }
+                if (cn >= 0) { NODES[cn].expanded = 1; NODES[cn].terminal = 1; NODES[cn].v = leaf_value; *slot = cn; }
             }
             break;
         }
         if (turns > MAX_TURNS) { leaf_value = 0.0; leaf_value_set = 1; break; }
-        if (E_CHILD[off] < 0) {
+        if (*slot < 0) {
             int cn = new_node();
             if (cn < 0) { leaf_value = NODES[cur].v; leaf_value_set = 1; break; }
-            E_CHILD[off] = cn;
+            *slot = cn;
         }
-        cur = E_CHILD[off];
+        cur = *slot;
     }
     /* backup */
     double val = leaf_value_set ? leaf_value : 0.5;
@@ -1028,7 +960,10 @@ static int uct_should_stop(void) {
     return 0;
 }
 
-/* set up pools + root for a fresh search; returns 0 ok, -1 on pool alloc fail. */
+/* set up pools + root for a fresh search; returns 0 ok, -1 on pool alloc fail.
+ * NOTE (2026-07-01 study): never warm-start this search from a previous tree —
+ * within-turn subtree reuse measured −12pt without outcome-keying and ≤0 with
+ * it (see SEARCH_VARIANTS.md). Cold trees are unbiased. */
 static int uct_setup(const int *owner_in, const int *strength_in, int root_turns,
                      int min_sims, int max_sims, double c_puct, int nroll) {
     if (min_sims < 1) min_sims = 1;

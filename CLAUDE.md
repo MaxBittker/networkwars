@@ -37,17 +37,21 @@
   battle invariants over 1000 seeds + frozen golden-seed outcomes) and
   `solver/validate_wasm.py` (WASM board-gen BIT-PARITY vs native over 1000 seeds +
   structural/battle invariants + determinism, via `solver/wasm_gate.mjs` in node).
-- Two things were recalibrated from live play: the deal (every faction totals 20, 4
-  fixed templates) and battle. BATTLE is the **single-shot power-ratio** model
-  (re-fit 2026-06-23 from 7,222 live red battles, see solver/BATTLE_FUNCTION.md §6):
-  one Bernoulli decides the whole fight, `P(capture)=a^3.40/(a^3.40 + 1.26·d^3.40)`
-  (simplest + best-fitting, AIC 5941 vs the old iterated k=0.62 model's 6077). The
-  source node always keeps 1. SURVIVORS are then a **(beta-)binomial draw** around
-  fitted `(a,d)` means (BATTLE_FUNCTION.md §7–8): occupier `1+BetaBinomial(a−2,·)`
-  with overdispersion `ρ=0.21` (mean `clip(0.82a−0.44d+0.10, 1, a−1)`), repel remnant
-  `Binomial(d,·)` (mean `clip(0.30+0.24d+0.42·max(0,d−a), 0, d)`) — matches the live
-  *distribution*, not just the mean; means are unchanged so win-rate is unaffected.
-  All draws are integer/`RNG()<p` for WASM bit-parity.
+- Two things came from the real game: the deal (every faction totals 20, 4 fixed
+  templates) and battle. BATTLE is now the **real decompiled mechanic** —
+  **iterated fair-coin attrition, zero fitted parameters** (2026-07-02; recovered
+  from the shipped iOS IPA, see solver/REAL_BATTLE_DECOMPILED.md and
+  ipa_decompile/). The atomic op is a **fair coin** (`killflip(team) =
+  teamRandom.Next(2)`, p=0.5). `resolve_battle`: two guarded attacker **pre-fires**
+  (coin → defender loses 1), then a symmetric loop (each round the attacker's coin
+  can drop a defender and the defender's coin can drop an attacker) until `d==0` or
+  `a==1`; **capture** iff `a>1 && d==0` → occupier `a-1`, source keeps exactly 1;
+  else **repel** → source ground to 1, defender keeps remnant `d`. Survivors are NOT
+  a separate draw — the attrition loop IS the survivor distribution. Coins are
+  integer `RNG()<0.5` for WASM bit-parity; the search's CAPP/CAPES tables are the
+  exact DP of this loop. (The old fitted single-shot `a^3.40/(a^3.40+1.26 d^3.40)` +
+  beta-binomial survivor model was a good surrogate — it nailed parity ≈0.44 — but
+  is now removed in favor of ground truth.)
 - BOTS: each of the four bots greedily attacks **strongest-own-node first**, then that
   node's **weakest reachable target**, ties broken at random (matches observed iOS
   bot ordering); then reinforces its largest component's border. The RNG is seeded
