@@ -47,7 +47,10 @@ def load_open_boards(files, want_counts=True):
 
 
 def run_chunk(arg):
-    boards, seeds, sims, c_puct = arg
+    # (boards, seeds, sims, c_puct[, min_sims]) — with min_sims the search runs
+    # adaptively min_sims..sims (visit-margin stop, move-identical to fixed sims).
+    boards, seeds, sims, c_puct = arg[:4]
+    min_sims = arg[4] if len(arg) > 4 else sims
     import network_wars as nw
     from network_wars import HUMAN, BOTS, check_winner, counts, reinforce, run_bot_turn, resolve_battle
     import fastnw
@@ -71,7 +74,8 @@ def run_chunk(arg):
                 # search; do the same here to avoid future-dice leakage.
                 fastnw.use_sim(0x12345678 ^ sd)
                 owner, strength = fastnw.board_arrays(st)
-                acts, visits = fastnw.uct_search(owner, strength, turns, sims, c_puct, 1)
+                acts, visits = fastnw.uct_search(owner, strength, turns, min_sims,
+                                                 c_puct, 1, max_sims=sims)
                 action = -1 if len(acts) == 0 else int(acts[int(np.argmax(visits))])
                 if action == -1:
                     reinforce(st, HUMAN)
