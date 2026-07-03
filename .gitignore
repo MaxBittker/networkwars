@@ -34,16 +34,6 @@ solver/iphone_data/wininfo
 # compiled C engine (built from solver/fast_engine.c)
 solver/fast_engine.so
 
-# generated HTML galleries (regenerable from their *.py generators)
-solver/iphone_data/botdiff.html
-solver/iphone_data/ocr_audit.html
-solver/iphone_data/digit_grids.html
-solver/iphone_data/digit_grids_hi.html
-solver/iphone_data/double_digit_ocr.html
-
-# regenerable image crops for the double-digit OCR audit
-solver/iphone_data/dd_crops/
-
 # recorded scratch board snapshots (g* filenames are overwritten across runs)
 solver/iphone_data/g[0-9]*.json
 

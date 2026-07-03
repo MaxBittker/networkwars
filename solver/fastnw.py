@@ -57,26 +57,6 @@ _lib.uct_set_value_stop.argtypes = [ctypes.c_double, ctypes.c_double,
                                     ctypes.c_double, ctypes.c_int]
 _lib.uct_set_deepthink.argtypes = [ctypes.c_double, ctypes.c_int, ctypes.c_double]
 _lib.uct_sims_done.restype = ctypes.c_int
-_lib.use_hybrid_battle.argtypes = [ctypes.c_int]
-_lib.get_hybrid_battle.restype = ctypes.c_int
-
-
-def use_hybrid_battle(on=True):
-    """Toggle the OPTIONAL 'hybrid loop + hinge remnant' battle model (OFF by default;
-    the shipped closed-form single-shot + survivor planes otherwise). The hybrid model
-    resolves each fight as single-casualty proportional attrition (outcome + occupier
-    emerge) with a hinge repel remnant — the historically-plausible original iOS loop
-    (see solver/ITERATED_BATTLE_MODELS.md, model A). Affects the search's rollout world."""
-    _lib.use_hybrid_battle(1 if on else 0)
-
-
-def hybrid_battle_on():
-    return bool(_lib.get_hybrid_battle())
-
-
-# opt-in via env so offline eval (par_eval/fmcts) and the live driver both pick it up
-if os.environ.get('NW_HYBRID_BATTLE') == '1':
-    use_hybrid_battle(True)
 
 
 def sims_done():

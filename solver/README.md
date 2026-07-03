@@ -4,15 +4,15 @@ One implementation of the whole game, in C, with thin clients around it (Python 
 headless eval, WASM for the browser). Everything plays **RED against the four fixed
 deterministic bots** — the only matchup the game has. The player is a **pure C-UCT
 MCTS** (no neural net, no seed/RNG exploitation): offline self-play winrate is **~94%**
-on the iOS-faithful deal, and after the battle/survivor recalibration a 100-game live
-run **matches it** (94.0%) — the old sim-vs-live gap is closed (`IOS_CALIBRATION.md`,
-`BATTLE_FUNCTION.md`).
+on the iOS-faithful deal, and a 100-game live run **matches it** (94.0%) — the old
+sim-vs-live gap closed once the deal and battle were made faithful (the battle is the
+game's own decompiled fair-coin mechanic, `REAL_BATTLE_DECOMPILED.md`).
 
 ## The engine (single source of truth)
 
 - **`fast_engine.c` → `fast_engine.so`** — the only implementation of board
-  generation + the iOS deal, the four bots, the power-ratio battle
-  (`BATTLE_FUNCTION.md`), reinforcement, win check, and the open-loop C-UCT search
+  generation + the iOS deal, the four bots, the decompiled fair-coin battle
+  (`REAL_BATTLE_DECOMPILED.md`), reinforcement, win check, and the open-loop C-UCT search
   (ranked **C1** rollout baked in). mulberry32 for the real seeded game; a private
   splitmix64 for search dice so the search never sees the real game's dice.
 - **`fastnw.py`** — thin ctypes client: marshals `(owner, strength)` int32 arrays

@@ -5,10 +5,11 @@ a thin shim that keeps the convenient Python object interface (State/Node + the
 rule functions) the analysis tooling is written against, delegating every rule to
 the C engine via fastnw. There is no second rules implementation.
 
-The two re-calibrated mechanics (see solver/BATTLE_FUNCTION.md and the memories
-sim-vs-real-deal-imbalance / sim-vs-real-battle-mismatch) live in the C engine:
-the iOS deal (every faction totals 20, 4 fixed templates) and the power-ratio
-battle. The browser talks to this same C engine over HTTP via solver/server.py.
+Both real-app mechanics live in the C engine: the iOS deal (every faction totals
+20, 4 fixed templates; solver/MAP_DEAL_DECOMPILED.md) and the battle — iterated
+fair-coin attrition, decompiled bit-exact from the shipped IPA
+(solver/REAL_BATTLE_DECOMPILED.md). The browser talks to this same C engine over
+HTTP via solver/server.py.
 """
 import fastnw
 

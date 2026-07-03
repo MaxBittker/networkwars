@@ -6,10 +6,10 @@ as WASM, and a Python ctypes client drives it headlessly. The same game can be d
 human (via the web UI) or by a program (bot / search).
 
 > This doc is the single source of truth for the rules. If any rule below is wrong, tell me
-> and I'll fix it here first, then in the code. The original game's exact rules aren't
-> published; the battle model and deal here were **fit to thousands of live iOS battles**
-> (see `solver/BATTLE_FUNCTION.md` / `solver/IOS_CALIBRATION.md`). Remaining guesses are
-> marked **[ASSUMPTION]**.
+> and I'll fix it here first, then in the code. The battle and deal are **recovered
+> bit-exact from the shipped iOS app** — decompiled from the IPA (Mono-AOT ARM64), not
+> guessed or fit (see `solver/REAL_BATTLE_DECOMPILED.md` / `solver/MAP_DEAL_DECOMPILED.md`).
+> Remaining guesses (mainly board layout) are marked **[ASSUMPTION]**.
 
 ---
 
@@ -26,7 +26,7 @@ human (via the web UI) or by a program (bot / search).
 - Links are undirected. Two nodes can attack each other only if a link connects them.
 - Board is **30 nodes, 6 per faction** (confirmed from the real app: a 6×7 grid of 42 cells
   with 12 removed = 30). Win condition is 24 nodes.
-- **The deal** (calibrated to the real app, `IOS_CALIBRATION.md` §2): each faction's 6 nodes
+- **The deal** (recovered from the real app, `MAP_DEAL_DECOMPILED.md`): each faction's 6 nodes
   are one of **4 fixed templates** that each sum to **20** total strength, so every faction
   starts perfectly balanced (board total always 100). Templates and frequencies: `[1,1,1,5,6,6]`
   38.5%, `[1,1,1,1,8,8]` 32.7%, `[1,1,4,4,5,5]` 22.2%, `[1,3,4,4,4,4]` 6.6%. (Strengths reach 8;
@@ -47,19 +47,22 @@ human (via the web UI) or by a program (bot / search).
 
 - You may attack from any node you own with **strength > 1**, along a link, into an enemy
   node. A node with strength 1 cannot attack.
-- One attack action resolves a **single decisive battle** (this is what the real app does, fit
-  from ~9,400 live battles — see `BATTLE_FUNCTION.md`). Let `a` = attacker strength, `d` =
-  defender strength:
-  - **Who wins** is one Bernoulli draw: `P(capture) = a^3.40 / (a^3.40 + 1.26·d^3.40)`. The
-    power-of-~3.4 ratio makes strength far more decisive than a coin flip (2:1 ≈ 90%, equal ≈
-    47%).
-  - **On capture** the attacker takes the node and the **source node always drops to 1**. The
-    captured node's new strength (the occupier) is a draw around the fitted mean
-    `clip(0.82a − 0.44d + 0.10, 1, a−1)` — specifically `1 + BetaBinomial(a−2, …)` (one
-    overdispersion param, ρ=0.21).
-  - **On repel** the source node still drops to 1; the **defender is gutted** to a draw around
-    `clip(0.30 + 0.24d + 0.42·max(0, d−a), 0, d)` — `Binomial(d, …)`. (Capture requires a
-    surviving occupier; a fully-spent attacker does **not** flip ownership.)
+- One attack action resolves a full **battle** via the game's own mechanic — recovered
+  bit-exact from the shipped app (see `REAL_BATTLE_DECOMPILED.md`). It is **iterated
+  fair-coin attrition** with **zero fitted parameters**. Let `a` = attacker strength,
+  `d` = defender strength:
+  - The atomic operation is a **fair coin** (p = 0.5). First, two guarded attacker
+    **pre-fires**: each, if `d > 0` and `a > 1`, flips a coin that may drop the defender by 1.
+  - Then a **symmetric loop** runs while `d > 0` and `a > 1`: each round the attacker's coin
+    can drop one defender and the defender's coin can drop one attacker.
+  - **Capture** iff the loop ends with `a > 1` and `d == 0`: the attacker takes the node, the
+    occupier is exactly the **surviving `a − 1`**, and the **source node drops to 1**.
+  - **Repel** otherwise: the **source node drops to 1** and the defender keeps its surviving
+    remnant `d`. (A fully-spent attacker does **not** flip ownership.)
+  - Survivors are **emergent** — the attrition loop *is* the survivor distribution; there is no
+    separate draw. Because strength is decisive but not deterministic, the attacker's edge grows
+    with the ratio (2:1 ≈ 90%, equal ≈ 47%) as a *consequence* of the loop, not a fitted curve.
+    Coins are integer `RNG() < 0.5` so native and WASM stay bit-identical.
 - A turn can contain any number of attacks.
 
 ## 5. Reinforcements

@@ -323,8 +323,9 @@ def play_one_game(args, gi):
             move_rec['counts_after'] = dict(st2['counts'])
             # full post-attack board (with strengths) so each red tap is a single,
             # ground-truth battle observation: chaining board_before -> board_after
-            # gives (attacker a, defender d, outcome, SURVIVOR strengths) for fitting
-            # the real iOS battle function. See iphone_data/extract_battles.py.
+            # gives (attacker a, defender d, outcome, SURVIVOR strengths) — the live
+            # record against which the decompiled battle (REAL_BATTLE_DECOMPILED.md)
+            # is validated.
             move_rec['board_after'] = [
                 {'id': n['id'], 'r': n['row'], 'c': n['col'],
                  'o': n['owner'], 's': n['strength']} for n in st2['nodes']]
@@ -418,7 +419,6 @@ def main():
 
     import sys
     sys.path.insert(0, os.path.dirname(HERE))
-    import fastnw   # for battle-model readout (hybrid via NW_HYBRID_BATTLE=1 env)
     config = {
         'engine': 'fast_c_uct', 'neural_net': False, 'sims': args.sims,
         'wset': args.wset, 'ranked_weights': 'C1 (baked into fast_engine.c)',
@@ -431,8 +431,7 @@ def main():
         'engine_build': 'fast_engine.so (-O3 -ffast-math)', 'role': 'red',
         'winexp_def': 'backed-up Q of the chosen root child = RED win-prob estimate',
         'seed_exploitation': False, 'never_surrender': True,
-        'battle_model': 'hybrid_loop_hinge_remnant' if fastnw.hybrid_battle_on()
-                        else 'closed_form_singleshot',
+        'battle_model': 'decompiled_faircoin_attrition',
         'adaptive_compute': {
             'floor_sims': args.sims,
             'ceiling_sims': args.max_sims if args.max_sims > args.sims else args.sims,

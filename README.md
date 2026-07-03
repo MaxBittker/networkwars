@@ -10,7 +10,7 @@ bots, battle, reinforcement, win check, **and the search-based AI** — is one C
 
 | Path | What it is |
 |------|------------|
-| `solver/fast_engine.c` | **The single source of truth.** All rules + board generation + the iOS-faithful deal + the four bots + the power-ratio battle + reinforcement + the open-loop **C-UCT MCTS** (no neural net). |
+| `solver/fast_engine.c` | **The single source of truth.** All rules + board generation + the iOS-faithful deal + the four bots + the decompiled fair-coin battle + reinforcement + the open-loop **C-UCT MCTS** (no neural net). |
 | `public/` | The **serverless browser game.** `fast_engine.c` compiled to WASM (`fast_engine.js`) runs the whole engine + search in a Web Worker; `index.html` is just the UI. No backend needed. |
 | `solver/fmcts.py`, `solver/par_eval.py` | Headless self-play / parallel winrate evals (thin ctypes clients over the C engine). |
 | `solver/server.py` | Optional stdlib HTTP server. Only needed for the live iOS `/grab` workflow — offline play needs no Python. |
@@ -20,7 +20,7 @@ bots, battle, reinforcement, win check, **and the search-based AI** — is one C
 
 - **[`DESIGN.md`](DESIGN.md)** — the rules in prose; the source of truth for *what the game is*.
 - **[`solver/README.md`](solver/README.md)** — the engine + solver in depth.
-- **[`solver/BATTLE_FUNCTION.md`](solver/BATTLE_FUNCTION.md)** / **[`solver/IOS_CALIBRATION.md`](solver/IOS_CALIBRATION.md)** — how battle and the deal were fit to live data.
+- **[`solver/REAL_BATTLE_DECOMPILED.md`](solver/REAL_BATTLE_DECOMPILED.md)** / **[`solver/MAP_DEAL_DECOMPILED.md`](solver/MAP_DEAL_DECOMPILED.md)** — battle and deal recovered bit-exact from the shipped iOS app.
 - **[`solver/iphone_data/README.md`](solver/iphone_data/README.md)** — driving the real app.
 - **[`CLAUDE.md`](CLAUDE.md)** — project conventions.
 
@@ -45,10 +45,11 @@ gitignored — rebuild with the `cc` line.
 
 A **pure C-UCT MCTS** (open-loop, ranked-C1 rollout baked in, `c_puct=2.5`) — no neural
 net, no seed/RNG exploitation. Offline self-play winrate is **~94%** on the iOS-faithful
-deal, and after battle/survivor recalibration a 100-game live run against the real app
-**matches it** (~94%) — the old sim-over-predicts-live gap is closed
-(`IOS_CALIBRATION.md`). An AlphaZero/PufferLib training path was tried and dropped — it
-plateaued below the plain search.
+deal, and a 100-game live run against the real app **matches it** (~94%) — the old
+sim-over-predicts-live gap closed once the deal and battle were made faithful (the
+battle is now the game's own decompiled mechanic, `REAL_BATTLE_DECOMPILED.md`). An
+AlphaZero/PufferLib training path was tried and dropped — it plateaued below the
+plain search.
 
 The single win% readout (live dashboard + JSONL) is `winexp`: the search's own backed-up
 Q for the chosen move, which tracks real outcomes with no separate calibration model.

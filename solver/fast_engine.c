@@ -480,13 +480,6 @@ static int ranked_best_move(const int *owner, const int *strength) {
     return best_act;
 }
 
-/* Inert shims — the OPTIONAL fitted "hybrid" battle model was removed once we
- * decompiled the app: the real game IS an iterated fair-coin loop (resolve_battle
- * below), so there is nothing to toggle. Kept only so fastnw.py's ctypes bindings
- * still resolve. */
-void use_hybrid_battle(int on) { (void)on; }
-int  get_hybrid_battle(void)  { return 0; }
-
 /* dice battle, frm attacks to — the REAL decompiled iOS mechanic (fair coins).
  * Bit-exact to Utils.doAttack/doAttackConsole (see REAL_BATTLE_DECOMPILED.md):
  * two guarded attacker pre-fires, then a symmetric fair-coin exchange, keep-1. */

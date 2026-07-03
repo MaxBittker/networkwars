@@ -45,7 +45,6 @@ def board_now():
 
 def launch_series():
     env = dict(os.environ)
-    env['NW_HYBRID_BATTLE'] = '1'
     env['NW_ENGINE_SO'] = '../fast_engine.so'
     cmd = [sys.executable, '-u', os.path.join(HERE, 'series.py'),
            '--games', '200',
