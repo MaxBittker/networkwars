@@ -160,6 +160,7 @@
         <div class="mi" id="mi-new">New Game</div>
         <div class="mi" id="mi-auto">Autoplay</div>
         <div class="mi" id="mi-ai">AI Assist</div>
+        <div class="mi" id="mi-undo">Undo Mode</div>
         <div class="div"></div>
         <div class="lbl">Animation speed</div>
         <div class="mi sp" data-speed="instant">Instant</div>
@@ -821,12 +822,44 @@ async function endTurn() {
 }
 document.getElementById('endturn').onclick = endTurn;
 
+// The footer's left action is Surrender, or Undo when Undo Mode is on (menu toggle).
+// Undo rewinds one player action (an attack, or a whole end-turn incl. all bots) —
+// it also works on a just-ended game (close the modal, then Undo the losing move).
 document.getElementById('surrender').onclick = async () => {
-  if (!state || state.over || inputLocked) return;
+  if (!state || inputLocked) return;
+  if (undoOn) {
+    if (autoplay) return;                      // the autoplay loop owns the game
+    const res = await api(`/api/game/${state.id}/undo`, 'POST');
+    if (res.nothingToUndo) { setStatus('Nothing to undo.'); return; }
+    hideModal();
+    // un-stamp a finished game's history row: it's live again after the rewind
+    if (curEntry && curEntry.result !== 'live' && !res.over) {
+      curEntry.result = 'live'; delete curEntry.finalCounts; delete curEntry.turns;
+      saveHistory(); updateRecord();
+    }
+    setState(res);
+    setStatus('Undid your last move.');
+    return;
+  }
+  if (state.over) return;
   if (!confirm('Surrender this game?')) return;
   const res = await api(`/api/game/${state.id}/surrender`, 'POST');
   setState(res);
 };
+
+// Undo Mode: replaces the Surrender button with Undo. Persisted across sessions.
+let undoOn = false;
+function setUndoMode(on) {
+  undoOn = on;
+  document.getElementById('mi-undo').classList.toggle('sel', on);
+  document.getElementById('surrender').textContent = on ? 'Undo' : 'Surrender';
+  try { localStorage.setItem('nwUndo', on ? '1' : '0'); } catch (_) {}
+}
+(function loadUndoMode() {
+  let v; try { v = localStorage.getItem('nwUndo'); } catch (_) {}
+  setUndoMode(v === '1');
+})();
+document.getElementById('mi-undo').onclick = () => setUndoMode(!undoOn);
 
 // hamburger dropdown: New Game + animation speed
 const menupop = document.getElementById('menupop');

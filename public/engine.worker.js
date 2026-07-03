@@ -74,7 +74,32 @@ function gameFromBoard(boardNodes, mbSeed) {
   return g;
 }
 
+// Undo support: every player-visible action (attack / end-turn) pushes the full
+// pre-action game state — owner/strength arrays plus the mb32 dice cursor — so undo
+// is an exact rewind (replaying the same move re-rolls the same dice).
+function snapshot(g) {
+  if (!g.hist) g.hist = [];
+  g.hist.push({ owner: g.owner.slice(), strength: g.strength.slice(), mb: g.mb,
+    turn: g.turn, over: g.over, youWon: g.youWon, redResigned: g.redResigned,
+    winner: g.winner });
+  if (g.hist.length > 500) g.hist.shift();
+}
+
+function doUndo(g) {
+  if (!g.hist || !g.hist.length) {
+    const out = view(g); out.log = []; out.nothingToUndo = true;
+    return out;
+  }
+  const s = g.hist.pop();
+  g.owner = s.owner; g.strength = s.strength; g.mb = s.mb; g.turn = s.turn;
+  g.over = s.over; g.youWon = s.youWon; g.redResigned = s.redResigned;
+  g.winner = s.winner;
+  const out = view(g); out.log = [];
+  return out;
+}
+
 function doAttack(g, frm, to) {
+  snapshot(g);
   select(g);
   E.useMb32(g.mb);
   const { flips, meta } = E.attackLogged(g.owner, g.strength, frm, to);
@@ -93,6 +118,7 @@ function doAttack(g, frm, to) {
 // final board + g.mb are bit-identical to end_turn — just observable. Port of
 // server.do_end_turn.
 function doEndTurn(g) {
+  snapshot(g);
   select(g);
   E.useMb32(g.mb);
   const owner = g.owner, strength = g.strength;
@@ -217,6 +243,7 @@ function route(path, method, body) {
       body.maxSims != null ? body.maxSims | 0 : 150000,
       body.tag != null ? body.tag : null);
     if (action === 'surrender') return doSurrender(g);
+    if (action === 'undo') return doUndo(g);
   }
 
   // Loading a saved board from the iOS workflow: index.html fetches the file text
