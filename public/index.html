@@ -112,6 +112,23 @@
   .act.off { opacity:.3; pointer-events:none; }
   #status { color:#8fcfb8; font-size:12px; flex:1; text-align:center; padding:0 8px; }
 
+  /* blunder-alert banner: slides up just above the footer when a committed move's
+     win expectation trails the search's best move by more than the chosen tier.
+     --bl carries the severity color (yellow/orange/red). */
+  #blunder { position:absolute; left:12px; right:12px;
+    bottom:calc(56px + env(safe-area-inset-bottom)); z-index:4;
+    display:none; align-items:center; gap:12px; padding:10px 14px;
+    background:#120806; border:1px solid var(--bl,#ff4d5e); border-radius:12px;
+    box-shadow:0 8px 30px -8px rgba(0,0,0,.85), 0 0 18px -6px var(--bl,#ff4d5e);
+    font-size:13px; }
+  #blunder.show { display:flex; animation:blup .18s ease-out; }
+  @keyframes blup { from { transform:translateY(10px); opacity:0; } to { transform:none; opacity:1; } }
+  #bl-text { flex:1; display:flex; align-items:baseline; gap:8px; min-width:0; }
+  #bl-tier { color:var(--bl,#ff4d5e); font-size:14px; }
+  #bl-sub { color:#cfe; }
+  #blunder .act { padding:6px 8px; flex:0 0 auto; }
+  #bl-x { color:#7fb6a6; font-weight:800; }
+
   #modal { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
     background:rgba(0,0,0,.55); backdrop-filter:blur(2px); z-index:5; }
   #modal.show { display:flex; }
@@ -162,6 +179,12 @@
         <div class="mi" id="mi-ai">AI Assist</div>
         <div class="mi" id="mi-undo">Undo Mode</div>
         <div class="div"></div>
+        <div class="lbl">Blunder alert</div>
+        <div class="mi bl" data-bl="0">Off</div>
+        <div class="mi bl" data-bl="5">Inaccuracy &ge;5%</div>
+        <div class="mi bl" data-bl="10">Mistake &ge;10%</div>
+        <div class="mi bl" data-bl="20">Blunder &ge;20%</div>
+        <div class="div"></div>
         <div class="lbl">Animation speed</div>
         <div class="mi sp" data-speed="instant">Instant</div>
         <div class="mi sp" data-speed="fast">Fast</div>
@@ -185,6 +208,12 @@
     <div id="status">Select a red node to attack.</div>
     <div class="act" id="endturn">End Turn</div>
   </footer>
+
+  <div id="blunder">
+    <div id="bl-text"><b id="bl-tier">Blunder</b><span id="bl-sub"></span></div>
+    <div class="act" id="bl-undo">Undo</div>
+    <div class="act" id="bl-x">&#10005;</div>
+  </div>
 </div>
 
 <div id="modal"><div class="dialog">
@@ -221,6 +250,8 @@ let reinforceFlash = null;  // Set(nodeId) briefly highlighted on a reinforce st
 let autoplay = false;       // self-play loop: agent plays its top move, no animation
 let autoplayRunning = false;
 let aiOn = true;            // show the AI win%/graph/suggestions panel (menu toggle)
+let blunderThresh = 0;      // blunder alert: 0 = off, else min win% gap that warns
+let searchAll = [];         // full ranked root moves of the current search (blunder lookup)
 const record = { w: 0, l: 0 };  // autoplay win/loss tally (this session)
 
 // ---- persistent game history: starting board + outcome of every game played,
@@ -283,6 +314,7 @@ document.addEventListener('pointermove', (e) => { lastPointer = { x: e.clientX, 
 // only the current search paints. The final move is still the converged result.
 function onSearchProgress(p) {
   suggestions = p.top || [];
+  searchAll = p.all || p.top || [];
   searchSims = p.sims || 0;
   if (p.winexp != null) state._winexp = p.winexp;
   renderAI();
@@ -346,6 +378,7 @@ function setState(s) {
   noteState(s);
   selected = null;
   hoverMove = null;
+  hideBlunder();
   indexMoves();
   renderHeader();
   draw();
@@ -369,17 +402,20 @@ function renderHeader() {
 // ---- AI search + suggestions ----
 async function requestSearch() {
   if (!state || state.over || inputLocked) return;
-  if (!aiOn && !autoplay) return;        // AI features hidden — don't spend a search
+  // AI features hidden — don't spend a search. Exception: the blunder alert needs
+  // the search even with the panel off, so hint-free training still gets graded.
+  if (!aiOn && !autoplay && !blunderThresh) return;
   // Always search even with no attacks available — the search returns END TURN as
   // the sole suggestion, so the panel still shows the right move.
   const my = ++searchId;
-  searching = true; searchSims = 0; renderAI();
+  searching = true; searchSims = 0; searchAll = []; renderAI();
   // tag=my streams mid-search updates (onSearchProgress) so the panel animates as
   // the search converges; the awaited result is the final, threshold-gated answer.
   const res = await api(`/api/game/${state.id}/search`, 'POST', { sims: SIMS, tag: my });
   if (my !== searchId) return;            // a newer position superseded this one
   searching = false;
   suggestions = res.top || [];
+  searchAll = res.all || res.top || [];
   state._winexp = res.winexp;
   pushWin(res.winexp);                     // one graph point per converged decision
   renderAI();
@@ -399,6 +435,7 @@ function updateRecord() {
 
 function setAutoplay(on) {
   autoplay = on;
+  if (on) hideBlunder();           // the agent grades itself; no banner during autoplay
   document.getElementById('mi-auto').classList.toggle('sel', on);
   updateRecord();
   if (on) autoplayLoop();        // toggling off is observed by the loop between moves
@@ -545,6 +582,70 @@ async function playSuggestion(m) {
   if (m.action === -1) { endTurn(); return; }
   await doAttack(m.from, m.to);
 }
+
+// ---- Blunder alert: grade every committed move against the search's best. If the
+// chosen move's win expectation trails best by >= the selected threshold, a banner
+// slides up with the severity tier and an Undo. The check uses only pre-move Qs
+// (decision quality, not dice luck) and never reveals WHICH move was best, so it
+// works as hint-free training with the AI panel hidden. ----
+const BL_TIERS = [
+  { min: 20, label: 'Blunder',    color: '#ff4d5e' },
+  { min: 10, label: 'Mistake',    color: '#ff9f45' },
+  { min: 5,  label: 'Inaccuracy', color: '#f5c542' },
+];
+
+// Snapshot the current search's verdict on a move BEFORE committing it (the commit
+// supersedes searchAll). action -1 = end turn, else an attack from->to.
+function blunderEval(action, from, to) {
+  if (!blunderThresh || autoplay || !searchAll.length) return null;
+  const best = searchAll[0];
+  const mine = searchAll.find(m => action === -1
+    ? m.action === -1 : (m.from === from && m.to === to));
+  if (!mine || !mine.visits) return null;   // unvisited move — no reliable Q, stay quiet
+  return { gap: (best.q - mine.q) * 100, myQ: mine.q };
+}
+
+function maybeShowBlunder(ev) {
+  if (!ev || ev.gap < blunderThresh) return;
+  const tier = BL_TIERS.find(t => ev.gap >= t.min) || BL_TIERS[BL_TIERS.length - 1];
+  const el = document.getElementById('blunder');
+  el.style.setProperty('--bl', tier.color);
+  document.getElementById('bl-tier').textContent = tier.label;
+  document.getElementById('bl-sub').textContent =
+    `−${Math.round(ev.gap)}% win vs best move`;
+  el.classList.remove('show');   // retrigger the slide-up if it was already showing
+  void el.offsetWidth;
+  el.classList.add('show');
+}
+
+function hideBlunder() { document.getElementById('blunder').classList.remove('show'); }
+document.getElementById('bl-x').onclick = hideBlunder;
+document.getElementById('bl-undo').onclick = async () => {
+  hideBlunder();
+  await performUndo();
+};
+
+function updateBlunderMenu() {
+  document.querySelectorAll('#menupop .bl').forEach(el =>
+    el.classList.toggle('sel', +el.dataset.bl === blunderThresh));
+}
+function setBlunder(v) {
+  blunderThresh = v;
+  try { localStorage.setItem('nwBlunder', String(v)); } catch (_) {}
+  updateBlunderMenu();
+  if (!v) hideBlunder();
+  // panel hidden + no search running for it yet — start grading this position now
+  else if (!aiOn && !autoplay && !searching && state && !state.over) requestSearch();
+}
+(function loadBlunder() {
+  let v; try { v = localStorage.getItem('nwBlunder'); } catch (_) {}
+  // ON by default at the middle tier; an explicit stored '0' keeps it off
+  blunderThresh = v == null ? 10 : ([5, 10, 20].includes(+v) ? +v : 0);
+  updateBlunderMenu();
+})();
+document.querySelectorAll('#menupop .bl').forEach(el => {
+  el.onclick = () => setBlunder(+el.dataset.bl);   // leave menu open so the check shows
+});
 
 // ---- layout ----
 let layout = { r: 20, s: 1, ox: 0, oy: 0 };
@@ -765,6 +866,8 @@ async function animateEndTurn(res) {
 }
 
 async function doAttack(from, to) {
+  const bev = blunderEval(0, from, to);   // grade the choice before it supersedes the search
+  hideBlunder();
   selected = null;
   hoverMove = null;
   inputLocked = true;
@@ -780,6 +883,7 @@ async function doAttack(from, to) {
     && state.nodes[from].strength > 1 && targetsFor.has(from)) ? from : null;
   inputLocked = false;
   draw();
+  maybeShowBlunder(bev);
   if (state.over) { suggestions = []; renderAI(); showModal(); }
   else requestSearch();
 }
@@ -810,6 +914,7 @@ cv.addEventListener('pointerdown', (ev) => {
 
 async function endTurn() {
   if (!state || state.over || inputLocked) return;
+  const bev = blunderEval(-1);         // ending the turn is a graded choice too
   inputLocked = true;
   selected = null; suggestions = []; renderAI();
   setStatus('Ending turn…');
@@ -818,29 +923,32 @@ async function endTurn() {
   if (res.events && res.events.length && !instant()) await animateEndTurn(res);
   inputLocked = false;
   setState(res);                       // adopt authoritative final board + re-search
+  maybeShowBlunder(bev);               // after setState so the adoption doesn't clear it
   if (!res.over) setStatus(`Bots captured ${caps} node(s). Your move.`);
 }
 document.getElementById('endturn').onclick = endTurn;
 
+// Exact rewind of one player action (an attack, or a whole end-turn incl. all bots) —
+// also works on a just-ended game (close the modal, then Undo the losing move).
+// Shared by Undo Mode's footer button and the blunder banner's Undo.
+async function performUndo() {
+  if (!state || inputLocked || autoplay) return;   // the autoplay loop owns the game
+  const res = await api(`/api/game/${state.id}/undo`, 'POST');
+  if (res.nothingToUndo) { setStatus('Nothing to undo.'); return; }
+  hideModal();
+  // un-stamp a finished game's history row: it's live again after the rewind
+  if (curEntry && curEntry.result !== 'live' && !res.over) {
+    curEntry.result = 'live'; delete curEntry.finalCounts; delete curEntry.turns;
+    saveHistory(); updateRecord();
+  }
+  setState(res);
+  setStatus('Undid your last move.');
+}
+
 // The footer's left action is Surrender, or Undo when Undo Mode is on (menu toggle).
-// Undo rewinds one player action (an attack, or a whole end-turn incl. all bots) —
-// it also works on a just-ended game (close the modal, then Undo the losing move).
 document.getElementById('surrender').onclick = async () => {
   if (!state || inputLocked) return;
-  if (undoOn) {
-    if (autoplay) return;                      // the autoplay loop owns the game
-    const res = await api(`/api/game/${state.id}/undo`, 'POST');
-    if (res.nothingToUndo) { setStatus('Nothing to undo.'); return; }
-    hideModal();
-    // un-stamp a finished game's history row: it's live again after the rewind
-    if (curEntry && curEntry.result !== 'live' && !res.over) {
-      curEntry.result = 'live'; delete curEntry.finalCounts; delete curEntry.turns;
-      saveHistory(); updateRecord();
-    }
-    setState(res);
-    setStatus('Undid your last move.');
-    return;
-  }
+  if (undoOn) { await performUndo(); return; }
   if (state.over) return;
   if (!confirm('Surrender this game?')) return;
   const res = await api(`/api/game/${state.id}/surrender`, 'POST');

@@ -179,7 +179,9 @@ function buildResult(acts, visits, q) {
     top.push({ action: a, from: frm, to, visits: visits[k],
       frac: tv ? visits[k] / tv : 0, q: q[k] });
   }
-  return { winexp: top[0].q, visits: tv, top: top.slice(0, 8), best: top[0] };
+  // `all` is the full ranked list (not just top-8): the blunder alert needs the Q
+  // of whatever move the player actually chose, which is often a low-visit tail move.
+  return { winexp: top[0].q, visits: tv, top: top.slice(0, 8), all: top, best: top[0] };
 }
 
 // Adaptive budget: floor `sims`, ceiling `maxSims`. The search runs past the
