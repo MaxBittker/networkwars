@@ -194,9 +194,15 @@ function buildResult(acts, visits, q) {
 // {type:'progress', tag, result} message is sent after every chunk, letting the
 // page watch the suggestions + win% converge live. The final result is returned
 // normally; it's the threshold-gated answer autoplay commits its move on.
+//
+// The loop yields to the event loop between chunks and ABORTS (returning the
+// tree's current best) the moment another request lands in `inbox` — an undo,
+// attack or end-turn must never wait out a multi-second search. Autoplay is
+// unaffected: it awaits each search with nothing else queued, so its searches
+// always run to their converged stop.
 const SEARCH_CHUNK = 2000;
-function doSearch(g, sims = 2000, cPuct = 2.5, nroll = 1, simSeed = 0x12345678,
-                  maxSims = 150000, tag = null) {
+async function doSearch(g, sims = 2000, cPuct = 2.5, nroll = 1, simSeed = 0x12345678,
+                        maxSims = 150000, tag = null) {
   select(g);
   E.useSim(simSeed);
   E.uctBegin(g.owner, g.strength, g.turn, sims, cPuct, nroll, maxSims);
@@ -209,10 +215,14 @@ function doSearch(g, sims = 2000, cPuct = 2.5, nroll = 1, simSeed = 0x12345678,
       out.sims = E.uctSimsDone(); out.done = done;
       self.postMessage({ type: 'progress', tag, result: out });
     }
+    if (!done) {
+      await yieldToInbox();                 // let queued client messages land
+      if (inbox.length) break;              // someone is waiting — answer with what we have
+    }
   }
   const r = E.uctReport();
   const out = buildResult(r.acts, r.visits, r.q);
-  out.sims = E.uctSimsDone(); out.done = true;
+  out.sims = E.uctSimsDone(); out.done = done;
   return out;
 }
 
@@ -255,19 +265,41 @@ function route(path, method, body) {
   return { error: 'not found', _status: 404 };
 }
 
-self.onmessage = async (ev) => {
-  const { id, path, method, body } = ev.data;
-  try {
-    if (!E) {
-      E = await loadEngine();
-      // Settle on a clear winner: stop once the leading move's win-prob is decisive
-      // (<=3% / >=97%) or dominates the rest by >=15pts, with >=512 visits. Offline
-      // A/B (adaptive 2k-20k, 80 games): identical 97.5% winrate, ~3x fewer sims/move.
-      E.setValueStop(0.03, 0.97, 0.15, 512);
+// ---- message pump: requests queue in `inbox` and are served strictly in order.
+// The point of the explicit queue (vs handling each message inline) is that the
+// search can SEE waiting requests and abort between chunks, so game actions get
+// sub-chunk (~50ms) latency instead of queueing behind a multi-second search.
+const inbox = [];
+let pumping = false;
+
+// Fast macrotask yield via MessageChannel (no setTimeout clamping). Client
+// postMessages that arrived during the last uctStep chunk are queued ahead of
+// our port message, so they hit `inbox` before the yield resolves.
+let _yieldDone = null;
+const _yield = new MessageChannel();
+_yield.port1.onmessage = () => { const r = _yieldDone; _yieldDone = null; if (r) r(); };
+const yieldToInbox = () => new Promise(r => { _yieldDone = r; _yield.port2.postMessage(0); });
+
+self.onmessage = (ev) => { inbox.push(ev.data); pump(); };
+
+async function pump() {
+  if (pumping) return;
+  pumping = true;
+  while (inbox.length) {
+    const { id, path, method, body } = inbox.shift();
+    try {
+      if (!E) {
+        E = await loadEngine();
+        // Settle on a clear winner: stop once the leading move's win-prob is decisive
+        // (<=3% / >=97%) or dominates the rest by >=15pts, with >=512 visits. Offline
+        // A/B (adaptive 2k-20k, 80 games): identical 97.5% winrate, ~3x fewer sims/move.
+        E.setValueStop(0.03, 0.97, 0.15, 512);
+      }
+      const result = await route(path, method || 'GET', body);
+      self.postMessage({ id, result });
+    } catch (err) {
+      self.postMessage({ id, result: { error: String(err && err.message || err) } });
     }
-    const result = route(path, method || 'GET', body);
-    self.postMessage({ id, result });
-  } catch (err) {
-    self.postMessage({ id, result: { error: String(err && err.message || err) } });
   }
-};
+  pumping = false;
+}

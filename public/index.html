@@ -245,6 +245,8 @@ let overrides = new Map();  // nodeId -> {strength, owner?} during battle animat
 let flashId = null;
 let battle = null;          // {from,to} highlighted during a fight
 let inputLocked = false;
+let animAbort = false;      // undo requested mid-replay: fast-forward the animation
+let pendingUndo = false;    // undo clicked while inputLocked — run it when the lock drops
 let animBoard = null;       // mutable node copy used while animating bot turns
 let reinforceFlash = null;  // Set(nodeId) briefly highlighted on a reinforce step
 let autoplay = false;       // self-play loop: agent plays its top move, no animation
@@ -372,13 +374,15 @@ function indexMoves() {
   }
 }
 
-// Adopt a fresh server view and (re)plan with the search.
-function setState(s) {
+// Adopt a fresh server view and (re)plan with the search. keepBlunder: end-turn
+// shows its blunder banner up front (during the replay), so adopting the final
+// board must not wipe it.
+function setState(s, keepBlunder = false) {
   state = s;
   noteState(s);
   selected = null;
   hoverMove = null;
-  hideBlunder();
+  if (!keepBlunder) hideBlunder();
   indexMoves();
   renderHeader();
   draw();
@@ -620,10 +624,7 @@ function maybeShowBlunder(ev) {
 
 function hideBlunder() { document.getElementById('blunder').classList.remove('show'); }
 document.getElementById('bl-x').onclick = hideBlunder;
-document.getElementById('bl-undo').onclick = async () => {
-  hideBlunder();
-  await performUndo();
-};
+document.getElementById('bl-undo').onclick = () => requestUndo();
 
 function updateBlunderMenu() {
   document.querySelectorAll('#menupop .bl').forEach(el =>
@@ -687,7 +688,8 @@ function drawArrow(p1, p2, color) {
   ctx.shadowBlur = 0;
 }
 
-// flat-top octagon (stop-sign orientation)
+// vertex-up octagon — matches the real game's node shape (verified by fitting
+// n-gon outlines to iOS screenshots: n=8, vertex at 12 o'clock)
 function octagon(x, y, r) {
   ctx.beginPath();
   for (let i = 0; i < 8; i++) {
@@ -698,15 +700,19 @@ function octagon(x, y, r) {
   ctx.closePath();
 }
 
-// flat dark fill tinted toward the owner's color (not pure black)
-const _darkFill = {};
-function darkFill(hex) {
-  if (_darkFill[hex]) return _darkFill[hex];
+// Per-faction node styles, cached by hex. Sampled from iOS screenshots: the rim
+// is a slightly whitened faction color, and the body is a MEDIUM tone of it
+// (~0.65x the rim) — not near-black like our old fill.
+const _style = {};
+function nodeStyle(hex) {
+  if (_style[hex]) return _style[hex];
   const s = hex.replace('#', '');
   const r = parseInt(s.slice(0,2),16), g = parseInt(s.slice(2,4),16), b = parseInt(s.slice(4,6),16);
-  const t = 0.42; // how much color shows through the dark base
-  const mix = (c) => Math.round(4 + c * t);
-  return (_darkFill[hex] = `rgb(${mix(r)},${mix(g)},${mix(b)})`);
+  const lift = (c) => Math.round(c + (255 - c) * 0.12);
+  return (_style[hex] = {
+    ring: `rgb(${lift(r)},${lift(g)},${lift(b)})`,
+    body: `rgb(${Math.round(r*0.58+22)},${Math.round(g*0.58+22)},${Math.round(b*0.58+22)})`,
+  });
 }
 
 function draw() {
@@ -730,7 +736,7 @@ function draw() {
       ctx.strokeStyle = ac; ctx.lineWidth = 4; ctx.setLineDash([]); ctx.shadowColor = ac; ctx.shadowBlur = 12; }
     else if (selHot) { ctx.strokeStyle = COLORS.red; ctx.lineWidth = 4; ctx.setLineDash([]); ctx.shadowColor = COLORS.red; ctx.shadowBlur = 10; }
     else if (isHover) { ctx.strokeStyle = 'rgba(255,211,107,.9)'; ctx.lineWidth = 3.5; ctx.setLineDash([]); ctx.shadowColor = '#ffd36b'; ctx.shadowBlur = 12; }
-    else { ctx.strokeStyle = 'rgba(120,200,160,.28)'; ctx.lineWidth = 1.5; ctx.setLineDash([4,5]); ctx.shadowBlur = 0; }
+    else { ctx.strokeStyle = 'rgba(110,220,170,.38)'; ctx.lineWidth = 1.5; ctx.setLineDash([3,5]); ctx.shadowBlur = 0; }
     ctx.stroke();
   }
   ctx.setLineDash([]); ctx.shadowBlur = 0;
@@ -748,22 +754,34 @@ function draw() {
     const isTarget = isDef || (selected !== null && targetsFor.get(selected)?.has(n.id));
     const isFlash = n.id === flashId;
     const isRein = reinforceFlash && reinforceFlash.has(n.id);
-    // glowing colored ring + glossy gradient fill in the owner's hue (real-game look)
+    // Real-game look (sampled from iOS screenshots): flat medium-tone colored
+    // body, a thick rounded rim in the faction color, and a strong soft halo
+    // around the whole node.
+    const st = nodeStyle(col);
+    const r = layout.r;
+    const hot = isFlash || isRein || isSel;
     ctx.save();
     ctx.shadowColor = col;
-    ctx.shadowBlur = isFlash ? 30 : (isRein ? 28 : (isSel ? 24 : (isTarget ? 18 : 13)));
-    octagon(p.x, p.y, layout.r);
-    ctx.fillStyle = darkFill(col);
+    ctx.shadowBlur = isFlash ? r*1.4 : (isRein ? r*1.3 : (isSel ? r*1.1 : (isTarget ? r*0.85 : r*0.6)));
+    octagon(p.x, p.y, r);
+    ctx.fillStyle = st.body;
     ctx.fill();
+    ctx.fill();                       // second pass deepens the halo like the game's bloom
     ctx.restore();
-    octagon(p.x, p.y, layout.r);
-    ctx.lineWidth = (isSel || isTarget || isFlash || isRein) ? 3.4 : 2.6;
-    ctx.strokeStyle = isFlash ? '#fff' : (isRein ? '#fff' : col);
+    // rim: thick (~0.13r in the real game), rounded corners, glowing
+    ctx.save();
+    octagon(p.x, p.y, r * 0.93);
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = Math.max(2.5, r * (hot || isTarget ? 0.17 : 0.14));
+    ctx.strokeStyle = (isFlash || isRein) ? '#fff' : st.ring;
+    ctx.shadowColor = col;
+    ctx.shadowBlur = hot ? r*0.7 : r*0.4;
     ctx.stroke();
-    // number (white, with a soft dark shadow so it reads over the bright core)
+    ctx.restore();
+    // number (white, with a soft dark shadow so it reads over the colored body)
     ctx.save();
     ctx.fillStyle = '#fff';
-    ctx.font = `800 ${Math.round(layout.r*0.95)}px -apple-system, sans-serif`;
+    ctx.font = `800 ${Math.round(layout.r*0.85)}px -apple-system, sans-serif`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 3;
     ctx.fillText(strength, p.x, p.y + 1);
@@ -797,6 +815,7 @@ async function animateBattle(e) {
   await sleep(180 * animMult);
   const delay = Math.max(45, Math.min(150, Math.round(850 / Math.max(flips.length, 1)))) * animMult;
   for (const f of flips) {
+    if (animAbort) break;                    // undo requested — fast-forward
     if (f === 'd') { d--; flashId = to; } else { a--; flashId = from; }
     overrides.set(from, { strength: a });
     overrides.set(to, { strength: Math.max(d, 0) });
@@ -808,7 +827,7 @@ async function animateBattle(e) {
     overrides.set(to, { strength: e.toStrength, owner: e.attacker });
     overrides.set(from, { strength: e.fromStrength });
     draw();
-    await sleep(240 * animMult);
+    if (!animAbort) await sleep(240 * animMult);
   }
   overrides.clear();
   battle = null;
@@ -824,7 +843,7 @@ async function animateBotBattle(e) {
   overrides.set(e.from, { strength: e.fromStart });
   overrides.set(e.to, { strength: e.toStart });
   draw();
-  await sleep(170 * animMult);
+  if (!animAbort) await sleep(170 * animMult);
   // commit to the working board
   from.strength = e.fromStrength;
   if (e.captured) { to.owner = e.attacker; to.strength = e.toStrength; }
@@ -832,7 +851,7 @@ async function animateBotBattle(e) {
   flashId = e.captured ? e.to : e.from;
   overrides.clear();
   draw();
-  await sleep(150 * animMult);
+  if (!animAbort) await sleep(150 * animMult);
   flashId = null;
   battle = null;
 }
@@ -845,6 +864,7 @@ async function animateEndTurn(res) {
   selected = null; suggestions = []; renderAI();
   let curFaction = null;
   for (const ev of res.events) {
+    if (animAbort) break;                 // undo requested — skip the rest of the replay
     if (ev.type === 'reinforce') {
       for (const ch of ev.changes) animBoard[ch.id].strength = ch.to;
       reinforceFlash = new Set(ev.changes.map(c => c.id));
@@ -868,22 +888,28 @@ async function animateEndTurn(res) {
 async function doAttack(from, to) {
   const bev = blunderEval(0, from, to);   // grade the choice before it supersedes the search
   hideBlunder();
-  selected = null;
   hoverMove = null;
-  inputLocked = true;
+  inputLocked = true; animAbort = false;
+  // Commit frame, drawn synchronously on the tap: the selection collapses to the
+  // one chosen edge using the SAME battle highlight the replay draws, so the glow
+  // acknowledges the choice instantly and never drops while the worker (which may
+  // be mid-search-chunk) resolves the attack.
+  selected = null;
+  battle = { from, to };
+  draw();
   setStatus('Attacking…');
   const res = await api(`/api/game/${state.id}/attack`, 'POST', { from, to });
+  maybeShowBlunder(bev);                  // pre-move verdict — show it during the replay, not after
   const e = res.log && res.log[0];
   if (e && e.flips && !instant()) await animateBattle(e);   // state stays pre-attack during replay
+  battle = null;                          // instant mode / no replay: drop the commit highlight
   state = res; noteState(res); indexMoves(); renderHeader();
   setStatus(e ? (e.captured ? `Captured node ${e.to}!`
                             : `Attack on ${e.to} repelled (left ${e.fromStrength}).`) : 'Done.');
-  // keep attacking from the same node if it can still move
-  selected = (!res.over && state.nodes[from].owner === 'red'
-    && state.nodes[from].strength > 1 && targetsFor.has(from)) ? from : null;
+  selected = null;                        // every attack ends unselected — pick the next attacker fresh
   inputLocked = false;
   draw();
-  maybeShowBlunder(bev);
+  if (pendingUndo) { pendingUndo = false; await performUndo(); return; }
   if (state.over) { suggestions = []; renderAI(); showModal(); }
   else requestSearch();
 }
@@ -895,6 +921,9 @@ async function onTap(mx, my) {
   if (selected !== null && targetsFor.get(selected)?.has(n.id)) {
     await doAttack(selected, n.id);
     return;
+  }
+  if (n.id === selected) {                 // tapping the selected node deselects it
+    selected = null; setStatus('Select a red node to attack.'); draw(); return;
   }
   if (n.owner === 'red' && n.strength > 1 && targetsFor.has(n.id)) {
     selected = n.id; setStatus('Tap a highlighted enemy node to attack.');
@@ -915,26 +944,39 @@ cv.addEventListener('pointerdown', (ev) => {
 async function endTurn() {
   if (!state || state.over || inputLocked) return;
   const bev = blunderEval(-1);         // ending the turn is a graded choice too
-  inputLocked = true;
+  hideBlunder();
+  inputLocked = true; animAbort = false;
   selected = null; suggestions = []; renderAI();
+  draw();                              // ack the press instantly: selection glow drops now
   setStatus('Ending turn…');
   const res = await api(`/api/game/${state.id}/end-turn`, 'POST');
+  maybeShowBlunder(bev);               // pre-move verdict — up front, not after the whole replay
   const caps = (res.events||[]).filter(e => e.type==='attack' && e.captured).length;
   if (res.events && res.events.length && !instant()) await animateEndTurn(res);
   inputLocked = false;
-  setState(res);                       // adopt authoritative final board + re-search
-  maybeShowBlunder(bev);               // after setState so the adoption doesn't clear it
+  if (pendingUndo) { pendingUndo = false; await performUndo(); return; }
+  setState(res, true);                 // adopt authoritative final board + re-search (keep the banner)
   if (!res.over) setStatus(`Bots captured ${caps} node(s). Your move.`);
 }
 document.getElementById('endturn').onclick = endTurn;
 
+// Undo entry point (Undo Mode's footer button + the blunder banner's Undo). If a
+// battle replay holds inputLocked, flag it to fast-forward and let the mover's
+// tail run the undo the moment the lock drops — a click must never be swallowed.
+async function requestUndo() {
+  if (!state || autoplay) return;                  // the autoplay loop owns the game
+  hideBlunder();
+  if (inputLocked) { animAbort = true; pendingUndo = true; setStatus('Undoing…'); return; }
+  await performUndo();
+}
+
 // Exact rewind of one player action (an attack, or a whole end-turn incl. all bots) —
 // also works on a just-ended game (close the modal, then Undo the losing move).
-// Shared by Undo Mode's footer button and the blunder banner's Undo.
 async function performUndo() {
-  if (!state || inputLocked || autoplay) return;   // the autoplay loop owns the game
+  if (!state || inputLocked || autoplay) return;
+  ++searchId; searching = false;   // drop the in-flight search — its position is being rewound
   const res = await api(`/api/game/${state.id}/undo`, 'POST');
-  if (res.nothingToUndo) { setStatus('Nothing to undo.'); return; }
+  if (res.nothingToUndo) { setStatus('Nothing to undo.'); requestSearch(); return; }
   hideModal();
   // un-stamp a finished game's history row: it's live again after the rewind
   if (curEntry && curEntry.result !== 'live' && !res.over) {
@@ -947,9 +989,9 @@ async function performUndo() {
 
 // The footer's left action is Surrender, or Undo when Undo Mode is on (menu toggle).
 document.getElementById('surrender').onclick = async () => {
-  if (!state || inputLocked) return;
-  if (undoOn) { await performUndo(); return; }
-  if (state.over) return;
+  if (!state) return;
+  if (undoOn) { await requestUndo(); return; }
+  if (inputLocked || state.over) return;
   if (!confirm('Surrender this game?')) return;
   const res = await api(`/api/game/${state.id}/surrender`, 'POST');
   setState(res);
