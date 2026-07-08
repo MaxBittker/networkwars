@@ -56,8 +56,10 @@
   node's **weakest reachable target**, ties broken at random (matches observed iOS
   bot ordering); then reinforces its largest component's border. The RNG is seeded
   per game so outcomes stay reproducible (golden-seed gate holds).
-- Build + drive: native `cc -O3 -ffast-math -shared -fPIC solver/fast_engine.c -o
-  solver/fast_engine.so`, then `solver/fmcts.py` (or `solver/par_eval.py` for
+- Build + drive: native `solver/build_native.sh` (PGO: instrument → profile →
+  rebuild; **bit-identical play**, ~3% faster; falls back to the plain one-liner
+  `cc -O3 -ffast-math -shared -fPIC solver/fast_engine.c -o solver/fast_engine.so`
+  if llvm-profdata is missing), then `solver/fmcts.py` (or `solver/par_eval.py` for
   parallel winrate evals), or `solver/server.py` to play in a browser. WASM build (for
   the in-browser engine; NOTE: **no `-ffast-math`** — it breaks cross-arch board-gen
   bit-parity, and the search doesn't need it): run `solver/build_wasm.sh` (emcc
