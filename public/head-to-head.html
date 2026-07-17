@@ -1,0 +1,1064 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Network Wars — Head to Head</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<style>
+  :root {
+    --red:#ff4d5e; --green:#36d39a; --yellow:#f5c542; --blue:#4d8bff; --purple:#a96bff;
+    --teal:#5fd0d6; --ink:#06140f;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin:0; height:100%; background:#04100c; color:#cfe;
+    font-family: -apple-system, "SF Pro Display", Segoe UI, Roboto, sans-serif; overflow:hidden; }
+  #app { display:flex; flex-direction:column; height:100%; max-width:440px; margin:0 auto;
+    position:relative;
+    background:
+      radial-gradient(120% 70% at 50% 118%, rgba(40,180,120,.30), transparent 60%),
+      radial-gradient(100% 60% at 50% -10%, rgba(40,120,90,.12), transparent 60%),
+      #04100c; }
+
+  header { display:flex; align-items:center; gap:8px; padding:10px 14px 4px; }
+  #chips { flex:1; display:flex; justify-content:center; gap:12px; }
+  .chip { position:relative; width:34px; height:34px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    font-weight:800; font-size:14px; color:#fff;
+    border:2.4px solid currentColor; background:rgba(0,0,0,.55);
+    box-shadow:0 0 10px -1px currentColor, inset 0 0 6px -2px currentColor; }
+  .chip.red{color:var(--red)} .chip.green{color:var(--green)} .chip.yellow{color:var(--yellow)}
+  .chip.blue{color:var(--blue)} .chip.purple{color:var(--purple)}
+  .chip.cur { box-shadow:0 0 0 2px #fff, 0 0 16px 1px currentColor; }
+  .chip.dead { opacity:.28; filter:grayscale(.4); }
+  .chip b { color:#fff; }
+
+  #mstrip { display:flex; align-items:center; gap:8px; padding:2px 14px 6px; font-size:11px;
+    text-transform:uppercase; letter-spacing:.06em; color:#7fb6a6; }
+  #mgame { flex:1; min-width:0; font-weight:800; color:var(--teal); letter-spacing:.04em; }
+  #tally { flex:0 0 auto; font-weight:800; cursor:pointer; color:#bfe;
+    text-decoration:underline; text-decoration-color:rgba(191,238,255,.35);
+    text-underline-offset:3px; letter-spacing:.02em; }
+  #tally:active { opacity:.55; }
+  #tally .y { color:var(--teal); } #tally .a { color:var(--yellow); }
+
+  #board { flex:1; position:relative; min-height:0; }
+  canvas#cv { width:100%; height:100%; display:block; touch-action:none; }
+
+  /* ---- background-AI badge: ambient proof-of-work, deliberately unreadable ----
+     The AI plays the same seed concurrently in its own worker. Its board is shown
+     blurred + grayscale so you can see it IS working without reading who's winning —
+     that would spoil the seed you're still playing. */
+  #aibadge { position:absolute; top:8px; right:10px; z-index:3; width:74px;
+    display:flex; flex-direction:column; align-items:center; gap:3px; cursor:pointer;
+    padding:6px 4px 5px; border-radius:10px; background:rgba(0,0,0,.34);
+    border:1px solid rgba(245,197,66,.28); }
+  #aibadge:active { opacity:.6; }
+  #aibadge.idle { border-color:rgba(255,255,255,.10); }
+  #aicv { width:56px; height:56px; border-radius:6px; background:rgba(0,0,0,.4);
+    filter:blur(1.7px) grayscale(1) contrast(.85) brightness(1.25); }
+  #ailab { font-size:8.5px; letter-spacing:.05em; text-transform:uppercase;
+    color:var(--yellow); font-weight:800; text-align:center; line-height:1.25; }
+  #aibadge.idle #ailab { color:#6fae9e; }
+  #aidot { position:absolute; top:7px; left:7px; width:6px; height:6px; border-radius:50%;
+    background:var(--yellow); box-shadow:0 0 6px var(--yellow); animation:pulse 1.1s infinite; }
+  #aibadge.idle #aidot { background:#5f9e8e; box-shadow:none; animation:none; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+  footer { display:flex; justify-content:space-between; align-items:center; gap:8px;
+    padding:10px 18px calc(10px + env(safe-area-inset-bottom)); font-size:16px; }
+  .act { color:var(--teal); font-weight:700; cursor:pointer; user-select:none; padding:6px 2px; }
+  .act:active { opacity:.55; }
+  .act.off { opacity:.3; pointer-events:none; }
+  #endturn { font-size:20px; }
+  #status { color:#8fcfb8; font-size:12px; flex:1; text-align:center; padding:0 6px; }
+
+  /* ---- overlays ---- */
+  .ov { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(0,0,0,.62); backdrop-filter:blur(3px); z-index:6; padding:12px; }
+  .ov.show { display:flex; }
+  .panel { background:#020b08; border:1px solid #1c5; border-radius:14px;
+    width:min(430px,96vw); max-height:92vh; display:flex; flex-direction:column;
+    box-shadow:0 0 40px -8px rgba(54,211,154,.5); overflow:hidden; }
+  .p-head { display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:14px 18px; border-bottom:1px solid rgba(255,255,255,.08);
+    font-size:15px; font-weight:700; color:#cfe; letter-spacing:.03em; flex:0 0 auto; }
+  .p-body { overflow-y:auto; padding:16px 18px; overscroll-behavior:contain;
+    scrollbar-width:thin; scrollbar-color:rgba(95,208,214,.45) transparent; }
+  /* slim glowing teal scrollbar instead of the OS default slab */
+  .p-body::-webkit-scrollbar { width:7px; }
+  .p-body::-webkit-scrollbar-track { background:transparent; }
+  .p-body::-webkit-scrollbar-thumb { border-radius:4px;
+    background:linear-gradient(180deg, rgba(95,208,214,.55), rgba(54,211,154,.45));
+    box-shadow:0 0 6px -1px rgba(95,208,214,.5); }
+  .p-body::-webkit-scrollbar-thumb:hover {
+    background:linear-gradient(180deg, rgba(95,208,214,.85), rgba(54,211,154,.7)); }
+  .p-foot { padding:12px 18px calc(12px + env(safe-area-inset-bottom));
+    border-top:1px solid rgba(255,255,255,.08); display:flex; gap:16px;
+    justify-content:space-between; align-items:center; flex:0 0 auto; }
+  .p-body h3 { margin:0 0 6px; font-size:13px; color:#bfe; text-transform:uppercase;
+    letter-spacing:.05em; font-weight:700; }
+  .p-body h3.sp { margin-top:18px; }
+  .p-body p { margin:0 0 14px; color:#8fcfb8; font-size:13px; line-height:1.5; }
+  .p-body p.tight { margin-bottom:6px; }
+  .danger { color:#ff7d8a; }
+
+  #score { display:flex; gap:10px; margin:0 0 16px; }
+  .sc { flex:1; text-align:center; padding:12px 6px; border-radius:11px;
+    background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08); }
+  .sc.lead { border-color:var(--green); box-shadow:0 0 18px -8px var(--green); }
+  .sc .who { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#7fb6a6; }
+  .sc .n { font-size:28px; font-weight:800; color:#e9f7f0; line-height:1.25;
+    font-variant-numeric:tabular-nums; }
+  .sc .pct { font-size:12px; color:#8fcfb8; }
+
+  table.mx { width:100%; border-collapse:collapse; font-size:13px; margin:0 0 8px; }
+  table.mx td, table.mx th { padding:7px 8px; text-align:left; border-bottom:1px solid rgba(255,255,255,.07); }
+  table.mx th { color:#7fb6a6; font-size:11px; text-transform:uppercase; letter-spacing:.05em; font-weight:700; }
+  table.mx td.v { text-align:right; font-weight:800; color:#e9f7f0; font-variant-numeric:tabular-nums; }
+  table.mx tr.hl td { color:#ffd36b; } table.mx tr.hl td.v { color:#ffd36b; }
+  #verdict { font-size:13px; line-height:1.5; padding:11px 12px; border-radius:10px;
+    background:rgba(95,208,214,.08); border:1px solid rgba(95,208,214,.3); color:#cfe;
+    margin:0 0 16px; }
+
+  .srow { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:10px;
+    background:rgba(255,255,255,.035); margin-bottom:6px; cursor:pointer; }
+  .srow:active { background:rgba(255,255,255,.10); }
+  .srow canvas { width:46px; height:46px; flex:0 0 auto; background:rgba(0,0,0,.3); border-radius:7px; }
+  .srow .meta { flex:1; min-width:0; }
+  .srow .sd { font-size:11px; color:#5f9e8e; font-family:ui-monospace, Menlo, monospace; }
+  .srow .vs { font-size:13px; font-weight:700; margin-top:2px; }
+  .tag { display:inline-block; padding:1px 6px; border-radius:5px; font-size:11px;
+    font-weight:800; letter-spacing:.03em; }
+  .tag.won { background:rgba(54,211,154,.16); color:var(--green); }
+  .tag.lost { background:rgba(255,77,94,.16); color:var(--red); }
+  .tag.none { background:rgba(255,255,255,.07); color:#7fb6a6; }
+  .srow .loss { font-size:11px; color:#7fb6a6; margin-top:2px; }
+  .srow .go { color:var(--teal); font-weight:800; flex:0 0 auto; font-size:15px; }
+
+  /* ---- per-seed detail: one shared power graph + inspectable move lists ---- */
+  canvas.pg { display:block; width:100%; height:112px; background:rgba(255,255,255,.02);
+    border-radius:8px; }
+  /* legend doubles as each side's final score, so the graph needs no axis labels */
+  #glegend { display:flex; flex-wrap:wrap; gap:6px 14px; justify-content:center;
+    font-size:11px; color:#8fcfb8; margin:8px 0 14px; }
+  #glegend span { display:flex; align-items:center; gap:5px; }
+  #glegend i { width:12px; height:3px; border-radius:2px; flex:0 0 auto; }
+  #glegend i.dash { background:repeating-linear-gradient(90deg,
+    rgba(54,211,154,.7) 0 3px, transparent 3px 6px); }
+
+  /* inspector: the board at the selected move. Square-ish and as wide as the panel —
+     the board is the point of this view, so it gets the room. */
+  #ibwrap { position:relative; height:min(360px, 78vw); background:rgba(0,0,0,.28);
+    border-radius:10px; margin:0 0 8px; overflow:hidden; }
+  #ib { width:100%; height:100%; display:block; }
+  #ibcap { display:flex; align-items:center; justify-content:space-between; gap:8px;
+    margin:0 0 12px; font-size:12px; color:#8fcfb8; }
+  #ibcap .nav { display:flex; gap:6px; align-items:center; }
+  /* generous hit targets: these get tapped repeatedly to walk a game */
+  #ibcap .act { font-size:24px; line-height:1; padding:4px 12px; border-radius:8px;
+    background:rgba(95,208,214,.10); border:1px solid rgba(95,208,214,.28); }
+  #ibcap .act:active { background:rgba(95,208,214,.24); }
+  #ibinfo { flex:1; min-width:0; }
+
+  .tabs { display:flex; gap:6px; margin:0 0 10px; }
+  .tabs > div { flex:1; text-align:center; padding:8px 0; border-radius:9px; font-size:13px;
+    font-weight:700; color:#8fcfb8; background:rgba(255,255,255,.05); cursor:pointer;
+    border:1px solid transparent; }
+  .tabs > div.sel { color:#04100c; background:var(--teal); border-color:var(--teal); }
+  .tabs > div.sel.ai { background:var(--yellow); border-color:var(--yellow); }
+
+  .mv { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:8px;
+    font-size:13px; margin-bottom:3px; background:rgba(255,255,255,.03); cursor:pointer; }
+  .mv:active { background:rgba(255,255,255,.12); }
+  .mv.cur { box-shadow:inset 0 0 0 1.5px var(--teal); }
+  .mv .no { width:26px; font-size:11px; color:#5f9e8e; font-variant-numeric:tabular-nums; }
+  .mv .lbl { flex:1; color:#cfe; }
+  .pip { display:flex; align-items:center; justify-content:center; min-width:18px;
+    font-weight:800; font-size:15px; flex:0 0 auto; }
+  .pip.red{color:var(--red)} .pip.green{color:var(--green)} .pip.yellow{color:var(--yellow)}
+  .pip.blue{color:var(--blue)} .pip.purple{color:var(--purple)}
+  .arrow { color:#6fae9e; font-weight:700; }
+  .mv .gap { font-weight:800; min-width:46px; text-align:right; font-variant-numeric:tabular-nums; }
+  .mv .qq { min-width:44px; text-align:right; font-size:11px; color:#7fb6a6;
+    font-variant-numeric:tabular-nums; }
+  .mv.t0 .gap { color:#6fae9e; }
+  .mv.t1 { background:rgba(245,197,66,.09); }  .mv.t1 .gap { color:var(--yellow); }
+  .mv.t2 { background:rgba(255,159,69,.11); }  .mv.t2 .gap { color:#ff9f45; }
+  .mv.t3 { background:rgba(255,77,94,.13); }   .mv.t3 .gap { color:var(--red); }
+  .mv.dead { opacity:.4; } .mv.dead .gap { color:#5f9e8e; font-weight:600; font-size:11px; }
+  .mvbest { font-size:11px; color:#7fb6a6; display:flex; align-items:center; gap:6px;
+    padding:1px 8px 6px 34px; }
+  #rvbar { height:5px; border-radius:3px; background:rgba(255,255,255,.08);
+    overflow:hidden; margin:0 0 10px; display:flex; }
+  #rvbar > i { display:block; height:100%; }
+  .spin { color:#7fb6a6; font-style:italic; font-size:13px; padding:14px 0; text-align:center; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header><div id="chips"></div></header>
+  <div id="mstrip">
+    <span id="mgame">—</span>
+    <span id="tally">—</span>
+  </div>
+
+  <div id="board">
+    <canvas id="cv"></canvas>
+    <div id="aibadge" title="The AI is playing this seed in the background">
+      <div id="aidot"></div>
+      <canvas id="aicv" width="56" height="56"></canvas>
+      <div id="ailab">AI</div>
+    </div>
+  </div>
+
+  <footer>
+    <div class="act" id="left"></div>
+    <div id="status">—</div>
+    <div class="act" id="endturn">End Turn</div>
+  </footer>
+</div>
+
+<!-- intro -->
+<div class="ov" id="ov-intro"><div class="panel">
+  <div class="p-head"><span>Head to Head</span></div>
+  <div class="p-body">
+    <p><b>Duplicate format.</b> You play a seed blind — no suggestions, no win%, no
+      blunder alert. The AI plays <b>the same seed at the same time</b>, in the
+      background, in its own engine. Finish, and the next seed is dealt. Continuously,
+      with a running win-loss tally.</p>
+    <p>Same seed = same starting board and the same dice stream, so neither of you gets
+      an easier deal. The AI's board sits in the corner, <b>blurred and grey</b> — you
+      can see it working, but not who's winning, because that would spoil the seed
+      you're still playing.</p>
+    <p class="tight">Tap the tally any time: red power over the game for both of you,
+      both move lists to step through, and per-move scoring of your own decisions.</p>
+    <p class="tight">Note: dice are consumed in order, so once your moves diverge from
+      the AI's you draw different coins off the same stream. That's duplicate bridge —
+      same deal, not identical dice. Identical dice isn't a coherent idea once the
+      moves differ.</p>
+  </div>
+  <div class="p-foot">
+    <span></span><div class="act" id="in-start">Start playing</div>
+  </div>
+</div></div>
+
+<!-- tally -->
+<div class="ov" id="ov-res"><div class="panel">
+  <div class="p-head"><span id="res-title">Tally</span><div class="act" id="res-close">Close</div></div>
+  <div class="p-body" id="res-body"></div>
+  <div class="p-foot">
+    <div class="act danger" id="res-reset">Reset tally</div>
+    <div class="act" id="res-close2">Keep playing</div>
+  </div>
+</div></div>
+
+<!-- per-seed detail -->
+<div class="ov" id="ov-seed"><div class="panel">
+  <div class="p-head"><span id="sd-title">Seed</span><div class="act" id="sd-close">Back</div></div>
+  <div class="p-body" id="sd-body"></div>
+</div></div>
+
+<script type="module">
+// ============================================================================
+// Head-to-head: continuous DUPLICATE-format play against the C-UCT engine, with the
+// AI playing the same seed CONCURRENTLY in a second worker.
+//
+// Why two workers: engine.worker.js serves its inbox strictly in order and aborts an
+// in-flight search the moment a request queues behind it. If the AI shared your
+// worker, every tap you made would truncate its search and silently handicap it —
+// which would corrupt the exact comparison this page exists to make. Its own worker =
+// its own WASM engine, its own game state, a full uncontested core (your half of the
+// app issues ZERO searches, by design), and no way for its dice or its evaluation to
+// touch your game.
+//
+// Why duplicate: unpaired win-rates are dominated by deal quality (see the solver
+// memories `sim-vs-real-deal-imbalance` and `hard-set-2026-07-02` — deal + dice, not
+// search, decide most games). Comparing "my %" to "its ~94%" across DIFFERENT boards
+// is nearly uninformative at small n. Pinning the seed isolates decision quality, so
+// the tally reports the PAIRED (McNemar) cells + an exact sign test on the seeds that
+// split — plus per-move scoring, which converges far faster than W/L.
+//
+// Honest caveat (also in the intro): mulberry32 draws are consumed serially, so once
+// your move sequence diverges from the AI's you pull different coins off the same
+// stream. Duplicate bridge (same deal), not dice-for-dice identity — the latter isn't
+// coherent once actions differ.
+//
+// All rendering/animation comes from board.js (shared with index.html); all rules and
+// search come from fast_engine.c via engine.worker.js. This file is bookkeeping and
+// presentation only.
+// ============================================================================
+import { Board, ORDER, SPEEDS, sleep, dirArrow, drawThumb } from './board.js';
+
+// The AI plays at the strength the app's autoplay/live driver uses: 6000-sim floor,
+// adaptive up to the worker's 150k ceiling with the visit/value-margin early stop.
+const AI_SIMS = 6000;
+// Review budget: one search per decision you made, so it must be cheaper than live
+// play. 24k ceiling per `hard-set-2026-07-02` (quality saturates ~32k; contested
+// positions are compute-responsive up to there, beyond it is dice).
+const REVIEW_SIMS = 4000, REVIEW_MAX = 24000;
+const WIN_NODES = 24;                     // faction node count that ends the game
+
+const $ = (id) => document.getElementById(id);
+const board = new Board($('cv'), $('board'));
+
+let state = null;            // authoritative view of YOUR game
+let inputLocked = false;
+
+// ---- two independent engines: yours, and the AI's background one ----
+function makeEngine() {
+  const w = new Worker('engine.worker.js', { type: 'module' });
+  const pending = new Map();
+  let id = 0;
+  w.onmessage = (e) => {
+    const d = e.data;
+    if (d.type === 'progress') return;             // neither side streams here
+    const r = pending.get(d.id);
+    if (r) { pending.delete(d.id); r(d.result); }
+  };
+  return (path, method = 'GET', body) => new Promise((resolve) => {
+    const k = ++id; pending.set(k, resolve);
+    w.postMessage({ id: k, path, method, body });
+  });
+}
+const api = makeEngine();      // your game — never issues a search while you play
+const aiApi = makeEngine();    // the AI's background game
+
+// ============================ model ============================
+// One entry per seed. `moves` on each side is the full ordered list of RED decisions
+// ({a:[from,to]} attack | {e:1} end turn) — replaying it from the seed is bit-exact,
+// which is what makes both the retroactive review and the move inspector possible.
+// `hist` is red power sampled per turn: {t: turn, n: nodes, s: total strength}.
+const KEY = 'nwH2H';
+let M = null;   // { rounds: [...], idx }
+
+const blankSide = () => ({ result: null, turns: 0, red: 0, moves: [], hist: [], review: null });
+const blankRound = (seed) => ({ seed, startNodes: null, you: blankSide(), ai: blankSide() });
+// new_game() seeds mulberry32 with this; keep it in 1..2^31-1 like the app does.
+const randSeed = () => Math.floor(Math.random() * 0x7ffffffe) + 1;
+
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(M)); } catch (_) {} };
+function load() {
+  try {
+    const m = JSON.parse(localStorage.getItem(KEY) || 'null');
+    if (m && Array.isArray(m.rounds) && m.rounds.length) return m;
+  } catch (_) {}
+  return null;
+}
+const cur = () => M.rounds[M.idx];
+
+const redStrength = (s) => s.nodes.reduce((a, n) => a + (n.owner === 'red' ? n.strength : 0), 0);
+
+// Snapshot the two nodes an attack was played into, at the moment it was played. Kept
+// on the move itself so BOTH move lists render as colored pips + a direction arrow
+// without needing a replay (or a review) first. x/y are what dirArrow needs.
+const mkLabel = (s, from, to) => ({
+  f: { owner: s.nodes[from].owner, strength: s.nodes[from].strength, x: s.nodes[from].x, y: s.nodes[from].y },
+  t: { owner: s.nodes[to].owner, strength: s.nodes[to].strength, x: s.nodes[to].x, y: s.nodes[to].y },
+});
+
+// Red power, one point per turn. Re-sampling the same turn overwrites it, so each
+// point is the state after that turn's RED actions — consistent for both sides.
+function sampleHist(side, s) {
+  const pt = { t: s.turn, n: s.counts.red, s: redStrength(s) };
+  const last = side.hist[side.hist.length - 1];
+  if (last && last.t === s.turn) side.hist[side.hist.length - 1] = pt;
+  else side.hist.push(pt);
+}
+
+// Stamp a finished game's outcome. Per the project's gameplay policy there is no
+// surrender — every seed reaches a natural terminal.
+function recordEnd(side, s) {
+  if (!s.over) return false;
+  side.result = s.youWon ? 'won' : 'lost';
+  side.turns = s.turn;
+  side.red = s.counts.red;
+  save();
+  return true;
+}
+
+// ============================ chrome ============================
+function renderHeader() {
+  const h = $('chips');
+  h.innerHTML = '';
+  if (!state) return;
+  for (const f of ORDER) {
+    const c = state.counts[f];
+    const d = document.createElement('div');
+    d.className = 'chip ' + f + (f === 'red' ? ' cur' : '') + (c === 0 ? ' dead' : '');
+    d.innerHTML = '<b>' + c + '</b>';
+    h.appendChild(d);
+  }
+}
+
+function stats() {
+  let yw = 0, yl = 0, aw = 0, al = 0, both = 0, onlyYou = 0, onlyAI = 0, neither = 0;
+  for (const r of M.rounds) {
+    if (r.you.result === 'won') yw++; else if (r.you.result === 'lost') yl++;
+    if (r.ai.result === 'won') aw++; else if (r.ai.result === 'lost') al++;
+    if (!r.you.result || !r.ai.result) continue;
+    if (r.you.result === 'won' && r.ai.result === 'won') both++;
+    else if (r.you.result === 'won') onlyYou++;
+    else if (r.ai.result === 'won') onlyAI++;
+    else neither++;
+  }
+  return { yw, yl, aw, al, both, onlyYou, onlyAI, neither };
+}
+
+function renderStrip() {
+  if (!M) return;
+  renderLeft();
+  $('mgame').textContent = `Seed ${M.idx + 1}`;
+  const s = stats();
+  $('tally').innerHTML = `<span class="y">You ${s.yw}–${s.yl}</span>`
+    + ` · <span class="a">AI ${s.aw}–${s.al}</span>`;
+}
+
+const setStatus = (t) => { $('status').textContent = t; };
+function resize() { board.resize(); }
+window.addEventListener('resize', resize);
+if (window.ResizeObserver) new ResizeObserver(resize).observe($('board'));
+
+// ============================ background AI ============================
+// A pump that keeps the AI busy: it plays any dealt seed it hasn't finished, in order,
+// forever. It never touches your worker, your game state or your dice.
+let aiBusy = false;
+
+function paintBadge(nodes, label, idle) {
+  const b = $('aibadge');
+  b.classList.toggle('idle', !!idle);
+  $('ailab').innerHTML = label;
+  if (nodes) drawThumb($('aicv'), nodes);
+}
+
+// How far behind the AI is. It plays one seed at a time and you never wait for it, so
+// a backlog is normal and worth showing rather than hiding.
+const aiBacklog = () => M.rounds.filter(r => r.startNodes && !r.ai.result).length - 1;
+const aiLabel = (i, turn) => {
+  const q = aiBacklog();
+  return `Seed ${i + 1}<br>turn ${turn}${q > 0 ? ` · +${q}` : ''}`;
+};
+
+async function aiPump() {
+  if (aiBusy) return;
+  aiBusy = true;
+  try {
+    for (;;) {
+      // oldest dealt-but-unfinished seed
+      const i = M.rounds.findIndex(r => r.startNodes && !r.ai.result);
+      if (i < 0) break;
+      await aiPlaySeed(i);
+    }
+  } finally {
+    aiBusy = false;
+    const done = M.rounds.filter(r => r.ai.result).length;
+    paintBadge(null, `AI idle<br>${done} done`, true);
+  }
+}
+
+async function aiPlaySeed(i) {
+  const r = M.rounds[i];
+  const g = r.ai;
+  g.moves = []; g.hist = [];                    // restart cleanly (e.g. after a reload)
+  let s = await aiApi('/api/game', 'POST', { seed: r.seed });
+  sampleHist(g, s);
+  // Paint BEFORE the first search: its opening think can take seconds, and a badge
+  // reading "idle" while the AI is actually grinding is a lie.
+  paintBadge(s.nodes, aiLabel(i, s.turn), false);
+  for (let guard = 0; guard < 4000 && !s.over; guard++) {
+    const res = await aiApi(`/api/game/${s.id}/search`, 'POST', { sims: AI_SIMS });
+    const b = res.best;
+    const q = res.winexp;
+    if (!b || b.action === -1) {
+      g.moves.push({ e: 1, q });
+      s = await aiApi(`/api/game/${s.id}/end-turn`, 'POST');
+    } else {
+      g.moves.push({ a: [b.from, b.to], q, l: mkLabel(s, b.from, b.to) });
+      s = await aiApi(`/api/game/${s.id}/attack`, 'POST', { from: b.from, to: b.to });
+    }
+    sampleHist(g, s);
+    // ambient badge: blurred+grey board, and how far along it is. No win%, no result —
+    // that would spoil the seed you're playing.
+    paintBadge(s.nodes, aiLabel(i, s.turn), false);
+    if (g.moves.length % 4 === 0) save();        // throttled: full-state write per move is wasteful
+    await sleep(0);                              // yield so the UI stays smooth
+  }
+  recordEnd(g, s);
+  save();
+  renderStrip();
+  refreshSeedPanel(i);                  // an analysis open on this seed fills in now
+  // If you already finished this seed, the pair is complete — reveal it.
+  if (r.you.result) revealPair(i);
+}
+
+// A finished pair is the only informative unit: say so, without nagging.
+function revealPair(i) {
+  const r = M.rounds[i];
+  if (i !== M.idx - 1 && i !== M.idx) return;      // only chatter about the recent one
+  if (!r.you.result || !r.ai.result) return;
+  if (r.you.result === r.ai.result)
+    setStatus(r.you.result === 'won' ? `Seed ${i + 1}: you both won it.`
+                                     : `Seed ${i + 1}: you both lost it — dice, not you.`);
+  else
+    setStatus(r.you.result === 'won' ? `Seed ${i + 1}: you won it, the AI didn't.`
+                                     : `Seed ${i + 1}: the AI won the seed you lost.`);
+}
+
+// ============================ your play ============================
+// Fully blind: no search is ever issued on your worker while you play.
+async function startSeed() {
+  const r = cur();
+  const res = await api('/api/game', 'POST', { seed: r.seed });
+  r.startNodes = res.nodes.map(n => ({ x: n.x, y: n.y, owner: n.owner, strength: n.strength }));
+  r.you.moves = []; r.you.hist = [];
+  save();
+  adopt(res); resize(); renderStrip();
+  sampleHist(r.you, res); save();
+  setStatus('Your game. Select a red node to attack.');
+  aiPump();                                    // the AI starts this seed too, right now
+}
+
+function adopt(s) {
+  state = s;
+  board.setView(s);
+  renderHeader();
+  board.draw();
+}
+
+async function yourAttack(from, to) {
+  inputLocked = true; board.abort = false;
+  board.selected = null; board.battle = { from, to }; board.draw();
+  setStatus('Attacking…');
+  cur().you.moves.push({ a: [from, to], l: mkLabel(state, from, to) });
+  const res = await api(`/api/game/${state.id}/attack`, 'POST', { from, to });
+  const e = res.log && res.log[0];
+  if (e && e.flips && !board.instant) await board.animateBattle(e);
+  board.battle = null;
+  adopt(res); sampleHist(cur().you, res); save();
+  setStatus(e ? (e.captured ? `Captured node ${e.to}!`
+    : `Attack on ${e.to} repelled (left ${e.fromStrength}).`) : 'Done.');
+  inputLocked = false;
+  if (recordEnd(cur().you, res)) await afterYourGame();
+}
+
+async function yourEndTurn() {
+  if (!state || state.over || inputLocked) return;
+  inputLocked = true; board.abort = false;
+  board.selected = null; board.draw();
+  setStatus('Ending turn…');
+  cur().you.moves.push({ e: 1 });
+  const res = await api(`/api/game/${state.id}/end-turn`, 'POST');
+  const caps = (res.events || []).filter(e => e.type === 'attack' && e.captured).length;
+  if (res.events && res.events.length && !board.instant) await board.animateEndTurn(res, setStatus);
+  inputLocked = false;
+  adopt(res); sampleHist(cur().you, res); save();
+  if (recordEnd(cur().you, res)) { await afterYourGame(); return; }
+  setStatus(`Bots captured ${caps} node(s). Your move.`);
+}
+
+async function afterYourGame() {
+  const i = M.idx, r = M.rounds[i];
+  const lost = r.you.result === 'lost';
+  renderStrip();
+  setStatus(lost ? 'You lost this seed.' : 'You WON this seed.');
+  await sleep(1000);
+  if (r.ai.result) revealPair(i);
+  else setStatus('AI is still playing this seed — next one is yours.');
+  await sleep(lost ? 600 : 1400);
+  // straight on to the next seed; the AI catches up in its own time
+  M.rounds.push(blankRound(randSeed()));
+  M.idx = M.rounds.length - 1;
+  save();
+  await startSeed();
+  // A loss is the interesting case — open its analysis and start scoring immediately.
+  // The next seed is already dealt underneath, so closing drops you straight into it.
+  if (lost) openSeed(i, { autoScore: true });
+}
+
+$('cv').addEventListener('pointerdown', (ev) => {
+  if (!M || !state || state.over || inputLocked) return;
+  const b = $('cv').getBoundingClientRect();
+  const n = board.hitNode(ev.clientX - b.left, ev.clientY - b.top);
+  if (!n) { board.selected = null; board.draw(); return; }
+  if (board.selected !== null && board.targetsFor.get(board.selected)?.has(n.id)) {
+    yourAttack(board.selected, n.id); return;
+  }
+  if (n.id === board.selected) {
+    board.selected = null; setStatus('Select a red node to attack.'); board.draw(); return;
+  }
+  if (n.owner === 'red' && n.strength > 1 && board.targetsFor.has(n.id)) {
+    board.selected = n.id; setStatus('Tap a highlighted enemy node to attack.');
+  } else {
+    board.selected = null;
+    if (n.owner === 'red') setStatus('That node has no attackable neighbors.');
+  }
+  board.draw();
+});
+$('endturn').onclick = () => yourEndTurn();
+$('aibadge').onclick = () => showResults();
+
+// ============================ stats ============================
+// Exact two-sided sign test on the discordant pairs: under "equal skill" each split
+// seed is a fair coin, so b ~ Binom(b+c, 1/2).
+function signTestP(b, c) {
+  const n = b + c;
+  if (!n) return 1;
+  const lo = Math.min(b, c);
+  const logFact = [0];
+  for (let i = 1; i <= n; i++) logFact[i] = logFact[i - 1] + Math.log(i);
+  let p = 0;
+  for (let k = 0; k <= lo; k++)
+    p += Math.exp(logFact[n] - logFact[k] - logFact[n - k] - n * Math.LN2);
+  return Math.min(1, 2 * p);
+}
+
+// ============================ tally ============================
+function showResults() {
+  const s = stats();
+  const yn = s.yw + s.yl, an = s.aw + s.al;
+  const n = s.onlyAI + s.onlyYou;
+  const p = signTestP(s.onlyAI, s.onlyYou);
+  const paired = s.both + s.onlyYou + s.onlyAI + s.neither;
+
+  let verdict;
+  if (!paired) {
+    verdict = `No completed pairs yet — a seed only counts once you and the AI have both
+      finished it.`;
+  } else if (!n) {
+    verdict = `All ${paired} completed seed${paired > 1 ? 's' : ''} went the same way for
+      both of you, so there's no evidence of a skill gap either direction yet. Keep
+      playing — or open a seed below and score your decisions, which measures skill
+      directly instead of waiting on win/loss.`;
+  } else if (p < 0.05) {
+    const better = s.onlyAI > s.onlyYou ? 'the AI is genuinely stronger' : 'you are genuinely stronger';
+    verdict = `<b>Significant:</b> ${better} on these deals — ${s.onlyAI}–${s.onlyYou} on the
+      ${n} seed${n > 1 ? 's' : ''} that split, exact sign test p = ${p.toFixed(3)}.`;
+  } else {
+    verdict = `<b>Not significant</b> (p = ${p.toFixed(3)}). Only ${n} seed${n > 1 ? 's' : ''}
+      split between you — too few to call. ${s.onlyAI > s.onlyYou
+        ? 'The AI is ahead, but it could be dice.' : s.onlyYou > s.onlyAI
+        ? 'You are ahead, but it could be dice.' : 'Dead even so far.'}
+      Open a seed below and score your decisions: per-move loss converges far faster
+      than W/L does.`;
+  }
+
+  $('res-title').textContent = `Tally · ${paired} pair${paired === 1 ? '' : 's'} complete`;
+  $('res-body').innerHTML = `
+    <div id="score">
+      <div class="sc ${s.yw > s.aw ? 'lead' : ''}"><div class="who">You</div>
+        <div class="n">${s.yw}–${s.yl}</div>
+        <div class="pct">${yn ? Math.round(100 * s.yw / yn) : 0}% win</div></div>
+      <div class="sc ${s.aw > s.yw ? 'lead' : ''}"><div class="who">AI</div>
+        <div class="n">${s.aw}–${s.al}</div>
+        <div class="pct">${an ? Math.round(100 * s.aw / an) : 0}% win</div></div>
+    </div>
+    <div id="verdict">${verdict}</div>
+    <h3>Paired breakdown</h3>
+    <table class="mx">
+      <tr><th>Seed outcome</th><th style="text-align:right">Count</th></tr>
+      <tr><td>Both won</td><td class="v">${s.both}</td></tr>
+      <tr class="${s.onlyAI ? 'hl' : ''}"><td>Only AI won</td><td class="v">${s.onlyAI}</td></tr>
+      <tr class="${s.onlyYou ? 'hl' : ''}"><td>Only you won</td><td class="v">${s.onlyYou}</td></tr>
+      <tr><td>Both lost</td><td class="v">${s.neither}</td></tr>
+    </table>
+    <p>Only the two highlighted rows say anything about skill — the seeds you both won
+      or both lost were decided by the deal, not by either player.</p>
+    <h3 class="sp">Every seed</h3>
+    <div id="rows"></div>`;
+
+  const rows = $('rows');
+  for (let i = M.rounds.length - 1; i >= 0; i--) {
+    const r = M.rounds[i];
+    if (!r.you.result && !r.you.moves.length) continue;      // untouched current seed
+    const row = document.createElement('div');
+    row.className = 'srow';
+    const c = document.createElement('canvas'); c.width = 46; c.height = 46;
+    const meta = document.createElement('div'); meta.className = 'meta';
+    const scored = r.you.review ? `<div class="loss">scored ✓</div>` : '';
+    meta.innerHTML = `<div class="sd">#${i + 1} · seed ${r.seed}</div>`
+      + `<div class="vs">You ${resTag(r.you.result)} &nbsp;·&nbsp; AI ${resTag(r.ai.result)}</div>${scored}`;
+    const go = document.createElement('div'); go.className = 'go'; go.textContent = '›';
+    row.appendChild(c); row.appendChild(meta); row.appendChild(go);
+    row.onclick = () => { closeRes(); openSeed(i, { fromResults: true }); };
+    rows.appendChild(row);
+    if (r.startNodes) drawThumb(c, r.startNodes);
+  }
+  $('ov-res').classList.add('show');
+}
+
+$('tally').onclick = showResults;
+const closeRes = () => $('ov-res').classList.remove('show');
+$('res-close').onclick = closeRes;
+$('res-close2').onclick = closeRes;
+$('res-reset').onclick = () => {
+  if (!confirm('Reset the whole tally? Every seed, result and review is discarded.')) return;
+  try { localStorage.removeItem(KEY); } catch (_) {}
+  location.reload();
+};
+
+// ============================ red-power graph ============================
+// ONE graph, both players: red node count per turn, you vs the AI on the same axes —
+// the whole point is the comparison, and two separate panels made you eyeball it.
+// Node count (not total strength) is the plotted power: it's the win condition (24).
+const YOU_COL = '#5fd0d6', AI_COL = '#f5c542';
+function drawPower(cv, you, ai) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = cv.getBoundingClientRect();
+  const W = Math.max(1, Math.round(rect.width)), H = Math.max(1, Math.round(rect.height));
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const all = [...you, ...ai];
+  const padL = 5, padR = 5, padT = 6, padB = 5;
+  const maxT = Math.max(2, ...all.map(p => p.t));
+  const maxN = Math.max(WIN_NODES, ...all.map(p => p.n));
+  const xOf = (t) => padL + (t - 1) / (maxT - 1) * (W - padL - padR);
+  const yOf = (v) => padT + (1 - v / maxN) * (H - padT - padB);
+  if (!all.length) {
+    g.fillStyle = '#5f9e8e'; g.font = '11px -apple-system, sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('no data yet', W / 2, H / 2);
+    return;
+  }
+  // the 24-node win line
+  g.strokeStyle = 'rgba(54,211,154,.30)'; g.lineWidth = 1; g.setLineDash([3, 4]);
+  g.beginPath(); g.moveTo(0, yOf(WIN_NODES) + .5); g.lineTo(W, yOf(WIN_NODES) + .5); g.stroke();
+  g.setLineDash([]);
+  const series = (h, col) => {
+    if (!h.length) return;
+    g.beginPath();
+    h.forEach((p, i) => i ? g.lineTo(xOf(p.t), yOf(p.n)) : g.moveTo(xOf(p.t), yOf(p.n)));
+    g.strokeStyle = col; g.lineWidth = 2.1; g.lineJoin = 'round';
+    g.shadowColor = col; g.shadowBlur = 5; g.stroke(); g.shadowBlur = 0;
+    const last = h[h.length - 1];
+    g.fillStyle = col;
+    g.beginPath(); g.arc(xOf(last.t), yOf(last.n), 3, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#02100b'; g.lineWidth = 1; g.stroke();
+  };
+  series(ai, AI_COL);          // AI first so your line reads on top
+  series(you, YOU_COL);
+}
+
+// ============================ per-seed detail ============================
+const TIERS = [
+  { min: 20, k: 3, label: 'Blunder' },
+  { min: 10, k: 2, label: 'Mistake' },
+  { min: 5,  k: 1, label: 'Inaccuracy' },
+];
+// Outside this win% band the game is already decided and no choice can change it.
+const DEAD_LO = 0.02, DEAD_HI = 0.98;
+const tierOf = (gap) => (TIERS.find(t => gap >= t.min) || { k: 0, label: 'OK' });
+
+let sdIdx = 0, sdTab = 'you', sdSel = -1, ib = null, sdFromResults = false;
+
+function mvLabel(l) {
+  if (l === 'end' || !l) return '<span class="lbl">End turn</span>';
+  return `<span class="pip ${l.f.owner}">${l.f.strength}</span>`
+       + `<span class="arrow">${dirArrow(l.f, l.t)}</span>`
+       + `<span class="pip ${l.t.owner}">${l.t.strength}</span><span class="lbl"></span>`;
+}
+
+const resTag = (x) => `<span class="tag ${x || 'none'}">${x === 'won' ? 'W' : x === 'lost' ? 'L' : '—'}</span>`;
+// Only a finished game gets a final score — mid-game the AI's node count is not a
+// result and must not be dressed up as one.
+const sdFin = (side) => !side.hist.length ? 'queued'
+  : !side.result ? 'still playing…'
+  : `${side.red} node${side.red === 1 ? '' : 's'} · ${side.turns} turn${side.turns === 1 ? '' : 's'}`;
+const sdTitle = (i, r) => `Seed ${i + 1} · You ${resTag(r.you.result)} AI ${resTag(r.ai.result)}`;
+const sdLegend = (r) => `
+  <span><i style="background:${YOU_COL}"></i>You — ${sdFin(r.you)}</span>
+  <span><i style="background:${AI_COL}"></i>AI — ${sdFin(r.ai)}</span>
+  <span><i class="dash"></i>${WIN_NODES} to win</span>`;
+
+// The AI plays concurrently, so an analysis auto-opened after your loss usually shows
+// its half unfinished. Fill it in the moment it lands rather than leaving a stale
+// "still playing…" / "AI moves (0)" panel that never updates. Deliberately does NOT
+// re-run openSeed: that would reset your tab, selection and re-trigger scoring.
+function refreshSeedPanel(i) {
+  if (!$('ov-seed').classList.contains('show') || sdIdx !== i) return;
+  const r = M.rounds[i];
+  $('sd-title').innerHTML = sdTitle(i, r);
+  $('glegend').innerHTML = sdLegend(r);
+  drawPower($('pg'), r.you.hist, r.ai.hist);
+  const tab = document.querySelector('#sd-tabs > div[data-tab="ai"]');
+  if (tab) tab.textContent = `AI moves (${r.ai.moves.length})`;
+  if (sdTab === 'ai') { renderList(); select(0); }     // its list was empty before
+}
+
+function openSeed(i, opts = {}) {
+  sdIdx = i; sdSel = -1;
+  sdFromResults = !!opts.fromResults;
+  const r = M.rounds[i];
+  $('sd-title').innerHTML = sdTitle(i, r);
+  $('sd-body').innerHTML = `
+    <h3>Red nodes over the game</h3>
+    <canvas class="pg" id="pg"></canvas>
+    <div id="glegend">${sdLegend(r)}</div>
+    <h3>Step through the moves</h3>
+    <div id="ibwrap"><canvas id="ib"></canvas></div>
+    <div id="ibcap">
+      <span id="ibinfo">Tap a move below to see the board it was played into.</span>
+      <span class="nav"><span class="act" id="ib-prev">‹</span><span class="act" id="ib-next">›</span></span>
+    </div>
+    <div class="tabs" id="sd-tabs">
+      <div data-tab="you" class="sel">Your moves (${r.you.moves.length})</div>
+      <div data-tab="ai" class="ai">AI moves (${r.ai.moves.length})</div>
+    </div>
+    <div id="sd-list"></div>`;
+  // Show BEFORE painting: every canvas here sizes itself from getBoundingClientRect,
+  // which is 0x0 while the overlay is still display:none.
+  $('ov-seed').classList.add('show');
+  ib = new Board($('ib'), $('ibwrap'));
+  drawPower($('pg'), r.you.hist, r.ai.hist);
+  document.querySelectorAll('#sd-tabs > div').forEach(el => {
+    el.onclick = () => {
+      sdTab = el.dataset.tab; sdSel = -1;
+      document.querySelectorAll('#sd-tabs > div').forEach(d => d.classList.toggle('sel', d === el));
+      renderList();
+      select(0);                          // never leave the inspector blank
+    };
+  });
+  $('ib-prev').onclick = () => step(-1);
+  $('ib-next').onclick = () => step(1);
+  sdTab = 'you';
+  renderList();
+  select(0);
+  // Auto-opened after a loss: start the scoring straight away — that IS the analysis,
+  // and making you hunt for a button first is pointless.
+  if (opts.autoScore && !r.you.review && r.you.moves.length) {
+    const btn = $('sd-score');
+    if (btn) runReview(i, btn);
+  }
+}
+// Back returns wherever you came from: the tally if you drilled in from it, otherwise
+// (auto-opened after a loss) straight back to the seed you're now playing.
+$('sd-close').onclick = () => {
+  $('ov-seed').classList.remove('show');
+  if (sdFromResults) showResults();
+};
+
+function renderList() {
+  const r = M.rounds[sdIdx];
+  const side = sdTab === 'you' ? r.you : r.ai;
+  const list = $('sd-list');
+  list.innerHTML = '';
+  if (!side.moves.length) {
+    list.innerHTML = `<div class="spin">${sdTab === 'ai'
+      ? 'The AI hasn\'t finished this seed yet.' : 'No moves recorded.'}</div>`;
+    return;
+  }
+  // Your list gets a Score button; the AI's moves already carry its own win%.
+  if (sdTab === 'you') {
+    const rv = side.review;
+    if (rv) {
+      const [ok, inacc, mist, blun] = rv.counts;
+      const sum = document.createElement('div');
+      // The stacked tier bar carries the whole summary. The per-move rows below are
+      // where the detail lives; aggregate cards and prose just restated them.
+      sum.innerHTML = `<div id="rvbar"></div>`;
+      list.appendChild(sum);
+      const bar = $('rvbar'), tot = Math.max(1, rv.nLive ?? rv.n);
+      for (const [c, col] of [[ok, '#36d39a'], [inacc, '#f5c542'], [mist, '#ff9f45'], [blun, '#ff4d5e']]) {
+        if (!c) continue;
+        const el = document.createElement('i');
+        el.style.width = (100 * c / tot) + '%'; el.style.background = col;
+        bar.appendChild(el);
+      }
+    } else {
+      const btn = document.createElement('div');
+      btn.className = 'act';
+      btn.id = 'sd-score';
+      btn.style.cssText = 'text-align:center;padding:10px;border-radius:9px;'
+        + 'background:rgba(95,208,214,.10);border:1px solid rgba(95,208,214,.35);margin-bottom:12px';
+      btn.textContent = `Score my ${side.moves.length} decisions`;
+      btn.onclick = () => runReview(sdIdx, btn);
+      list.appendChild(btn);
+    }
+  }
+
+  const rv = sdTab === 'you' ? side.review : null;
+  side.moves.forEach((mv, k) => {
+    const sm = rv ? rv.moves[k] : null;
+    const t = (!sm || sm.gap == null || sm.dead) ? { k: 0 } : tierOf(sm.gap);
+    const row = document.createElement('div');
+    row.className = 'mv t' + t.k + (sm && sm.dead ? ' dead' : '') + (k === sdSel ? ' cur' : '');
+    // Labels are recorded at play time (mv.l), so both lists read as pips with no
+    // replay needed; the review's snapshot is an equivalent fallback. A move saved
+    // before labels existed falls back to raw ids — never to a wrong label.
+    const lb = mv.l || (sm && sm.label);
+    const lab = mv.e ? mvLabel('end')
+      : lb ? mvLabel(lb) : `<span class="lbl">${mv.a[0]} → ${mv.a[1]}</span>`;
+    const q = sm ? sm.myQ : mv.q;
+    const gapTxt = !sm ? '' : sm.gap == null ? '—'
+      : sm.dead ? 'decided' : (sm.gap < 0.5 ? 'best' : `−${sm.gap.toFixed(0)}%`);
+    row.innerHTML = `<span class="no">${k + 1}</span>${lab}`
+      + `<span class="qq">${q != null ? Math.round(q * 100) + '%' : ''}</span>`
+      + `<span class="gap">${gapTxt}</span>`;
+    row.onclick = () => select(k);
+    list.appendChild(row);
+    if (sm && sm.bestLbl && !sm.dead && sm.gap >= 5) {
+      const hint = document.createElement('div');
+      hint.className = 'mvbest';
+      hint.innerHTML = `best was ${mvLabel(sm.bestLbl)} · ${Math.round(sm.bestQ * 100)}%`;
+      list.appendChild(hint);
+    }
+  });
+}
+
+// ---- move inspector: replay the seed to move k and show that exact board ----
+let inspectSeq = 0;
+async function select(k) {
+  const r = M.rounds[sdIdx];
+  const side = sdTab === 'you' ? r.you : r.ai;
+  if (k < 0 || k >= side.moves.length) return;
+  sdSel = k;
+  renderList();
+  const my = ++inspectSeq;
+  $('ibinfo').textContent = 'Replaying…';
+  // Replay on YOUR worker (idle while you're in a menu). Bit-exact from the seed.
+  let s = await api('/api/game', 'POST', { seed: r.seed });
+  for (let j = 0; j < k; j++) {
+    const mv = side.moves[j];
+    s = mv.e ? await api(`/api/game/${s.id}/end-turn`, 'POST')
+             : await api(`/api/game/${s.id}/attack`, 'POST', { from: mv.a[0], to: mv.a[1] });
+  }
+  if (my !== inspectSeq) return;                 // a newer selection superseded this
+  const mv = side.moves[k];
+  ib.setView(s);
+  // highlight the move about to be played
+  ib.hoverMove = mv.e ? null : { from: mv.a[0], to: mv.a[1] };
+  ib.resize();
+  // "You:"/"AI:" rather than a conjugated verb — "You ends the turn" read badly.
+  const who = sdTab === 'you' ? 'You' : 'AI';
+  $('ibinfo').innerHTML = `<b>Move ${k + 1}</b> · turn ${s.turn} · ${s.counts.red} red nodes`
+    + ` · ${who}: ${mv.e ? 'end turn' : `attack ${mv.a[0]} → ${mv.a[1]}`}`;
+}
+const step = (d) => select(sdSel < 0 ? 0 : sdSel + d);
+
+async function runReview(i, btn) {
+  const r = M.rounds[i];
+  btn.textContent = 'Scoring… 0/' + r.you.moves.length;
+  btn.style.pointerEvents = 'none';
+  try {
+    r.you.review = await computeReview(i, (k, n) => { btn.textContent = `Scoring… ${k}/${n}`; });
+    save();
+    renderList();
+  } catch (e) {
+    btn.textContent = 'Scoring failed: ' + String(e && e.message || e);
+    btn.style.pointerEvents = '';
+  }
+}
+
+// Replay YOUR game from its seed and, at every decision you made, run a search and
+// score your choice against the search's best. This is the blunder-alert metric
+// (index.html) applied retroactively to a whole game: it uses only PRE-move Qs, so it
+// grades the decision, never the dice that followed.
+async function computeReview(i, onProg) {
+  const r = M.rounds[i];
+  const out = { moves: [], curve: [] };
+  let s = await api('/api/game', 'POST', { seed: r.seed });
+  for (let k = 0; k < r.you.moves.length; k++) {
+    const mv = r.you.moves[k];
+    const isEnd = !!mv.e;
+    const from = isEnd ? null : mv.a[0], to = isEnd ? null : mv.a[1];
+    const res = await api(`/api/game/${s.id}/search`, 'POST',
+      { sims: REVIEW_SIMS, maxSims: REVIEW_MAX });
+    const all = res.all || res.top || [];
+    const best = all[0] || null;
+    const mine = all.find(m => isEnd ? m.action === -1 : (m.from === from && m.to === to));
+    // Unvisited tail moves have no reliable Q — record the move but leave it unscored
+    // rather than inventing a number (same guard the live blunder alert uses).
+    const scored = !!(best && mine && mine.visits > 0);
+    const gap = scored ? Math.max(0, (best.q - mine.q) * 100) : null;
+    const label = isEnd ? null : { f: { ...s.nodes[from] }, t: { ...s.nodes[to] } };
+    const bestDiffers = scored && best !== mine;
+    const bestLbl = !bestDiffers ? null
+      : (best.action === -1 ? 'end' : { f: { ...s.nodes[best.from] }, t: { ...s.nodes[best.to] } });
+    // A position whose best move is already ~lost or ~won carries no decision signal:
+    // EVERY legal move scores gap 0 there, so counting those would flatter you (a
+    // thrown game reads as a long tail of "best" moves).
+    const dead = scored && (best.q <= DEAD_LO || best.q >= DEAD_HI);
+    out.moves.push({ n: k + 1, turn: s.turn, isEnd, label, bestLbl, dead,
+      myQ: scored ? mine.q : null, bestQ: best ? best.q : null, gap });
+    if (best && best.q != null) out.curve.push(+best.q.toFixed(4));
+    onProg(k + 1, r.you.moves.length);
+    s = isEnd
+      ? await api(`/api/game/${s.id}/end-turn`, 'POST')
+      : await api(`/api/game/${s.id}/attack`, 'POST', { from, to });
+  }
+  // Aggregates over LIVE decisions only (a decided position ties every move, so
+  // counting those flatters the player). `counts` drives the tier bar; n/nLive/meanLoss
+  // are recorded in the saved review but no longer shown — the per-move rows say it
+  // better than a headline number did.
+  const sc = out.moves.filter(m => m.gap != null);
+  const live = sc.filter(m => !m.dead);
+  out.n = sc.length;
+  out.nLive = live.length;
+  out.meanLoss = live.length ? live.reduce((a, m) => a + m.gap, 0) / live.length : 0;
+  out.counts = [0, 0, 0, 0];
+  for (const m of live) out.counts[tierOf(m.gap).k]++;
+  return out;
+}
+
+// ============================ speed (footer left) ============================
+let speedName = 'medium';
+try { const v = localStorage.getItem('nwSpeed'); if (v && v in SPEEDS) speedName = v; } catch (_) {}
+board.speed = SPEEDS[speedName];
+const SPEED_CYCLE = ['slow', 'medium', 'fast', 'instant'];
+function renderLeft() {
+  $('left').textContent = speedName.charAt(0).toUpperCase() + speedName.slice(1);
+}
+$('left').onclick = () => {
+  speedName = SPEED_CYCLE[(SPEED_CYCLE.indexOf(speedName) + 1) % SPEED_CYCLE.length];
+  board.speed = SPEEDS[speedName];
+  try { localStorage.setItem('nwSpeed', speedName); } catch (_) {}
+  renderLeft();
+};
+
+// ============================ boot ============================
+// Resume: your recorded moves replay back into a fresh game for the seed in progress
+// (bit-exact from the seed), so a reload mid-game doesn't cost you the game. The AI
+// pump independently re-plays any seed it hadn't finished.
+async function resume() {
+  const r = cur();
+  if (r.you.result) {                            // you'd finished; move on to a new seed
+    M.rounds.push(blankRound(randSeed()));
+    M.idx = M.rounds.length - 1;
+    save();
+    await startSeed();
+    return;
+  }
+  const moves = r.you.moves.slice();
+  await startSeed();                             // deals the seed + kicks the AI pump
+  if (!moves.length) return;
+  const sp = board.speed; board.speed = 0;       // replay instantly
+  let s = state;
+  for (const mv of moves) {
+    s = mv.e ? await api(`/api/game/${s.id}/end-turn`, 'POST')
+             : await api(`/api/game/${s.id}/attack`, 'POST', { from: mv.a[0], to: mv.a[1] });
+    sampleHist(r.you, s);
+  }
+  board.speed = sp;
+  r.you.moves = moves;                           // startSeed cleared the log
+  save();
+  adopt(s); resize(); renderStrip();
+  if (recordEnd(r.you, s)) { await afterYourGame(); return; }
+  setStatus('Resumed your game. Your move.');
+}
+
+$('in-start').onclick = async () => {
+  $('ov-intro').classList.remove('show');
+  M = { rounds: [blankRound(randSeed())], idx: 0 };
+  save();
+  await startSeed();
+};
+
+paintBadge(null, 'AI<br>idle', true);
+const prev = load();
+if (prev) { M = prev; renderStrip(); resume(); }
+else $('ov-intro').classList.add('show');
+renderLeft();
+</script>
+</body>
+</html>

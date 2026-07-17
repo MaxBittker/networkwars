@@ -115,6 +115,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, open(INDEX, 'rb').read(), 'text/html')
             except FileNotFoundError:
                 self._send(500, '<h1>public/index.html not found</h1>', 'text/html')
+        elif path in ('/head-to-head', '/head-to-head.html'):
+            # Duplicate-format match: you play a series of seeds blind, then the C-UCT
+            # agent plays the SAME seeds. Extensionless too, so it reads as an endpoint.
+            fp = os.path.join(ROOT, 'public', 'head-to-head.html')
+            try:
+                self._send(200, open(fp, 'rb').read(), 'text/html')
+            except FileNotFoundError:
+                self._send(500, '<h1>public/head-to-head.html not found</h1>', 'text/html')
         elif path.endswith('.js') or path.endswith('.wasm'):
             # Serve the WASM engine + worker assets out of public/ (basename only, no
             # traversal). The browser runs the C engine in-process via these, so they
