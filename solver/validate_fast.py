@@ -14,17 +14,18 @@ import fastnw
 # Frozen full-game outcomes (deterministic policies). Regenerate intentionally if
 # the engine is meant to change; an unexpected diff here means a behavior drift.
 GOLDEN = {
-    # Re-frozen 2026-07-02 for the REAL DECOMPILED battle: iterated fair-coin
-    # attrition (two attacker pre-fires + symmetric fair-coin exchange, keep-1;
-    # occupier = surviving a-1, no separate survivor draw). See
-    # REAL_BATTLE_DECOMPILED.md. Per-battle RNG consumption changed (variable # of
-    # coin flips), so the boards shifted vs the 06-30 freeze; still reproducible.
-    (1, 'safe_expand'): ('yellow', 13), (1, 'random_all'): ('purple', 7),
-    (2, 'safe_expand'): ('green', 6),   (2, 'random_all'): ('green', 5),
-    (3, 'safe_expand'): ('purple', 7),  (3, 'random_all'): ('green', 5),
-    (7, 'safe_expand'): ('yellow', 8),  (7, 'random_all'): ('green', 11),
-    (42, 'safe_expand'): ('yellow', 17),(42, 'random_all'): ('blue', 9),
-    (100, 'safe_expand'): ('yellow', 6),(100, 'random_all'): ('purple', 9),
+    # Re-frozen 2026-07-17 for the REAL DECOMPILED bot turn (OpponentAIOriginal,
+    # ipa_decompile/re/ai/): one strongest-first pass over the islands owned at
+    # turn start, and after a capture the bot keeps attacking with the stack it
+    # just moved (chain) until a repel or the target isn't strictly weaker. No
+    # RNG in move selection (ties: node-id / adjacency order), so bot turns
+    # consume dice only in battles; boards shifted vs the 07-02 freeze.
+    (1, 'safe_expand'): ('blue', 7),    (1, 'random_all'): ('red', 7),
+    (2, 'safe_expand'): ('green', 4),   (2, 'random_all'): ('green', 6),
+    (3, 'safe_expand'): ('yellow', 6),  (3, 'random_all'): ('green', 8),
+    (7, 'safe_expand'): ('yellow', 6),  (7, 'random_all'): ('yellow', 6),
+    (42, 'safe_expand'): ('red', 6),    (42, 'random_all'): ('red', 5),
+    (100, 'safe_expand'): ('blue', 9),  (100, 'random_all'): ('blue', 6),
 }
 
 

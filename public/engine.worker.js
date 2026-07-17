@@ -2,7 +2,7 @@
 // run in a Web Worker so the 6000-sim C-UCT search never blocks the UI. Direct port
 // of solver/server.py: it holds game state and sequences C-engine calls, building
 // the exact same view/log/events/search JSON that index.html already speaks. No game
-// logic lives here — board-gen, the four bots, the power-ratio battle, reinforcement
+// logic lives here — board-gen, the four bots, the fair-coin-attrition battle, reinforcement
 // and the search are all in fast_engine.c (via fastnw.js). The frontend is now fully
 // self-contained: no HTTP API, no Python.
 import { loadEngine, FACTIONS, FIDX } from './fastnw.js';
@@ -144,8 +144,9 @@ function doEndTurn(g) {
     for (let b = 1; b < 5; b++) {                       // green, yellow, blue, purple
       if (E.counts(owner)[b] === 0) continue;           // eliminated faction takes no turn
       let won = false;
-      for (let it = 0; it < 1000; it++) {               // bot greedily attacks until none
-        const mv = E.bestBotMove(owner, strength, b);
+      const st = E.botTurnBegin(owner, strength, b);     // strongest-first island pass,
+      for (;;) {                                         // chains follow each capture
+        const mv = E.botTurnNext(owner, strength, b, st);
         if (mv === null) break;
         const [frm, to] = mv;
         const attacker = FACTIONS[owner[frm]];
@@ -156,6 +157,7 @@ function doEndTurn(g) {
           toStrength: meta.toStrength });
         if (E.checkWinner(owner) >= 0) { won = true; break; }
       }
+      E.botTurnEnd(st);
       if (won) break;
       reinforceStep(b);                                 // bot reinforces
     }

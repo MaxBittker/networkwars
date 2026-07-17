@@ -3,7 +3,7 @@
 // solver/fastnw.py: it copies int32 arrays into the wasm heap, calls the exported
 // C functions, and copies results back. It implements NO game rules itself — the C
 // engine is the single source of truth for board-gen, the four bots, the
-// power-ratio battle, reinforcement, and the C-UCT search.
+// fair-coin-attrition battle, reinforcement, and the C-UCT search.
 //
 // owner encoding: red=0, green=1, yellow=2, blue=3, purple=4 (= FACTIONS index).
 // Two RNG streams in C: useMb32(seed) = the real seeded mulberry32 game stream;
@@ -123,14 +123,30 @@ class Engine {
     return this.M._ext_check_winner(this._owner);
   }
 
-  bestBotMove(owner, strength, faction) {
+  // Bot-turn cursor (mirrors the real game's OpponentAI loop): begin() snapshots
+  // + sorts the faction's islands strongest-first, next() yields one attack at a
+  // time — after a capture the bot continues with the stack it just moved. Call
+  // next() only with the previous attack already resolved.
+  botTurnBegin(owner, strength, faction) {
     this._put(this._owner, owner);
     this._put(this._strength, strength);
-    let r = this.M._ext_best_bot_move(this._owner, this._strength, faction);
+    const st = this.M._malloc((MAXN + 3) * 4);
+    this.M._bot_turn_begin(this._owner, this._strength, faction, st);
+    return st;
+  }
+
+  // next attack as [frm, to], or null when the faction's attacks are done (then
+  // free the cursor with botTurnEnd).
+  botTurnNext(owner, strength, faction, st) {
+    this._put(this._owner, owner);
+    this._put(this._strength, strength);
+    let r = this.M._bot_turn_next(this._owner, this._strength, faction, st);
     if (r === 0) return null;
     r -= 1;
     return [r >> 8, r & 0xFF];
   }
+
+  botTurnEnd(st) { this.M._free(st); }
 
   attackLogged(owner, strength, frm, to) {
     this._put(this._owner, owner);

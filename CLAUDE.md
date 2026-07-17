@@ -13,7 +13,7 @@
   dropped (it plateaued below the search; findings in memory
   `alphago-levers-ruled-out`). No Gymnasium env or torch/pufferlib dependency.
 - **`solver/fast_engine.c` is the single implementation of everything**: board
-  generation + the iOS deal, the four bots, the power-ratio battle,
+  generation + the iOS deal, the four bots, the fair-coin-attrition battle,
   reinforcement, win check, and the open-loop C-UCT search (ranked **C1** rollout
   baked in, `c_puct=2.5`). Everything else is a thin client over it:
   - `solver/fastnw.py` — ctypes client (marshals int32 arrays; implements no rules).
@@ -97,10 +97,21 @@
   exact DP of this loop. (The old fitted single-shot `a^3.40/(a^3.40+1.26 d^3.40)` +
   beta-binomial survivor model was a good surrogate — it nailed parity ≈0.44 — but
   is now removed in favor of ground truth.)
-- BOTS: each of the four bots greedily attacks **strongest-own-node first**, then that
-  node's **weakest reachable target**, ties broken at random (matches observed iOS
-  bot ordering); then reinforces its largest component's border. The RNG is seeded
-  per game so outcomes stay reproducible (golden-seed gate holds).
+- BOTS are the **real decompiled opponent AI** (2026-07-17; `OpponentAIOriginal`
+  from the IPA — max spotted the chain behavior in live play, asm in
+  `ipa_decompile/re/ai/`): each bot makes ONE **strongest-first** pass over the
+  islands it owned at turn start; each island attacks its **smallest adjacent
+  enemy** and, on capture, the bot **keeps attacking with the stack it just
+  moved** (chain) until a repel or the target isn't strictly weaker
+  (okAttack: attacker ≥2 and > defender). A stack is never revisited and attacks
+  that open up later in the turn are not taken; ties are deterministic (node-id /
+  adjacency order — NO RNG in move selection, so bot turns consume dice only in
+  battles); then it reinforces its largest component's border. The in-turn cursor
+  is exposed (`bot_turn_begin/next`) so the browser worker replays turns
+  attack-by-attack bit-identically to the atomic `end_turn`. (The shipped app
+  also contains an unused `OpponentAINiceEarly` variant — ruled out as the live
+  default by 11 early bot captures of 3-6-army red nodes across 100 live games,
+  which its early-game mercy rule forbids.)
 - Build + drive: native `solver/build_native.sh` (PGO: instrument → profile →
   rebuild; **bit-identical play**, ~3% faster; falls back to the plain one-liner
   `cc -O3 -ffast-math -shared -fPIC solver/fast_engine.c -o solver/fast_engine.so`

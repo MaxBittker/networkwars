@@ -1,8 +1,8 @@
 /* fast_engine.c — Network Wars engine + C-UCT search (the single source of truth).
  *
  * One implementation of the whole game: board generation + deal, the four
- * deterministic bots, the power-ratio battle, reinforcement, win check, and an
- * open-loop PUCT/MCTS player for RED. Python (fastnw.py) and the browser
+ * deterministic bots, the fair-coin-attrition battle, reinforcement, win check,
+ * and an open-loop PUCT/MCTS player for RED. Python (fastnw.py) and the browser
  * (solver/server.py) are thin clients over this; there is no second port.
  *
  * Board state = owner[N] (0=red, 1..4=bots), strength[N]; functions mutate the
@@ -534,41 +534,70 @@ void resolve_battle_logged(int *owner, int *strength, int frm, int to,
     out_meta[4] = strength[to];
 }
 
-/* best_bot_move: return packed (frm<<8|to)+1, or 0 if none. */
-static int best_bot_move(const int *owner, const int *strength, int faction) {
-    /* Attacker-strength-first (matches observed iOS bot): pick the STRONGEST
-     * owned node that has any legal target; for that strength tier take the
-     * WEAKEST reachable defender (== biggest margin once the attacker is fixed);
-     * break remaining ties at random. So 7->6 fires before 5->1. */
-    /* Single pass: keep only the moves at the best (strongest-attacker,
-     * weakest-defender) tier seen so far — reset the bucket when a strictly
-     * better tier appears. Yields the same tier set in the same scan order as
-     * the old two-pass collect-then-filter, so the random tie-break is identical. */
-    int pf[MAXN * 8], pt[MAXN * 8], pn = 0;
-    int best_a=0, best_d=0; int found=0;
-    for (int i = 0; i < N; i++) {
-        if (owner[i] != faction || strength[i] <= 1) continue;
-        int si = strength[i];
-        for (int k = ADJ_OFF[i]; k < ADJ_OFF[i+1]; k++) {
-            int j = ADJ[k];
-            if (owner[j] == faction || strength[j] >= si) continue;
-            int dj = strength[j];
-            if (!found || si > best_a || (si == best_a && dj < best_d)) {
-                best_a = si; best_d = dj; found = 1;
-                pn = 0; pf[pn] = i; pt[pn] = j; pn++;          /* new better tier */
-            } else if (si == best_a && dj == best_d && pn < MAXN * 8) {
-                pf[pn] = i; pt[pn] = j; pn++;                  /* same tier */
-            }
+/* BOT TURN — decompiled from the shipped iOS app (OpponentAIOriginal.opponentMove
+ * + OpponentAIBase.getSmallestEnemy/okAttack; asm in ipa_decompile/re/ai/).
+ * One pass over the islands owned at TURN START, strongest first; each island
+ * opens an attack CHAIN: attack its smallest adjacent enemy, and on capture the
+ * chain FOLLOWS the moved stack (the occupier keeps attacking its own smallest
+ * adjacent enemy) until a repel or okAttack fails. A stack is never revisited,
+ * and attacks that open up later in the turn are not taken. okAttack =
+ * attacker >= 2 and strictly bigger than the defender. Ties (equal-strength
+ * islands, equal-strength targets) are deterministic in the real game (stable
+ * sort over the player's island list / adjacency order); here: node id
+ * ascending / adjacency order — no RNG.
+ *
+ * The cursor packs into an int32 buffer (BOT_ST_LEN) so thin clients can replay
+ * a turn attack-by-attack: st[0]=island count, st[1]=list index,
+ * st[2]=last attack's target (the chain head candidate; -1 between chains),
+ * st[3..]=islands sorted strength-desc. bot_turn_next() must be called with the
+ * previous attack already resolved: it continues the chain iff we now own st[2]. */
+#define BOT_ST_LEN (MAXN + 3)
+
+/* smallest adjacent enemy of `node` (strict <, first-found wins ties), or -1. */
+static int smallest_adjacent_enemy(const int *owner, const int *strength,
+                                   int node, int faction) {
+    int best = -1, bs = 0;
+    for (int k = ADJ_OFF[node]; k < ADJ_OFF[node+1]; k++) {
+        int j = ADJ[k];
+        if (owner[j] == faction) continue;
+        if (best < 0 || strength[j] < bs) { best = j; bs = strength[j]; }
+    }
+    return best;
+}
+
+void bot_turn_begin(const int *owner, const int *strength, int faction, int *st) {
+    int n = 0;
+    for (int i = 0; i < N; i++)
+        if (owner[i] == faction) st[3 + n++] = i;
+    /* stable insertion sort, strength descending (ties stay node-id ascending) */
+    for (int a = 1; a < n; a++) {
+        int v = st[3 + a], b = a - 1;
+        while (b >= 0 && strength[st[3 + b]] < strength[v]) { st[3+b+1] = st[3+b]; b--; }
+        st[3 + b + 1] = v;
+    }
+    st[0] = n; st[1] = 0; st[2] = -1;
+}
+
+/* next attack as packed (frm<<8|to)+1, or 0 when the turn's attacks are done. */
+int bot_turn_next(const int *owner, const int *strength, int faction, int *st) {
+    int cur = st[2];
+    if (cur >= 0 && owner[cur] == faction) {        /* captured -> chain continues */
+        int tgt = smallest_adjacent_enemy(owner, strength, cur, faction);
+        if (tgt >= 0 && strength[cur] >= 2 && strength[cur] > strength[tgt]) {
+            st[2] = tgt;
+            return ((cur << 8) | tgt) + 1;
         }
     }
-    if (!found) return 0;
-    int idx = 0;
-    if (pn > 1) {
-        idx = (int)(RNG() * pn);
-        if (idx < 0) idx = 0;
-        if (idx >= pn) idx = pn - 1;
+    st[2] = -1;
+    while (st[1] < st[0]) {
+        int isl = st[3 + st[1]++];
+        int tgt = smallest_adjacent_enemy(owner, strength, isl, faction);
+        if (tgt >= 0 && strength[isl] >= 2 && strength[isl] > strength[tgt]) {
+            st[2] = tgt;
+            return ((isl << 8) | tgt) + 1;
+        }
     }
-    return ((pf[idx] << 8) | pt[idx]) + 1;
+    return 0;
 }
 
 /* reinforce faction's largest component (border round-robin). */
@@ -627,10 +656,10 @@ static void reinforce(int *owner, int *strength, int faction) {
 static void run_bot_turn(int *owner, int *strength, int faction) {
     int c[NF]; counts(owner, c);
     if (c[faction] == 0) return;
-    int guard = 0;
-    while (guard < 1000) {
-        guard++;
-        int mv = best_bot_move(owner, strength, faction);
+    int st[BOT_ST_LEN];
+    bot_turn_begin(owner, strength, faction, st);
+    for (;;) {
+        int mv = bot_turn_next(owner, strength, faction, st);
         if (mv == 0) break;
         mv -= 1;
         int to = mv & 0xFF;
@@ -1048,8 +1077,5 @@ void ext_reinforce(int *owner, int *strength, int faction) {
 }
 void ext_run_bot_turn(int *owner, int *strength, int faction) {
     run_bot_turn(owner, strength, faction);
-}
-int ext_best_bot_move(const int *owner, const int *strength, int faction) {
-    return best_bot_move(owner, strength, faction);
 }
 int ext_check_winner(const int *owner) { return check_winner(owner); }

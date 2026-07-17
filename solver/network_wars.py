@@ -164,16 +164,6 @@ def legal_moves(state, faction):
     return moves
 
 
-def best_bot_move(state, faction):
-    _load(state)
-    owner, strength = _arrays(state)
-    mv = fastnw.best_bot_move(owner, strength, FIDX[faction])
-    if mv is None:
-        return None
-    frm, to = mv
-    return (frm, to, state.nodes[frm].strength, state.nodes[to].strength)
-
-
 def run_bot_turn(state, faction):
     _load(state)
     owner, strength = _arrays(state)

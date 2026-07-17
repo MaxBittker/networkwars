@@ -11,7 +11,8 @@ game's own decompiled fair-coin mechanic, `REAL_BATTLE_DECOMPILED.md`).
 ## The engine (single source of truth)
 
 - **`fast_engine.c` → `fast_engine.so`** — the only implementation of board
-  generation + the iOS deal, the four bots, the decompiled fair-coin battle
+  generation + the iOS deal, the four bots (the decompiled opponent AI,
+  `REAL_BOT_DECOMPILED.md`), the decompiled fair-coin battle
   (`REAL_BATTLE_DECOMPILED.md`), reinforcement, win check, and the open-loop C-UCT search
   (ranked **C1** rollout baked in). mulberry32 for the real seeded game; a private
   splitmix64 for search dice so the search never sees the real game's dice.

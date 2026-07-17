@@ -49,8 +49,9 @@ _lib.uct_search.restype = ctypes.c_int
 _lib.ext_resolve_battle.argtypes = [_i32p, _i32p, ctypes.c_int, ctypes.c_int]
 _lib.ext_reinforce.argtypes = [_i32p, _i32p, ctypes.c_int]
 _lib.ext_run_bot_turn.argtypes = [_i32p, _i32p, ctypes.c_int]
-_lib.ext_best_bot_move.argtypes = [_i32p, _i32p, ctypes.c_int]
-_lib.ext_best_bot_move.restype = ctypes.c_int
+_lib.bot_turn_begin.argtypes = [_i32p, _i32p, ctypes.c_int, _i32p]
+_lib.bot_turn_next.argtypes = [_i32p, _i32p, ctypes.c_int, _i32p]
+_lib.bot_turn_next.restype = ctypes.c_int
 _lib.ext_check_winner.argtypes = [_i32p]
 _lib.ext_check_winner.restype = ctypes.c_int
 _lib.uct_set_value_stop.argtypes = [ctypes.c_double, ctypes.c_double,
@@ -182,9 +183,23 @@ def legal_moves(owner, strength, adj):
     return moves
 
 
-def best_bot_move(owner, strength, faction):
-    """Return (frm, to) for the faction's greedy bot move, or None."""
-    r = _lib.ext_best_bot_move(_p(owner), _p(strength), faction)
+BOT_ST_LEN = MAXN + 3
+
+
+def bot_turn_begin(owner, strength, faction):
+    """Open a bot-turn cursor: snapshot + sort the faction's islands (strongest
+    first) as the real game does. Returns the int32 cursor buffer to pass to
+    bot_turn_next."""
+    st = np.zeros(BOT_ST_LEN, dtype=np.int32)
+    _lib.bot_turn_begin(_p(owner), _p(strength), faction, _p(st))
+    return st
+
+
+def bot_turn_next(owner, strength, faction, st):
+    """Next attack (frm, to) of the faction's turn, or None when done. Call with
+    the previous attack already resolved — on a capture the bot keeps attacking
+    with the stack it just moved (the real game's chain behavior)."""
+    r = _lib.bot_turn_next(_p(owner), _p(strength), faction, _p(st))
     if r == 0:
         return None
     r -= 1
