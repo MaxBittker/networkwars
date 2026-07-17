@@ -98,11 +98,6 @@
     justify-content:space-between; align-items:center; flex:0 0 auto; }
   .p-body h3 { margin:0 0 6px; font-size:13px; color:#bfe; text-transform:uppercase;
     letter-spacing:.05em; font-weight:700; }
-  .p-body h3.sp { margin-top:18px; }
-  .p-body p { margin:0 0 14px; color:#8fcfb8; font-size:13px; line-height:1.5; }
-  .p-body p.tight { margin-bottom:6px; }
-  /* the one methodology caveat worth keeping visible, kept out of the way */
-  .p-body p.fine { font-size:11.5px; color:#5f9e8e; line-height:1.45; }
   .danger { color:#ff7d8a; }
 
   #score { display:flex; gap:10px; margin:0 0 16px; }
@@ -113,15 +108,6 @@
   .sc .n { font-size:28px; font-weight:800; color:#e9f7f0; line-height:1.25;
     font-variant-numeric:tabular-nums; }
   .sc .pct { font-size:12px; color:#8fcfb8; }
-
-  table.mx { width:100%; border-collapse:collapse; font-size:13px; margin:0 0 8px; }
-  table.mx td, table.mx th { padding:7px 8px; text-align:left; border-bottom:1px solid rgba(255,255,255,.07); }
-  table.mx th { color:#7fb6a6; font-size:11px; text-transform:uppercase; letter-spacing:.05em; font-weight:700; }
-  table.mx td.v { text-align:right; font-weight:800; color:#e9f7f0; font-variant-numeric:tabular-nums; }
-  table.mx tr.hl td { color:#ffd36b; } table.mx tr.hl td.v { color:#ffd36b; }
-  #verdict { font-size:13px; line-height:1.5; padding:11px 12px; border-radius:10px;
-    background:rgba(95,208,214,.08); border:1px solid rgba(95,208,214,.3); color:#cfe;
-    margin:0 0 16px; }
 
   .srow { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:10px;
     background:rgba(255,255,255,.035); margin-bottom:6px; cursor:pointer; }
@@ -253,14 +239,14 @@
 // Why duplicate: unpaired win-rates are dominated by deal quality (see the solver
 // memories `sim-vs-real-deal-imbalance` and `hard-set-2026-07-02` — deal + dice, not
 // search, decide most games). Comparing "my %" to "its ~94%" across DIFFERENT boards
-// is nearly uninformative at small n. Pinning the seed isolates decision quality, so
-// the tally reports the PAIRED (McNemar) cells + an exact sign test on the seeds that
-// split — plus per-move scoring, which converges far faster than W/L.
+// is nearly uninformative at small n. Pinning the seed isolates decision quality; the
+// tally shows the two W-L records, and per-move scoring (which converges far faster
+// than W/L) is the real skill readout.
 //
-// Honest caveat (also in the intro): mulberry32 draws are consumed serially, so once
-// your move sequence diverges from the AI's you pull different coins off the same
-// stream. Duplicate bridge (same deal), not dice-for-dice identity — the latter isn't
-// coherent once actions differ.
+// Honest caveat: mulberry32 draws are consumed serially, so once your move sequence
+// diverges from the AI's you pull different coins off the same stream. Duplicate
+// bridge (same deal), not dice-for-dice identity — the latter isn't coherent once
+// actions differ.
 //
 // All rendering/animation comes from board.js (shared with index.html); all rules and
 // search come from fast_engine.c via engine.worker.js. This file is bookkeeping and
@@ -575,50 +561,11 @@ $('cv').addEventListener('pointerdown', (ev) => {
 $('endturn').onclick = () => yourEndTurn();
 $('aibadge').onclick = () => showResults();
 
-// ============================ stats ============================
-// Exact two-sided sign test on the discordant pairs: under "equal skill" each split
-// seed is a fair coin, so b ~ Binom(b+c, 1/2).
-function signTestP(b, c) {
-  const n = b + c;
-  if (!n) return 1;
-  const lo = Math.min(b, c);
-  const logFact = [0];
-  for (let i = 1; i <= n; i++) logFact[i] = logFact[i - 1] + Math.log(i);
-  let p = 0;
-  for (let k = 0; k <= lo; k++)
-    p += Math.exp(logFact[n] - logFact[k] - logFact[n - k] - n * Math.LN2);
-  return Math.min(1, 2 * p);
-}
-
 // ============================ tally ============================
 function showResults() {
   const s = stats();
   const yn = s.yw + s.yl, an = s.aw + s.al;
-  const n = s.onlyAI + s.onlyYou;
-  const p = signTestP(s.onlyAI, s.onlyYou);
   const paired = s.both + s.onlyYou + s.onlyAI + s.neither;
-
-  let verdict;
-  if (!paired) {
-    verdict = `No completed pairs yet — a seed only counts once you and the AI have both
-      finished it.`;
-  } else if (!n) {
-    verdict = `All ${paired} completed seed${paired > 1 ? 's' : ''} went the same way for
-      both of you, so there's no evidence of a skill gap either direction yet. Keep
-      playing — or open a seed below and score your decisions, which measures skill
-      directly instead of waiting on win/loss.`;
-  } else if (p < 0.05) {
-    const better = s.onlyAI > s.onlyYou ? 'the AI is genuinely stronger' : 'you are genuinely stronger';
-    verdict = `<b>Significant:</b> ${better} on these deals — ${s.onlyAI}–${s.onlyYou} on the
-      ${n} seed${n > 1 ? 's' : ''} that split, exact sign test p = ${p.toFixed(3)}.`;
-  } else {
-    verdict = `<b>Not significant</b> (p = ${p.toFixed(3)}). Only ${n} seed${n > 1 ? 's' : ''}
-      split between you — too few to call. ${s.onlyAI > s.onlyYou
-        ? 'The AI is ahead, but it could be dice.' : s.onlyYou > s.onlyAI
-        ? 'You are ahead, but it could be dice.' : 'Dead even so far.'}
-      Open a seed below and score your decisions: per-move loss converges far faster
-      than W/L does.`;
-  }
 
   $('res-title').textContent = `Tally · ${paired} pair${paired === 1 ? '' : 's'} complete`;
   $('res-body').innerHTML = `
@@ -630,21 +577,6 @@ function showResults() {
         <div class="n">${s.aw}–${s.al}</div>
         <div class="pct">${an ? Math.round(100 * s.aw / an) : 0}% win</div></div>
     </div>
-    <div id="verdict">${verdict}</div>
-    <h3>Paired breakdown</h3>
-    <table class="mx">
-      <tr><th>Seed outcome</th><th style="text-align:right">Count</th></tr>
-      <tr><td>Both won</td><td class="v">${s.both}</td></tr>
-      <tr class="${s.onlyAI ? 'hl' : ''}"><td>Only AI won</td><td class="v">${s.onlyAI}</td></tr>
-      <tr class="${s.onlyYou ? 'hl' : ''}"><td>Only you won</td><td class="v">${s.onlyYou}</td></tr>
-      <tr><td>Both lost</td><td class="v">${s.neither}</td></tr>
-    </table>
-    <p>Only the two highlighted rows say anything about skill — the seeds you both won
-      or both lost were decided by the deal, not by either player.</p>
-    <p class="fine">The seed pins the deal and the dice stream, but draws are consumed in
-      order — once your moves diverge from the AI's you draw different coins. Duplicate
-      bridge, not identical dice.</p>
-    <h3 class="sp">Every seed</h3>
     <div id="rows"></div>`;
 
   const rows = $('rows');

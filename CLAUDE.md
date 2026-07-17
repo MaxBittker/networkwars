@@ -51,9 +51,10 @@
         grayscale** thumbnail badge (ambient proof-of-work; readable would spoil the seed
         you're still on) with a `+N` backlog marker — you never wait for it.
         Because the seed pins board+dice, this removes the deal variance that dominates
-        unpaired winrates (`sim-vs-real-deal-imbalance`, `hard-set-2026-07-02`), so the
-        tally reports the PAIRED (McNemar) cells + an exact sign test on the seeds that
-        split. Per-seed detail: **one red-nodes-vs-turn graph with both players' lines**
+        unpaired winrates (`sim-vs-real-deal-imbalance`, `hard-set-2026-07-02`). The
+        tally panel is deliberately minimal — the two W-L score cards + the seed-list
+        browser, nothing else (the McNemar/sign-test readout was cut as clutter
+        2026-07-17; per-move scoring is the skill readout). Per-seed detail: **one red-nodes-vs-turn graph with both players' lines**
         (you teal / AI yellow, + the 24-to-win line; legend doubles as each side's final
         score) + **both move lists**, steppable — tapping a move replays the seed to that
         point (bit-exact) and shows the exact board with the move highlighted. AI moves
@@ -66,10 +67,11 @@
         move scores gap 0, so including them flatters the player (measured: a
         pass-every-turn game reads −7.7%/move unfiltered vs −27.6% over its 6 real
         decisions). No intro/setup gate — loading the page deals a seed immediately (a
-        stored tally resumes). Caveat kept in the UI, as a footnote in the tally panel:
-        same seed = same deal + same dice STREAM, but draws are consumed serially, so once
-        your moves diverge from the AI's you pull different coins. Duplicate bridge, not
-        dice-for-dice (which isn't coherent once actions differ).
+        stored tally resumes). Caveat (documented in the page's header comment, no
+        longer surfaced in the UI): same seed = same deal + same dice STREAM, but draws
+        are consumed serially, so once your moves diverge from the AI's you pull
+        different coins. Duplicate bridge, not dice-for-dice (which isn't coherent once
+        actions differ).
   - `solver/server.py` — now OPTIONAL: it serves `public/` static assets and the
     legacy `/api/game/*` (no longer used by the browser), and is only needed for the
     iOS `/grab` and `/load` workflow (live iPhone Mirroring). Pure offline play needs
