@@ -27,6 +27,48 @@
     contract via postMessage, so `index.html` needs no server to play. Search runs
     in the worker so the UI never blocks (adaptive budget: floor ~2000 sims, ceiling
     ~150k, visit-margin early stop — see memory `adaptive-sims`).
+    Its `updateWinner` ends the game on **any of**: a faction at 24, one faction left,
+    **or RED at 0 nodes** — that last one because attacks launch only FROM an owned node,
+    so a wiped red can never move again and the game is already lost. Without it the
+    player was left with no legal moves, forced to End Turn while the bots raced to 24
+    (fixed 2026-07-17; regression-checked by driving the worker over 40 seeds and
+    asserting no state has `counts.red===0 && !over` — ~3/40 games end by wipe, and the
+    check catches 2 violations if the rule is removed).
+    `public/board.js` is the **shared** board renderer + battle/bot-turn animation
+    (octagon nodes, coin-flip replay, reinforce flashes) — the one place the game's
+    look lives; both pages import it and neither draws its own board.
+    Two pages, both pure-static (`server.py` also routes the extensionless
+    `/head-to-head`):
+      - `index.html` — free play + AI assist/suggestions/blunder alert/autoplay.
+      - `head-to-head.html` — **duplicate-format** play vs the engine, continuous: you
+        play a seed blind (your worker issues ZERO searches) while the AI plays THE SAME
+        seed **concurrently in a SECOND worker**; finish and the next seed is dealt, with
+        a running W-L tally. **The two workers are load-bearing, not a nicety**:
+        `engine.worker.js` serves its inbox in order and aborts an in-flight search as
+        soon as a request queues behind it, so a shared worker would let every tap you
+        make truncate the AI's search and silently handicap it — corrupting the very
+        comparison the page exists to make. The AI's progress shows as a **blurred +
+        grayscale** thumbnail badge (ambient proof-of-work; readable would spoil the seed
+        you're still on) with a `+N` backlog marker — you never wait for it.
+        Because the seed pins board+dice, this removes the deal variance that dominates
+        unpaired winrates (`sim-vs-real-deal-imbalance`, `hard-set-2026-07-02`), so the
+        tally reports the PAIRED (McNemar) cells + an exact sign test on the seeds that
+        split. Per-seed detail: **one red-nodes-vs-turn graph with both players' lines**
+        (you teal / AI yellow, + the 24-to-win line; legend doubles as each side's final
+        score) + **both move lists**, steppable — tapping a move replays the seed to that
+        point (bit-exact) and shows the exact board with the move highlighted. AI moves
+        carry the search's own win% per move; labels are snapshotted at play time (`mv.l`)
+        so lists render without a replay. "Score my decisions" re-searches every position
+        of your game and grades each choice vs the search's best — the blunder-alert
+        metric over a whole game; it **auto-opens and auto-scores after a loss** (the next
+        seed is dealt underneath, so closing drops you into it).
+        Only **live** decisions (best-Q in 2–98%) count toward avg-loss/move: in a decided
+        position every move scores gap 0, so including them flatters the player (measured:
+        a pass-every-turn game reads −7.7%/move unfiltered vs −27.6% over its 6 real
+        decisions). Caveat surfaced in its own UI: same seed = same deal + same dice
+        STREAM, but draws are consumed serially, so once your moves diverge from the AI's
+        you pull different coins. Duplicate bridge, not dice-for-dice (which isn't
+        coherent once actions differ).
   - `solver/server.py` — now OPTIONAL: it serves `public/` static assets and the
     legacy `/api/game/*` (no longer used by the browser), and is only needed for the
     iOS `/grab` and `/load` workflow (live iPhone Mirroring). Pure offline play needs

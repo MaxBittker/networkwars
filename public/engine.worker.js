@@ -22,7 +22,13 @@ function updateWinner(g) {
   const alive = [];
   for (let f = 0; f < 5; f++) if (c[f] > 0) alive.push(f);
   if (alive.length === 1) w = alive[0];
-  if (w >= 0) { g.over = true; g.winner = FACTIONS[w]; g.youWon = (w === 0); }
+  if (w >= 0) { g.over = true; g.winner = FACTIONS[w]; g.youWon = (w === 0); return; }
+  // RED wiped out: attacks can only launch FROM an owned node, so at 0 nodes red can
+  // never move again and the game is already lost — no bot needs to reach 24 to prove
+  // it. Call it now, instead of leaving the player with no legal moves, forced to End
+  // Turn while the bots race to the win. (`winner` stays null: which bot eventually
+  // takes it is undecided, and no UI reads it.)
+  if (c[0] === 0) { g.over = true; g.youWon = false; }
 }
 
 function view(g) {

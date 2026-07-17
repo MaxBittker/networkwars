@@ -153,7 +153,15 @@
   #hist-head { display:flex; align-items:center; justify-content:space-between;
     padding:14px 18px; border-bottom:1px solid rgba(255,255,255,.08);
     font-size:15px; font-weight:700; color:#cfe; letter-spacing:.03em; }
-  #hist-list { overflow-y:auto; padding:8px; display:flex; flex-direction:column; gap:6px; }
+  #hist-list { overflow-y:auto; padding:8px; display:flex; flex-direction:column; gap:6px;
+    overscroll-behavior:contain; scrollbar-width:thin;
+    scrollbar-color:rgba(95,208,214,.45) transparent; }
+  /* slim glowing teal scrollbar instead of the OS default slab */
+  #hist-list::-webkit-scrollbar { width:7px; }
+  #hist-list::-webkit-scrollbar-track { background:transparent; }
+  #hist-list::-webkit-scrollbar-thumb { border-radius:4px;
+    background:linear-gradient(180deg, rgba(95,208,214,.55), rgba(54,211,154,.45));
+    box-shadow:0 0 6px -1px rgba(95,208,214,.5); }
   #hist-list .muted { color:#7fb6a6; font-style:italic; padding:22px; text-align:center; }
   .hrow { display:flex; align-items:center; gap:12px; padding:8px 10px; border-radius:10px;
     background:rgba(255,255,255,.035); cursor:pointer; }
@@ -175,6 +183,7 @@
       <div id="menu" title="Menu"><span></span><span></span><span></span></div>
       <div id="menupop">
         <div class="mi" id="mi-new">New Game</div>
+        <div class="mi" id="mi-h2h">Head to Head&nbsp;&rarr;</div>
         <div class="mi" id="mi-auto">Autoplay</div>
         <div class="mi" id="mi-ai">AI Assist</div>
         <div class="mi" id="mi-undo">Undo Mode</div>
@@ -227,28 +236,20 @@
   <div id="hist-list"></div>
 </div></div>
 
-<script>
-const COLORS = { red:'#ff4d5e', green:'#36d39a', yellow:'#f5c542', blue:'#4d8bff', purple:'#a96bff' };
-const ORDER = ['red','green','yellow','blue','purple'];
+<script type="module">
+// Board rendering + battle/bot-turn animation live in board.js, shared with
+// head-to-head.html so the two pages always look and animate identically.
+import { Board, ORDER, SPEEDS, sleep, dirArrow, drawThumb } from './board.js';
+
 const SIMS = 6000;
-const SPEEDS = { instant: 0, fast: 0.5, medium: 1, slow: 2 };  // sleep-time multiplier
-let animSpeed = 'medium', animMult = 1;
-const instant = () => animMult === 0;
+let animSpeed = 'medium';
 const cv = document.getElementById('cv');
-const ctx = cv.getContext('2d');
+const board = new Board(cv, document.getElementById('board'));
+const instant = () => board.instant;
 
 let state = null;          // latest server view
-let selected = null;       // selected red node id
-let legalSet = new Set();
-let targetsFor = new Map(); // from -> Set(to)
-let overrides = new Map();  // nodeId -> {strength, owner?} during battle animation
-let flashId = null;
-let battle = null;          // {from,to} highlighted during a fight
 let inputLocked = false;
-let animAbort = false;      // undo requested mid-replay: fast-forward the animation
 let pendingUndo = false;    // undo clicked while inputLocked — run it when the lock drops
-let animBoard = null;       // mutable node copy used while animating bot turns
-let reinforceFlash = null;  // Set(nodeId) briefly highlighted on a reinforce step
 let autoplay = false;       // self-play loop: agent plays its top move, no animation
 let autoplayRunning = false;
 let aiOn = true;            // show the AI win%/graph/suggestions panel (menu toggle)
@@ -292,7 +293,6 @@ let searching = false;
 let searchSims = 0;         // live sim count of the in-flight search (streamed)
 let winSeries = [];         // converged win-expectation at each decision, this game (line graph)
 const pushWin = (w) => { if (w != null) { winSeries.push(w); if (winSeries.length > 300) winSeries.shift(); } };
-let hoverMove = null;       // {from,to} of the AI suggestion the cursor is over — previewed on the grid
 let lastPointer = { x: -1, y: -1 };  // last seen cursor position, so re-rendered rows can re-sync the hover
 // After the suggestion rows are rebuilt, the cursor may sit over a different row
 // (or none) without firing mouseenter/leave — re-derive hoverMove from the element
@@ -304,10 +304,11 @@ function syncHoverToCursor() {
     const row = el && el.closest && el.closest('.sg');
     if (row && row._move) next = row._move;
   }
+  const hoverMove = board.hoverMove;
   const changed = (hoverMove && next && (hoverMove.from !== next.from || hoverMove.to !== next.to))
     || (!hoverMove !== !next);
-  hoverMove = next;
-  if (changed) draw();
+  board.hoverMove = next;
+  if (changed) board.draw();
 }
 document.addEventListener('pointermove', (e) => { lastPointer = { x: e.clientX, y: e.clientY }; });
 
@@ -320,10 +321,8 @@ function onSearchProgress(p) {
   searchSims = p.sims || 0;
   if (p.winexp != null) state._winexp = p.winexp;
   renderAI();
-  draw();
+  board.draw();
 }
-
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // The C engine now runs IN THE BROWSER as WASM inside a Web Worker (search never
 // blocks the UI). engine.worker.js is a port of solver/server.py — it speaks the
@@ -365,27 +364,16 @@ async function api(path, method='GET', body) {
   }
 }
 
-function indexMoves() {
-  legalSet = new Set(); targetsFor = new Map();
-  for (const m of state.legalMoves) {
-    legalSet.add(m.from + '-' + m.to);
-    if (!targetsFor.has(m.from)) targetsFor.set(m.from, new Set());
-    targetsFor.get(m.from).add(m.to);
-  }
-}
-
 // Adopt a fresh server view and (re)plan with the search. keepBlunder: end-turn
 // shows its blunder banner up front (during the replay), so adopting the final
 // board must not wipe it.
 function setState(s, keepBlunder = false) {
   state = s;
   noteState(s);
-  selected = null;
-  hoverMove = null;
+  board.setView(s);
   if (!keepBlunder) hideBlunder();
-  indexMoves();
   renderHeader();
-  draw();
+  board.draw();
   if (autoplay) return;          // the autoplay loop owns search + W/L + restart
   if (s.over) { suggestions = []; renderAI(); showModal(); return; }
   requestSearch();
@@ -423,7 +411,7 @@ async function requestSearch() {
   state._winexp = res.winexp;
   pushWin(res.winexp);                     // one graph point per converged decision
   renderAI();
-  draw();
+  board.draw();
 }
 
 // ---- autoplay: agent self-plays its top move at full search strength, no animation,
@@ -465,13 +453,13 @@ async function autoplayLoop() {
         const s = await api(`/api/game/${state.id}/search`, 'POST', { sims: SIMS, tag: my });
         if (!autoplay) break;
         suggestions = s.top || [];
-        state._winexp = s.winexp; pushWin(s.winexp); renderAI(); draw();    // converged view of the agent's pick
+        state._winexp = s.winexp; pushWin(s.winexp); renderAI(); board.draw();    // converged view of the agent's pick
         const b = s.best;
         const res = (!b || b.action === -1)
           ? await api(`/api/game/${state.id}/end-turn`, 'POST')
           : await api(`/api/game/${state.id}/attack`, 'POST', { from: b.from, to: b.to });
         if (!autoplay) break;
-        state = res; noteState(res); indexMoves(); renderHeader(); draw();
+        state = res; noteState(res); board.setView(res); renderHeader(); board.draw();
       }
       if (autoplay && state && state.over) {
         if (state.youWon) record.w++; else record.l++;
@@ -528,14 +516,6 @@ function drawWinGraph() {
   }
 }
 
-// one of 8 compass arrows for the on-board direction of an attack (screen y grows downward)
-const DIR_ARROWS = ['→','↗','↑','↖','←','↙','↓','↘'];
-function dirArrow(f, t) {
-  const a = Math.atan2(-(t.y - f.y), t.x - f.x);   // up is positive
-  const idx = ((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8;
-  return DIR_ARROWS[idx];
-}
-
 function renderAI() {
   const wp = document.getElementById('winpct');
   const sg = document.getElementById('sugg');
@@ -572,8 +552,8 @@ function renderAI() {
     row.onclick = () => playSuggestion(m);
     if (m.action !== -1) {                  // hovering a real attack previews it on the grid
       row._move = { from: m.from, to: m.to };
-      row.onmouseenter = () => { hoverMove = row._move; draw(); };
-      row.onmouseleave = () => { hoverMove = null; draw(); };
+      row.onmouseenter = () => { board.hoverMove = row._move; board.draw(); };
+      row.onmouseleave = () => { board.hoverMove = null; board.draw(); };
     }
     sg.appendChild(row);
   });
@@ -582,7 +562,7 @@ function renderAI() {
 
 async function playSuggestion(m) {
   if (inputLocked || !state || state.over) return;
-  hoverMove = null; draw();   // drop the yellow preview the moment the move is taken
+  board.hoverMove = null; board.draw();   // drop the yellow preview the moment the move is taken
   if (m.action === -1) { endTurn(); return; }
   await doAttack(m.from, m.to);
 }
@@ -648,267 +628,37 @@ document.querySelectorAll('#menupop .bl').forEach(el => {
   el.onclick = () => setBlunder(+el.dataset.bl);   // leave menu open so the check shows
 });
 
-// ---- layout ----
-let layout = { r: 20, s: 1, ox: 0, oy: 0 };
+// ---- layout: the Board fits the canvas; the win graph is this page's own ----
 function resize() {
-  const dpr = window.devicePixelRatio || 1;
   drawWinGraph();
-  const b = document.getElementById('board').getBoundingClientRect();
-  cv.width = b.width * dpr; cv.height = b.height * dpr;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  if (!state) return;
-  const maxX = Math.max(...state.nodes.map(n => n.x)) || 1;
-  const maxY = Math.max(...state.nodes.map(n => n.y)) || 1;
-  const pad = 38;
-  const s = Math.min((b.width - pad*2) / maxX, (b.height - pad*2) / maxY);
-  layout = { r: Math.min(s * 0.34, 26), s,
-    ox: (b.width - maxX * s) / 2, oy: (b.height - maxY * s) / 2 };
-  draw();
-}
-function nodePos(n) { return { x: layout.ox + n.x * layout.s, y: layout.oy + n.y * layout.s }; }
-
-// directional arrowhead near p2, pointing from p1 -> p2 (tip just outside p2's ring)
-function drawArrow(p1, p2, color) {
-  const dx = p2.x - p1.x, dy = p2.y - p1.y;
-  const len = Math.hypot(dx, dy) || 1;
-  const ux = dx / len, uy = dy / len;          // unit p1->p2
-  const px = -uy, py = ux;                      // perpendicular
-  const tipX = p2.x - ux * (layout.r + 1), tipY = p2.y - uy * (layout.r + 1);
-  const ah = Math.max(5, layout.r * 0.45);     // arrowhead length (small, sits at the target end)
-  const aw = Math.max(3.5, layout.r * 0.3);    // arrowhead half-width
-  const bx = tipX - ux * ah, by = tipY - uy * ah;
-  ctx.beginPath();
-  ctx.moveTo(tipX, tipY);
-  ctx.lineTo(bx + px * aw, by + py * aw);
-  ctx.lineTo(bx - px * aw, by - py * aw);
-  ctx.closePath();
-  ctx.fillStyle = color;
-  ctx.shadowColor = color; ctx.shadowBlur = 10;
-  ctx.fill();
-  ctx.shadowBlur = 0;
-}
-
-// vertex-up octagon — matches the real game's node shape (verified by fitting
-// n-gon outlines to iOS screenshots: n=8, vertex at 12 o'clock)
-function octagon(x, y, r) {
-  ctx.beginPath();
-  for (let i = 0; i < 8; i++) {
-    const a = -Math.PI/2 + Math.PI/8 + Math.PI/8 + i * Math.PI/4;
-    const px = x + r * Math.cos(a), py = y + r * Math.sin(a);
-    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
-  }
-  ctx.closePath();
-}
-
-// Per-faction node styles, cached by hex. Sampled from iOS screenshots: the rim
-// is a slightly whitened faction color, and the body is a MEDIUM tone of it
-// (~0.65x the rim) — not near-black like our old fill.
-const _style = {};
-function nodeStyle(hex) {
-  if (_style[hex]) return _style[hex];
-  const s = hex.replace('#', '');
-  const r = parseInt(s.slice(0,2),16), g = parseInt(s.slice(2,4),16), b = parseInt(s.slice(4,6),16);
-  const lift = (c) => Math.round(c + (255 - c) * 0.12);
-  return (_style[hex] = {
-    ring: `rgb(${lift(r)},${lift(g)},${lift(b)})`,
-    body: `rgb(${Math.round(r*0.58+22)},${Math.round(g*0.58+22)},${Math.round(b*0.58+22)})`,
-  });
-}
-
-function draw() {
-  if (!state) return;
-  const b = document.getElementById('board').getBoundingClientRect();
-  ctx.clearRect(0, 0, b.width, b.height);
-  const nodes = animBoard || state.nodes;
-  const pos = nodes.map(nodePos);
-
-  // links
-  for (const [a, c] of state.links) {
-    const inBattle = battle && ((a===battle.from && c===battle.to) || (a===battle.to && c===battle.from));
-    const selHot = selected !== null && (
-         (a===selected && targetsFor.get(selected)?.has(c))
-      || (c===selected && targetsFor.get(selected)?.has(a)));
-    const isHover = hoverMove && ((a===hoverMove.from && c===hoverMove.to) || (a===hoverMove.to && c===hoverMove.from));
-    ctx.beginPath();
-    ctx.moveTo(pos[a].x, pos[a].y); ctx.lineTo(pos[c].x, pos[c].y);
-    // an active fight draws a bright line in the ATTACKER's color (from-node owner)
-    if (inBattle) { const ac = COLORS[nodes[battle.from].owner] || COLORS.red;
-      ctx.strokeStyle = ac; ctx.lineWidth = 4; ctx.setLineDash([]); ctx.shadowColor = ac; ctx.shadowBlur = 12; }
-    else if (selHot) { ctx.strokeStyle = COLORS.red; ctx.lineWidth = 4; ctx.setLineDash([]); ctx.shadowColor = COLORS.red; ctx.shadowBlur = 10; }
-    else if (isHover) { ctx.strokeStyle = 'rgba(255,211,107,.9)'; ctx.lineWidth = 3.5; ctx.setLineDash([]); ctx.shadowColor = '#ffd36b'; ctx.shadowBlur = 12; }
-    else { ctx.strokeStyle = 'rgba(110,220,170,.38)'; ctx.lineWidth = 1.5; ctx.setLineDash([3,5]); ctx.shadowBlur = 0; }
-    ctx.stroke();
-  }
-  ctx.setLineDash([]); ctx.shadowBlur = 0;
-
-  // nodes
-  for (const n of nodes) {
-    const p = pos[n.id];
-    const ov = overrides.get(n.id);
-    const owner = (ov && ov.owner) ? ov.owner : n.owner;
-    const strength = ov ? ov.strength : n.strength;
-    const col = COLORS[owner];
-    const isAtk = battle && n.id === battle.from;
-    const isDef = battle && n.id === battle.to;
-    const isSel = n.id === selected || isAtk;
-    const isTarget = isDef || (selected !== null && targetsFor.get(selected)?.has(n.id));
-    const isFlash = n.id === flashId;
-    const isRein = reinforceFlash && reinforceFlash.has(n.id);
-    // Real-game look (sampled from iOS screenshots): flat medium-tone colored
-    // body, a thick rounded rim in the faction color, and a strong soft halo
-    // around the whole node.
-    const st = nodeStyle(col);
-    const r = layout.r;
-    const hot = isFlash || isRein || isSel;
-    ctx.save();
-    ctx.shadowColor = col;
-    ctx.shadowBlur = isFlash ? r*1.4 : (isRein ? r*1.3 : (isSel ? r*1.1 : (isTarget ? r*0.85 : r*0.6)));
-    octagon(p.x, p.y, r);
-    ctx.fillStyle = st.body;
-    ctx.fill();
-    ctx.fill();                       // second pass deepens the halo like the game's bloom
-    ctx.restore();
-    // rim: thick (~0.13r in the real game), rounded corners, glowing
-    ctx.save();
-    octagon(p.x, p.y, r * 0.93);
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = Math.max(2.5, r * (hot || isTarget ? 0.17 : 0.14));
-    ctx.strokeStyle = (isFlash || isRein) ? '#fff' : st.ring;
-    ctx.shadowColor = col;
-    ctx.shadowBlur = hot ? r*0.7 : r*0.4;
-    ctx.stroke();
-    ctx.restore();
-    // number (white, with a soft dark shadow so it reads over the colored body)
-    ctx.save();
-    ctx.fillStyle = '#fff';
-    ctx.font = `800 ${Math.round(layout.r*0.85)}px -apple-system, sans-serif`;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 3;
-    ctx.fillText(strength, p.x, p.y + 1);
-    ctx.restore();
-  }
-
-  // hovered suggestion: a directional arrow along the edge (drawn on top of nodes)
-  if (hoverMove && hoverMove.from != null && hoverMove.to != null) {
-    const pf = pos[hoverMove.from], pt = pos[hoverMove.to];
-    if (pf && pt) drawArrow(pf, pt, '#ffd36b');
-  }
-}
-
-function hitNode(mx, my) {
-  for (const n of state.nodes) {
-    const p = nodePos(n);
-    if (Math.hypot(mx - p.x, my - p.y) <= layout.r) return n;
-  }
-  return null;
-}
-
-// Replay the server's coin-flip sequence before showing the result.
-async function animateBattle(e) {
-  const { from, to, fromStart, toStart, flips } = e;
-  let a = fromStart, d = toStart;
-  flashId = null;
-  battle = { from, to };
-  overrides.set(from, { strength: a });
-  overrides.set(to, { strength: d });
-  draw();
-  await sleep(180 * animMult);
-  const delay = Math.max(45, Math.min(150, Math.round(850 / Math.max(flips.length, 1)))) * animMult;
-  for (const f of flips) {
-    if (animAbort) break;                    // undo requested — fast-forward
-    if (f === 'd') { d--; flashId = to; } else { a--; flashId = from; }
-    overrides.set(from, { strength: a });
-    overrides.set(to, { strength: Math.max(d, 0) });
-    draw();
-    await sleep(delay);
-  }
-  flashId = null;
-  if (e.captured) {
-    overrides.set(to, { strength: e.toStrength, owner: e.attacker });
-    overrides.set(from, { strength: e.fromStrength });
-    draw();
-    if (!animAbort) await sleep(240 * animMult);
-  }
-  overrides.clear();
-  battle = null;
-}
-
-const cap = (s) => s[0].toUpperCase() + s.slice(1);
-
-// One bot battle, compact: highlight from->to in the attacker's color, then commit
-// the result with a flash. (Flip-by-flip is reserved for the player's own attacks.)
-async function animateBotBattle(e) {
-  const from = animBoard[e.from], to = animBoard[e.to];
-  battle = { from: e.from, to: e.to };
-  overrides.set(e.from, { strength: e.fromStart });
-  overrides.set(e.to, { strength: e.toStart });
-  draw();
-  if (!animAbort) await sleep(170 * animMult);
-  // commit to the working board
-  from.strength = e.fromStrength;
-  if (e.captured) { to.owner = e.attacker; to.strength = e.toStrength; }
-  else { to.strength = e.toStrength; }
-  flashId = e.captured ? e.to : e.from;
-  overrides.clear();
-  draw();
-  if (!animAbort) await sleep(150 * animMult);
-  flashId = null;
-  battle = null;
-}
-
-// Replay RED reinforce + the four bot turns, step by step, from the server's event
-// log. Works on a local copy so each move is visible; adopts the authoritative final
-// state at the end.
-async function animateEndTurn(res) {
-  animBoard = state.nodes.map(n => ({ ...n }));
-  selected = null; suggestions = []; renderAI();
-  let curFaction = null;
-  for (const ev of res.events) {
-    if (animAbort) break;                 // undo requested — skip the rest of the replay
-    if (ev.type === 'reinforce') {
-      for (const ch of ev.changes) animBoard[ch.id].strength = ch.to;
-      reinforceFlash = new Set(ev.changes.map(c => c.id));
-      if (ev.faction !== 'red') setStatus(`${cap(ev.faction)} reinforces.`);
-      draw();
-      await sleep((ev.faction === 'red' ? 160 : 240) * animMult);
-      reinforceFlash = null;
-      draw();
-    } else {
-      if (ev.attacker !== curFaction) {
-        curFaction = ev.attacker;
-        setStatus(`${cap(ev.attacker)} is attacking…`);
-      }
-      await animateBotBattle(ev);
-    }
-  }
-  animBoard = null;
-  reinforceFlash = null;
+  board.resize();
 }
 
 async function doAttack(from, to) {
   const bev = blunderEval(0, from, to);   // grade the choice before it supersedes the search
   hideBlunder();
-  hoverMove = null;
-  inputLocked = true; animAbort = false;
+  board.hoverMove = null;
+  inputLocked = true; board.abort = false;
   // Commit frame, drawn synchronously on the tap: the selection collapses to the
   // one chosen edge using the SAME battle highlight the replay draws, so the glow
   // acknowledges the choice instantly and never drops while the worker (which may
   // be mid-search-chunk) resolves the attack.
-  selected = null;
-  battle = { from, to };
-  draw();
+  board.selected = null;
+  board.battle = { from, to };
+  board.draw();
   setStatus('Attacking…');
   const res = await api(`/api/game/${state.id}/attack`, 'POST', { from, to });
   maybeShowBlunder(bev);                  // pre-move verdict — show it during the replay, not after
   const e = res.log && res.log[0];
-  if (e && e.flips && !instant()) await animateBattle(e);   // state stays pre-attack during replay
-  battle = null;                          // instant mode / no replay: drop the commit highlight
-  state = res; noteState(res); indexMoves(); renderHeader();
+  if (e && e.flips && !instant()) await board.animateBattle(e);   // state stays pre-attack during replay
+  board.battle = null;                    // instant mode / no replay: drop the commit highlight
+  // setView drops the selection — every attack ends unselected, so the next
+  // attacker is picked fresh.
+  state = res; noteState(res); board.setView(res); renderHeader();
   setStatus(e ? (e.captured ? `Captured node ${e.to}!`
                             : `Attack on ${e.to} repelled (left ${e.fromStrength}).`) : 'Done.');
-  selected = null;                        // every attack ends unselected — pick the next attacker fresh
   inputLocked = false;
-  draw();
+  board.draw();
   if (pendingUndo) { pendingUndo = false; await performUndo(); return; }
   if (state.over) { suggestions = []; renderAI(); showModal(); }
   else requestSearch();
@@ -916,22 +666,22 @@ async function doAttack(from, to) {
 
 async function onTap(mx, my) {
   if (!state || state.over || inputLocked) return;
-  const n = hitNode(mx, my);
-  if (!n) { selected = null; draw(); return; }
-  if (selected !== null && targetsFor.get(selected)?.has(n.id)) {
-    await doAttack(selected, n.id);
+  const n = board.hitNode(mx, my);
+  if (!n) { board.selected = null; board.draw(); return; }
+  if (board.selected !== null && board.targetsFor.get(board.selected)?.has(n.id)) {
+    await doAttack(board.selected, n.id);
     return;
   }
-  if (n.id === selected) {                 // tapping the selected node deselects it
-    selected = null; setStatus('Select a red node to attack.'); draw(); return;
+  if (n.id === board.selected) {           // tapping the selected node deselects it
+    board.selected = null; setStatus('Select a red node to attack.'); board.draw(); return;
   }
-  if (n.owner === 'red' && n.strength > 1 && targetsFor.has(n.id)) {
-    selected = n.id; setStatus('Tap a highlighted enemy node to attack.');
+  if (n.owner === 'red' && n.strength > 1 && board.targetsFor.has(n.id)) {
+    board.selected = n.id; setStatus('Tap a highlighted enemy node to attack.');
   } else {
-    selected = null;
+    board.selected = null;
     if (n.owner === 'red') setStatus('That node has no attackable neighbors.');
   }
-  draw();
+  board.draw();
 }
 
 function setStatus(t) { document.getElementById('status').textContent = t; }
@@ -945,14 +695,14 @@ async function endTurn() {
   if (!state || state.over || inputLocked) return;
   const bev = blunderEval(-1);         // ending the turn is a graded choice too
   hideBlunder();
-  inputLocked = true; animAbort = false;
-  selected = null; suggestions = []; renderAI();
-  draw();                              // ack the press instantly: selection glow drops now
+  inputLocked = true; board.abort = false;
+  board.selected = null; suggestions = []; renderAI();
+  board.draw();                        // ack the press instantly: selection glow drops now
   setStatus('Ending turn…');
   const res = await api(`/api/game/${state.id}/end-turn`, 'POST');
   maybeShowBlunder(bev);               // pre-move verdict — up front, not after the whole replay
   const caps = (res.events||[]).filter(e => e.type==='attack' && e.captured).length;
-  if (res.events && res.events.length && !instant()) await animateEndTurn(res);
+  if (res.events && res.events.length && !instant()) await board.animateEndTurn(res, setStatus);
   inputLocked = false;
   if (pendingUndo) { pendingUndo = false; await performUndo(); return; }
   setState(res, true);                 // adopt authoritative final board + re-search (keep the banner)
@@ -966,7 +716,7 @@ document.getElementById('endturn').onclick = endTurn;
 async function requestUndo() {
   if (!state || autoplay) return;                  // the autoplay loop owns the game
   hideBlunder();
-  if (inputLocked) { animAbort = true; pendingUndo = true; setStatus('Undoing…'); return; }
+  if (inputLocked) { board.abort = true; pendingUndo = true; setStatus('Undoing…'); return; }
   await performUndo();
 }
 
@@ -1018,14 +768,13 @@ function updateSpeedMenu() {
     el.classList.toggle('sel', el.dataset.speed === animSpeed));
 }
 function setSpeed(s) {
-  animSpeed = s; animMult = SPEEDS[s];
+  animSpeed = s; board.speed = SPEEDS[s];
   try { localStorage.setItem('nwSpeed', s); } catch (_) {}
   updateSpeedMenu();
 }
 (function loadSpeed() {
   let s; try { s = localStorage.getItem('nwSpeed'); } catch (_) {}
-  if (s && s in SPEEDS) { animSpeed = s; animMult = SPEEDS[s]; }
-  updateSpeedMenu();
+  setSpeed(s && s in SPEEDS ? s : animSpeed);
 })();
 document.getElementById('menu').onclick = () => menupop.classList.toggle('show');
 document.getElementById('mi-new').onclick = () => {
@@ -1038,6 +787,9 @@ document.getElementById('mi-new').onclick = () => {
 document.getElementById('mi-auto').onclick = () => {
   setAutoplay(!autoplay);                         // leave menu open so the check shows
 };
+// Duplicate-format match vs the agent. The filename works under both server.py
+// (which also serves the extensionless /head-to-head) and plain static hosting.
+document.getElementById('mi-h2h').onclick = () => { location.href = 'head-to-head.html'; };
 // Hide AI features: drops the whole suggestions panel (board grows to fill) and
 // stops spending searches during manual play. Persisted across sessions.
 function setAI(on) {
@@ -1082,21 +834,6 @@ function timeAgo(ts) {
   const m = Math.round(s / 60); if (m < 60) return m + 'm ago';
   const h = Math.round(m / 60); if (h < 24) return h + 'h ago';
   return Math.round(h / 24) + 'd ago';
-}
-// Paint a tiny starting-board thumbnail (faction-colored dots laid out by x,y).
-function drawThumb(cv, nodes) {
-  const ctx = cv.getContext('2d'), W = cv.width, H = cv.height, pad = 5;
-  ctx.clearRect(0, 0, W, H);
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const n of nodes) { minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
-    minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y); }
-  const sx = (W - 2*pad) / Math.max(1, maxX - minX), sy = (H - 2*pad) / Math.max(1, maxY - minY);
-  const s = Math.min(sx, sy), r = Math.max(1.4, s * 0.32);
-  for (const n of nodes) {
-    const x = pad + (n.x - minX) * s, y = pad + (n.y - minY) * s;
-    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2);
-    ctx.fillStyle = COLORS[n.owner] || '#888'; ctx.fill();
-  }
 }
 function renderHistory() {
   const list = document.getElementById('hist-list');
