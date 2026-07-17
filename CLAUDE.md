@@ -62,13 +62,14 @@
         of your game and grades each choice vs the search's best — the blunder-alert
         metric over a whole game; it **auto-opens and auto-scores after a loss** (the next
         seed is dealt underneath, so closing drops you into it).
-        Only **live** decisions (best-Q in 2–98%) count toward avg-loss/move: in a decided
-        position every move scores gap 0, so including them flatters the player (measured:
-        a pass-every-turn game reads −7.7%/move unfiltered vs −27.6% over its 6 real
-        decisions). Caveat surfaced in its own UI: same seed = same deal + same dice
-        STREAM, but draws are consumed serially, so once your moves diverge from the AI's
-        you pull different coins. Duplicate bridge, not dice-for-dice (which isn't
-        coherent once actions differ).
+        Only **live** decisions (best-Q in 2–98%) are scored: in a decided position every
+        move scores gap 0, so including them flatters the player (measured: a
+        pass-every-turn game reads −7.7%/move unfiltered vs −27.6% over its 6 real
+        decisions). No intro/setup gate — loading the page deals a seed immediately (a
+        stored tally resumes). Caveat kept in the UI, as a footnote in the tally panel:
+        same seed = same deal + same dice STREAM, but draws are consumed serially, so once
+        your moves diverge from the AI's you pull different coins. Duplicate bridge, not
+        dice-for-dice (which isn't coherent once actions differ).
   - `solver/server.py` — now OPTIONAL: it serves `public/` static assets and the
     legacy `/api/game/*` (no longer used by the browser), and is only needed for the
     iOS `/grab` and `/load` workflow (live iPhone Mirroring). Pure offline play needs

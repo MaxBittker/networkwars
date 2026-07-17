@@ -101,6 +101,8 @@
   .p-body h3.sp { margin-top:18px; }
   .p-body p { margin:0 0 14px; color:#8fcfb8; font-size:13px; line-height:1.5; }
   .p-body p.tight { margin-bottom:6px; }
+  /* the one methodology caveat worth keeping visible, kept out of the way */
+  .p-body p.fine { font-size:11.5px; color:#5f9e8e; line-height:1.45; }
   .danger { color:#ff7d8a; }
 
   #score { display:flex; gap:10px; margin:0 0 16px; }
@@ -218,30 +220,6 @@
     <div class="act" id="endturn">End Turn</div>
   </footer>
 </div>
-
-<!-- intro -->
-<div class="ov" id="ov-intro"><div class="panel">
-  <div class="p-head"><span>Head to Head</span></div>
-  <div class="p-body">
-    <p><b>Duplicate format.</b> You play a seed blind — no suggestions, no win%, no
-      blunder alert. The AI plays <b>the same seed at the same time</b>, in the
-      background, in its own engine. Finish, and the next seed is dealt. Continuously,
-      with a running win-loss tally.</p>
-    <p>Same seed = same starting board and the same dice stream, so neither of you gets
-      an easier deal. The AI's board sits in the corner, <b>blurred and grey</b> — you
-      can see it working, but not who's winning, because that would spoil the seed
-      you're still playing.</p>
-    <p class="tight">Tap the tally any time: red power over the game for both of you,
-      both move lists to step through, and per-move scoring of your own decisions.</p>
-    <p class="tight">Note: dice are consumed in order, so once your moves diverge from
-      the AI's you draw different coins off the same stream. That's duplicate bridge —
-      same deal, not identical dice. Identical dice isn't a coherent idea once the
-      moves differ.</p>
-  </div>
-  <div class="p-foot">
-    <span></span><div class="act" id="in-start">Start playing</div>
-  </div>
-</div></div>
 
 <!-- tally -->
 <div class="ov" id="ov-res"><div class="panel">
@@ -663,6 +641,9 @@ function showResults() {
     </table>
     <p>Only the two highlighted rows say anything about skill — the seeds you both won
       or both lost were decided by the deal, not by either player.</p>
+    <p class="fine">The seed pins the deal and the dice stream, but draws are consumed in
+      order — once your moves diverge from the AI's you draw different coins. Duplicate
+      bridge, not identical dice.</p>
     <h3 class="sp">Every seed</h3>
     <div id="rows"></div>`;
 
@@ -1047,18 +1028,17 @@ async function resume() {
   setStatus('Resumed your game. Your move.');
 }
 
-$('in-start').onclick = async () => {
-  $('ov-intro').classList.remove('show');
-  M = { rounds: [blankRound(randSeed())], idx: 0 };
-  save();
-  await startSeed();
-};
-
 paintBadge(null, 'AI<br>idle', true);
+renderLeft();
+// Straight into a game: no intro gate. A stored tally resumes where you left off,
+// otherwise the first seed is dealt immediately.
 const prev = load();
 if (prev) { M = prev; renderStrip(); resume(); }
-else $('ov-intro').classList.add('show');
-renderLeft();
+else {
+  M = { rounds: [blankRound(randSeed())], idx: 0 };
+  save();
+  startSeed();
+}
 </script>
 </body>
 </html>
