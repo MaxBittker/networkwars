@@ -208,6 +208,10 @@ class Engine {
   // has >= minVis visits AND its win-prob is decisive (<=lo or >=hi) or beats the
   // runner-up by >=gap. Verified offline: ~3x fewer sims/move, no winrate change.
   setValueStop(lo, hi, gap, minVis) { this.M._uct_set_value_stop(lo, hi, gap, minVis | 0); }
+  // Grading mode: accurate comparison ACROSS root moves (root min-visit floor, no
+  // dominance early-stops, second-half Q readout) instead of fastest best-move pick.
+  // 0 = off (default, bit-identical search), 1 = on. STICKY — callers must reset.
+  setGrade(mode) { this.M._uct_set_grade(mode | 0); }
 
   // run up to `budget` more sims; returns true when the search is finished.
   uctStep(budget) { return this.M._uct_step(budget | 0) !== 0; }

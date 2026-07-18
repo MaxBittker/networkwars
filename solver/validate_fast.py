@@ -8,6 +8,8 @@ is caught. Run: uv run python validate_fast.py [nseeds]
 """
 import sys
 
+import numpy as np
+
 import network_wars as nw
 import fastnw
 
@@ -214,9 +216,44 @@ def check_golden():
     return fails == 0
 
 
+def check_grade():
+    """Grading mode (uct_set_grade) contract: OFF is the default and the flag is
+    resettable (a plain search after grade(1)+reset is bit-identical to one that
+    never graded), and ON floors every root child's visits at ~35% of the uniform
+    share so cross-move Qs are comparable (blunder analysis; see grade_eval.py)."""
+    state = nw.make_game(42)
+    fastnw.set_topology(state)
+    owner, strength = fastnw.board_arrays(state)
+
+    def run():
+        fastnw.use_sim(0x12345678)
+        return fastnw.uct_search(owner, strength, 1, 8000, return_q=True)
+
+    a0, v0, q0 = run()
+    fastnw.set_grade(1)
+    a1, v1, q1 = run()
+    fastnw.set_grade(0)
+    a2, v2, q2 = run()
+    ok = True
+    floor = int(0.35 * 8000 / len(a1)) - 2      # small slack: floor tracks a growing total
+    if v1.min() < floor:
+        ok = False
+        print(f"  grade floor violated: min root visits {v1.min()} < {floor}")
+    if not (np.array_equal(a0, a2) and np.array_equal(v0, v2) and np.array_equal(q0, q2)):
+        ok = False
+        print("  grade reset broken: plain search after grade(1)+grade(0) drifted")
+    if np.array_equal(v0, v1):
+        ok = False
+        print("  grade mode had no effect on root allocation")
+    print(f"grade mode: {'PASS' if ok else 'FAIL'} "
+          f"(root floor >= {floor} visits, reset bit-identical)")
+    return ok
+
+
 def main():
     nseeds = int(sys.argv[1]) if len(sys.argv) > 1 else 1000
-    ok = check_invariants(nseeds) & check_battle_invariants() & check_golden()
+    ok = check_invariants(nseeds) & check_battle_invariants() & check_golden() \
+        & check_grade()
     print("RESULT:", "ALL CHECKS PASS" if ok else "FAILURES")
     sys.exit(0 if ok else 1)
 

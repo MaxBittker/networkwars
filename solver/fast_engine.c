@@ -830,6 +830,32 @@ static int    S_min_sims, S_max_sims;
 static int    S_sims;                          /* sims completed so far */
 static int    S_owner0[MAXN], S_strength0[MAXN];
 
+/* ---- grading mode (uct_set_grade) — accurate COMPARISON across the root moves,
+ * instead of fastest-possible best-move pick. Plain UCT is a best-arm allocator:
+ * the winner's Q converges deep while every other root child is starved, so its Q
+ * is contaminated by early sims (taken before the search found the good follow-up
+ * in that subtree) and leans on the pessimistic C1 rollout — gaps vs best are
+ * systematically INFLATED. Used for blunder analysis / grading human play, where
+ * the played move is often NOT the search's pick and its Q must mean something.
+ * Three changes, all root-level and opt-in (mode 0 = off = bit-identical search):
+ *   1. min-visit floor: any root child below GRADE_FLOOR_FRAC of the uniform
+ *      share is selected before PUCT gets to choose (deterministic — no extra
+ *      RNG draws), so every move's subtree gets real tree-correction.
+ *   2. early stops: visit-margin / deep-think / value-GAP stops are disabled
+ *      (they fire exactly on the contested positions grading cares about); only
+ *      the decisive value stop (leader <= lo or >= hi => position is decided,
+ *      every move ties, the review's dead-filter drops it anyway) still fires.
+ *   3. second-half Q (mode 1): root Qs are reported from sims AFTER the halfway
+ *      snapshot only, discarding the burn-in contamination. Mode 2 keeps the
+ *      floor+stops but reports cumulative Q (A/B probe for grade_eval.py). */
+#define GRADE_FLOOR_FRAC 0.35   /* each root child gets >= this x uniform share */
+#define GRADE_MIN_HALF   16     /* below this many post-snapshot visits, fall back */
+static int    GRADE = 0;
+static int    GS_done = 0;               /* halfway snapshot taken this search */
+static int    GS_N[MAXCHILD];
+static double GS_W[MAXCHILD];
+void uct_set_grade(int mode) { GRADE = mode; }
+
 /* run exactly one simulation against the persistent tree; increments S_sims. */
 static void uct_sim_once(void) {
     int legal[MAXCHILD];
@@ -875,14 +901,29 @@ static void uct_sim_once(void) {
          * sims; cached on the node (each pass-through adds exactly one). */
         int nc = node->n_children;
         long total = node->total_n;
-        double sqrt_total = sqrt((double)total) + 1e-8;
-        int best_k = 0; double best_u = -1e30;
-        for (int k = 0; k < nc; k++) {
-            int off = node->child_off + k;
-            int n = E_N[off];
-            double q = (n > 0) ? (E_W[off] / n) : node->v;
-            double u = q + S_cpuct * E_P[off] * sqrt_total / (1 + n);
-            if (u > best_u) { best_u = u; best_k = k; }
+        int best_k = -1;
+        /* grading mode: root min-visit floor — top up the most-starved root child
+         * whenever it falls under its share, so every move's Q stays comparable. */
+        if (GRADE && cur == S_root && nc > 1) {
+            long need = (long)(GRADE_FLOOR_FRAC * (double)total / nc);
+            int mk = 0, mn = E_N[node->child_off];
+            for (int k = 1; k < nc; k++) {
+                int n = E_N[node->child_off + k];
+                if (n < mn) { mn = n; mk = k; }
+            }
+            if (mn < need) best_k = mk;
+        }
+        if (best_k < 0) {
+            double sqrt_total = sqrt((double)total) + 1e-8;
+            double best_u = -1e30;
+            best_k = 0;
+            for (int k = 0; k < nc; k++) {
+                int off = node->child_off + k;
+                int n = E_N[off];
+                double q = (n > 0) ? (E_W[off] / n) : node->v;
+                double u = q + S_cpuct * E_P[off] * sqrt_total / (1 + n);
+                if (u > best_u) { best_u = u; best_k = k; }
+            }
         }
         int off = node->child_off + best_k;
         node->total_n++;        /* this pass adds one visit through this node */
@@ -963,6 +1004,17 @@ static int uct_should_stop(void) {
         if (n > b1) { b2 = b1; b2k = b1k; b1 = n; b1k = k; }
         else if (n > b2) { b2 = n; b2k = k; }
     }
+    /* grading mode: never stop on move dominance (that fires exactly on the
+     * contested positions grading needs full budget for); stop only when the
+     * position itself is decided (leader's win-prob past the decisive band). */
+    if (GRADE) {
+        if (rnc0 <= 1) return 1;
+        if (b1 >= VS_MINVIS && b1k >= 0) {
+            double q1 = E_W[off0 + b1k] / (double)b1;
+            if (q1 <= VS_LO || q1 >= VS_HI) return 1;
+        }
+        return 0;
+    }
     long remaining = (long)S_max_sims - S_sims;
     if (rnc0 <= 1 || b1 - b2 > remaining) return 1;     /* visit-margin (move-identical) */
     if (DT_RATIO > 0.0 && b1 >= DT_MINVIS) {             /* deep-think gating */
@@ -1002,6 +1054,7 @@ static int uct_setup(const int *owner_in, const int *strength_in, int root_turns
     S_cpuct = c_puct; S_nroll = nroll;
     S_min_sims = min_sims; S_max_sims = max_sims;
     S_sims = 0;
+    GS_done = 0;
     memcpy(S_owner0,    owner_in,    N * sizeof(int));
     memcpy(S_strength0, strength_in, N * sizeof(int));
     return 0;
@@ -1015,7 +1068,14 @@ static int uct_collect(int *out_acts, int *out_visits, double *out_q) {
         int off = rn->child_off + k;
         out_acts[k] = E_ACT[off];
         out_visits[k] = E_N[off];
-        if (out_q) out_q[k] = (E_N[off] > 0) ? (E_W[off] / E_N[off]) : rn->v;
+        if (out_q) {
+            double q = (E_N[off] > 0) ? (E_W[off] / E_N[off]) : rn->v;
+            if (GRADE == 1 && GS_done) {
+                int dn = E_N[off] - GS_N[k];
+                if (dn >= GRADE_MIN_HALF) q = (E_W[off] - GS_W[k]) / dn;
+            }
+            out_q[k] = q;
+        }
     }
     return nc;
 }
@@ -1036,6 +1096,19 @@ int uct_step(int budget) {
     if (target > S_max_sims) target = S_max_sims;
     while (S_sims < target) {
         uct_sim_once();                 /* increments S_sims */
+        /* grading mode: snapshot root stats at halfway so uct_collect can report
+         * burn-in-free second-half Qs. Selection never reads the snapshot, so the
+         * tree itself is identical with or without it. */
+        if (GRADE == 1 && !GS_done && S_sims >= (S_max_sims + 1) / 2) {
+            MNode *rn = &NODES[S_root];
+            if (rn->expanded) {
+                for (int k = 0; k < rn->n_children; k++) {
+                    GS_N[k] = E_N[rn->child_off + k];
+                    GS_W[k] = E_W[rn->child_off + k];
+                }
+                GS_done = 1;
+            }
+        }
         if (S_sims >= S_min_sims && S_sims < S_max_sims
                 && S_sims % UCT_CHECK_EVERY == 0 && uct_should_stop())
             return 1;

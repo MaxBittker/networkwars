@@ -257,10 +257,12 @@ import { Board, ORDER, SPEEDS, sleep, dirArrow, drawThumb } from './board.js';
 // The AI plays at the strength the app's autoplay/live driver uses: 6000-sim floor,
 // adaptive up to the worker's 150k ceiling with the visit/value-margin early stop.
 const AI_SIMS = 6000;
-// Review budget: one search per decision you made, so it must be cheaper than live
-// play. 24k ceiling per `hard-set-2026-07-02` (quality saturates ~32k; contested
-// positions are compute-responsive up to there, beyond it is dice).
-const REVIEW_SIMS = 4000, REVIEW_MAX = 24000;
+// Review budget: one grading-mode search per decision you made. Grading mode
+// disables the dominance early-stops, so live positions run to the 24k ceiling
+// (per `hard-set-2026-07-02` quality saturates ~32k) and the 16k floor only
+// bounds how early the decisive "position is decided" stop may fire — every
+// scored decision gets at least 16k sims.
+const REVIEW_SIMS = 16000, REVIEW_MAX = 24000;
 const WIN_NODES = 24;                     // faction node count that ends the game
 
 const $ = (id) => document.getElementById(id);
@@ -594,7 +596,7 @@ function showResults() {
     row.className = 'srow';
     const c = document.createElement('canvas'); c.width = 46; c.height = 46;
     const meta = document.createElement('div'); meta.className = 'meta';
-    const scored = r.you.review ? `<div class="loss">scored ✓</div>` : '';
+    const scored = r.you.review && !r.you.review.partial ? `<div class="loss">scored ✓</div>` : '';
     meta.innerHTML = `<div class="sd">#${i + 1} · seed ${r.seed}</div>`
       + `<div class="vs">You ${resTag(r.you.result)} &nbsp;·&nbsp; AI ${resTag(r.ai.result)}</div>${scored}`;
     const go = document.createElement('div'); go.className = 'go'; go.textContent = '›';
@@ -785,14 +787,29 @@ function renderList() {
         el.style.width = (100 * c / tot) + '%'; el.style.background = col;
         bar.appendChild(el);
       }
+      if (rv.partial) {          // rolling: scoring still running, bar grows as it goes
+        const p = document.createElement('div');
+        p.className = 'spin';
+        p.textContent = `Scoring… ${rv.partial.done}/${rv.partial.total}`;
+        list.appendChild(p);
+      }
     } else {
       const btn = document.createElement('div');
       btn.className = 'act';
       btn.id = 'sd-score';
       btn.style.cssText = 'text-align:center;padding:10px;border-radius:9px;'
         + 'background:rgba(95,208,214,.10);border:1px solid rgba(95,208,214,.35);margin-bottom:12px';
-      btn.textContent = `Score my ${side.moves.length} decisions`;
-      btn.onclick = () => runReview(sdIdx, btn);
+      if (reviewing.has(sdIdx)) {
+        // scoring just started (first move's search still running) — a re-render
+        // here must not resurrect a clickable button under the in-flight run
+        btn.textContent = 'Scoring…';
+        btn.style.pointerEvents = 'none';
+      } else {
+        btn.textContent = reviewErr[sdIdx]
+          ? `Scoring failed — tap to retry (${reviewErr[sdIdx]})`
+          : `Score my ${side.moves.length} decisions`;
+        btn.onclick = () => runReview(sdIdx, btn);
+      }
       list.appendChild(btn);
     }
   }
@@ -810,7 +827,7 @@ function renderList() {
     const lab = mv.e ? mvLabel('end')
       : lb ? mvLabel(lb) : `<span class="lbl">${mv.a[0]} → ${mv.a[1]}</span>`;
     const q = sm ? sm.myQ : mv.q;
-    const gapTxt = !sm ? '' : sm.gap == null ? '—'
+    const gapTxt = !sm ? (rv && rv.partial ? '…' : '') : sm.gap == null ? '—'
       : sm.dead ? 'decided' : (sm.gap < 0.5 ? 'best' : `−${sm.gap.toFixed(0)}%`);
     row.innerHTML = `<span class="no">${k + 1}</span>${lab}`
       + `<span class="qq">${q != null ? Math.round(q * 100) + '%' : ''}</span>`
@@ -856,25 +873,39 @@ async function select(k) {
 }
 const step = (d) => select(sdSel < 0 ? 0 : sdSel + d);
 
+const reviewing = new Set();   // round indices being scored (transient — never saved)
+const reviewErr = {};          // last scoring error per round index (transient)
 async function runReview(i, btn) {
+  if (reviewing.has(i)) return;
+  reviewing.add(i);
+  delete reviewErr[i];
   const r = M.rounds[i];
   btn.textContent = 'Scoring… 0/' + r.you.moves.length;
   btn.style.pointerEvents = 'none';
   try {
-    r.you.review = await computeReview(i, (k, n) => { btn.textContent = `Scoring… ${k}/${n}`; });
+    // Rolling readout: every scored move lands in r.you.review immediately
+    // (marked .partial, so renderList shows the progress line and '…' pending
+    // rows) — the early rows are readable while the rest are still searching.
+    // Only the COMPLETE review is persisted; an interrupted scoring saves nothing.
+    r.you.review = await computeReview(i, (partial) => {
+      r.you.review = partial;
+      if (sdIdx === i && sdTab === 'you') renderList();
+    });
     save();
-    renderList();
   } catch (e) {
-    btn.textContent = 'Scoring failed: ' + String(e && e.message || e);
-    btn.style.pointerEvents = '';
+    r.you.review = null;
+    reviewErr[i] = String(e && e.message || e);
+  } finally {
+    reviewing.delete(i);
   }
+  if (sdIdx === i && sdTab === 'you') renderList();
 }
 
 // Replay YOUR game from its seed and, at every decision you made, run a search and
 // score your choice against the search's best. This is the blunder-alert metric
 // (index.html) applied retroactively to a whole game: it uses only PRE-move Qs, so it
 // grades the decision, never the dice that followed.
-async function computeReview(i, onProg) {
+async function computeReview(i, onPartial) {
   const r = M.rounds[i];
   const out = { moves: [], curve: [] };
   let s = await api('/api/game', 'POST', { seed: r.seed });
@@ -882,8 +913,11 @@ async function computeReview(i, onProg) {
     const mv = r.you.moves[k];
     const isEnd = !!mv.e;
     const from = isEnd ? null : mv.a[0], to = isEnd ? null : mv.a[1];
+    // grade:true = the engine's grading mode — root min-visit floor + full budget on
+    // live positions + burn-in-free Qs, so YOUR move's Q is comparable to the best
+    // move's instead of a starved child's pessimistic estimate (which inflated gaps).
     const res = await api(`/api/game/${s.id}/search`, 'POST',
-      { sims: REVIEW_SIMS, maxSims: REVIEW_MAX });
+      { sims: REVIEW_SIMS, maxSims: REVIEW_MAX, grade: true });
     const all = res.all || res.top || [];
     const best = all[0] || null;
     const mine = all.find(m => isEnd ? m.action === -1 : (m.from === from && m.to === to));
@@ -902,15 +936,23 @@ async function computeReview(i, onProg) {
     out.moves.push({ n: k + 1, turn: s.turn, isEnd, label, bestLbl, dead,
       myQ: scored ? mine.q : null, bestQ: best ? best.q : null, gap });
     if (best && best.q != null) out.curve.push(+best.q.toFixed(4));
-    onProg(k + 1, r.you.moves.length);
+    // Rolling: hand the caller a scored-so-far review after every move (marked
+    // .partial), aggregates included, so the list can render as scoring runs.
+    out.partial = { done: k + 1, total: r.you.moves.length };
+    onPartial(reviewAggregates(out));
     s = isEnd
       ? await api(`/api/game/${s.id}/end-turn`, 'POST')
       : await api(`/api/game/${s.id}/attack`, 'POST', { from, to });
   }
-  // Aggregates over LIVE decisions only (a decided position ties every move, so
-  // counting those flatters the player). `counts` drives the tier bar; n/nLive/meanLoss
-  // are recorded in the saved review but no longer shown — the per-move rows say it
-  // better than a headline number did.
+  delete out.partial;
+  return reviewAggregates(out);
+}
+
+// Aggregates over LIVE decisions only (a decided position ties every move, so
+// counting those flatters the player). `counts` drives the tier bar; n/nLive/meanLoss
+// are recorded in the saved review but no longer shown — the per-move rows say it
+// better than a headline number did.
+function reviewAggregates(out) {
   const sc = out.moves.filter(m => m.gap != null);
   const live = sc.filter(m => !m.dead);
   out.n = sc.length;

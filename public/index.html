@@ -242,6 +242,10 @@
 import { Board, ORDER, SPEEDS, sleep, dirArrow, drawThumb } from './board.js';
 
 const SIMS = 6000;
+// Grading-mode budget: dominance stops are off there, so live positions run to the
+// ceiling regardless; the 16k floor guarantees even near-decided ones get a real
+// sample before the decisive value-stop may fire.
+const GRADE_MIN = 16000, GRADE_MAX = 24000;
 let animSpeed = 'medium';
 const cv = document.getElementById('cv');
 const board = new Board(cv, document.getElementById('board'));
@@ -403,7 +407,17 @@ async function requestSearch() {
   searching = true; searchSims = 0; searchAll = []; renderAI();
   // tag=my streams mid-search updates (onSearchProgress) so the panel animates as
   // the search converges; the awaited result is the final, threshold-gated answer.
-  const res = await api(`/api/game/${state.id}/search`, 'POST', { sims: SIMS, tag: my });
+  // With the blunder alert on, this search's job includes GRADING whatever move the
+  // player commits — request the engine's grading mode (root min-visit floor +
+  // burn-in-free Qs) so tail-move Qs are comparable to the best move's and gaps
+  // aren't inflated. Grading mode disables the move-dominance early stops (they'd
+  // starve exactly the moves being graded), so run the h2h review's 16k-24k budget
+  // instead of the default 6k-150k — a second or two of refinement per position.
+  // The suggestion list rides along unchanged (best = argmax visits either way);
+  // autoplay never comes through here, so play stays pure.
+  const grade = !!blunderThresh;
+  const res = await api(`/api/game/${state.id}/search`, 'POST',
+    grade ? { sims: GRADE_MIN, tag: my, grade, maxSims: GRADE_MAX } : { sims: SIMS, tag: my });
   if (my !== searchId) return;            // a newer position superseded this one
   searching = false;
   suggestions = res.top || [];

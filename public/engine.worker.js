@@ -208,30 +208,40 @@ function buildResult(acts, visits, q) {
 // attack or end-turn must never wait out a multi-second search. Autoplay is
 // unaffected: it awaits each search with nothing else queued, so its searches
 // always run to their converged stop.
+// `grade` requests grading mode: accurate comparison ACROSS the root moves (root
+// min-visit floor + no dominance early-stops + burn-in-free Qs) instead of the
+// fastest best-move pick. Used by the flows that GRADE human play (blunder alert,
+// score-my-decisions) — never by autoplay or the h2h AI, which are trying to win.
+// The engine flag is sticky, so it's cleared on every exit (abort included).
 const SEARCH_CHUNK = 2000;
 async function doSearch(g, sims = 2000, cPuct = 2.5, nroll = 1, simSeed = 0x12345678,
-                        maxSims = 150000, tag = null) {
+                        maxSims = 150000, tag = null, grade = false) {
   select(g);
   E.useSim(simSeed);
-  E.uctBegin(g.owner, g.strength, g.turn, sims, cPuct, nroll, maxSims);
-  let done = false;
-  while (!done) {
-    done = E.uctStep(SEARCH_CHUNK);
-    if (tag != null) {
-      const r = E.uctReport();
-      const out = buildResult(r.acts, r.visits, r.q);
-      out.sims = E.uctSimsDone(); out.done = done;
-      self.postMessage({ type: 'progress', tag, result: out });
+  E.setGrade(grade ? 1 : 0);
+  try {
+    E.uctBegin(g.owner, g.strength, g.turn, sims, cPuct, nroll, maxSims);
+    let done = false;
+    while (!done) {
+      done = E.uctStep(SEARCH_CHUNK);
+      if (tag != null) {
+        const r = E.uctReport();
+        const out = buildResult(r.acts, r.visits, r.q);
+        out.sims = E.uctSimsDone(); out.done = done;
+        self.postMessage({ type: 'progress', tag, result: out });
+      }
+      if (!done) {
+        await yieldToInbox();                 // let queued client messages land
+        if (inbox.length) break;              // someone is waiting — answer with what we have
+      }
     }
-    if (!done) {
-      await yieldToInbox();                 // let queued client messages land
-      if (inbox.length) break;              // someone is waiting — answer with what we have
-    }
+    const r = E.uctReport();
+    const out = buildResult(r.acts, r.visits, r.q);
+    out.sims = E.uctSimsDone(); out.done = done;
+    return out;
+  } finally {
+    E.setGrade(0);
   }
-  const r = E.uctReport();
-  const out = buildResult(r.acts, r.visits, r.q);
-  out.sims = E.uctSimsDone(); out.done = done;
-  return out;
 }
 
 function doSurrender(g) {
@@ -261,7 +271,8 @@ function route(path, method, body) {
     if (action === 'search') return doSearch(g,
       body.sims != null ? body.sims | 0 : 2000, 2.5, 1, 0x12345678,
       body.maxSims != null ? body.maxSims | 0 : 150000,
-      body.tag != null ? body.tag : null);
+      body.tag != null ? body.tag : null,
+      !!body.grade);
     if (action === 'surrender') return doSurrender(g);
     if (action === 'undo') return doUndo(g);
   }

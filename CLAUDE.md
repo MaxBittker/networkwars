@@ -15,7 +15,13 @@
 - **`solver/fast_engine.c` is the single implementation of everything**: board
   generation + the iOS deal, the four bots, the fair-coin-attrition battle,
   reinforcement, win check, and the open-loop C-UCT search (ranked **C1** rollout
-  baked in, `c_puct=2.5`). Everything else is a thin client over it:
+  baked in, `c_puct=2.5`). The search has an opt-in **grading mode**
+  (`uct_set_grade`, default off = bit-identical): root min-visit floor + dominance
+  early-stops disabled + second-half Q readout, for accurate comparison ACROSS root
+  moves rather than fastest best-move pick — used by every flow that grades human
+  play (blunder alert, h2h score-my-decisions via the search request's `grade`
+  flag), never by play/autoplay (verified helpful by `solver/grade_eval.py`;
+  regression-gated in `validate_fast.py`). Everything else is a thin client over it:
   - `solver/fastnw.py` — ctypes client (marshals int32 arrays; implements no rules).
   - `solver/network_wars.py` — a readable State/Node shim that delegates every rule
     to the C engine, so the `iphone_data/` analysis tooling keeps its object API.
@@ -60,9 +66,11 @@
         point (bit-exact) and shows the exact board with the move highlighted. AI moves
         carry the search's own win% per move; labels are snapshotted at play time (`mv.l`)
         so lists render without a replay. "Score my decisions" re-searches every position
-        of your game and grades each choice vs the search's best — the blunder-alert
-        metric over a whole game; it **auto-opens and auto-scores after a loss** (the next
-        seed is dealt underneath, so closing drops you into it).
+        of your game (grading-mode searches, 16k floor / 24k ceiling) and grades each
+        choice vs the search's best — the blunder-alert metric over a whole game; results
+        render **rolling** (each scored move fills in as its search finishes; only a
+        complete review is persisted) and it **auto-opens and auto-scores after a loss**
+        (the next seed is dealt underneath, so closing drops you into it).
         Only **live** decisions (best-Q in 2–98%) are scored: in a decided position every
         move scores gap 0, so including them flatters the player (measured: a
         pass-every-turn game reads −7.7%/move unfiltered vs −27.6% over its 6 real

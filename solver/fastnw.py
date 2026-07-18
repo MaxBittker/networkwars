@@ -57,6 +57,7 @@ _lib.ext_check_winner.restype = ctypes.c_int
 _lib.uct_set_value_stop.argtypes = [ctypes.c_double, ctypes.c_double,
                                     ctypes.c_double, ctypes.c_int]
 _lib.uct_set_deepthink.argtypes = [ctypes.c_double, ctypes.c_int, ctypes.c_double]
+_lib.uct_set_grade.argtypes = [ctypes.c_int]
 _lib.uct_sims_done.restype = ctypes.c_int
 
 
@@ -70,6 +71,16 @@ def set_value_stop(lo=-1.0, hi=2.0, gap=2.0, min_vis=1 << 30):
     Settle once the leading move has >= min_vis visits AND its RED win-prob is
     decisive (<= lo or >= hi) or beats the runner-up by >= gap."""
     _lib.uct_set_value_stop(float(lo), float(hi), float(gap), int(min_vis))
+
+
+def set_grade(mode=0):
+    """Grading mode: accurate comparison ACROSS root moves instead of fastest
+    best-move pick — root min-visit floor, dominance early-stops disabled (only the
+    decisive value-stop band still fires), Qs reported from the second half of the
+    budget (burn-in discarded). mode 0 = off (default, bit-identical search),
+    1 = on, 2 = floor/stops only with cumulative Q (A/B probe). Sticky — reset
+    to 0 when done. Use for blunder analysis / grading human play, NOT for play."""
+    _lib.uct_set_grade(int(mode))
 
 
 def set_deepthink(ratio=0.0, min_vis=1 << 30, behind=2.0):
