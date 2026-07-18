@@ -91,6 +91,22 @@
   #endturn { font-size:20px; }
   #status { color:#8fcfb8; font-size:12px; flex:1; text-align:center; padding:0 6px; }
 
+  /* sweep-up offer: green banner above the footer — the game is won from here
+     (every move >99.8%), offer to auto-mop-up. Same look as index.html's. */
+  #sweep { position:absolute; left:12px; right:12px;
+    bottom:calc(56px + env(safe-area-inset-bottom)); z-index:4;
+    display:none; align-items:center; gap:12px; padding:10px 14px;
+    background:#04140c; border:1px solid var(--green); border-radius:12px;
+    box-shadow:0 8px 30px -8px rgba(0,0,0,.85), 0 0 18px -6px var(--green);
+    font-size:13px; }
+  #sweep.show { display:flex; animation:blup .18s ease-out; }
+  @keyframes blup { from { transform:translateY(10px); opacity:0; } to { transform:none; opacity:1; } }
+  #sw-text { flex:1; display:flex; align-items:baseline; gap:8px; min-width:0; }
+  #sw-text b { color:var(--green); font-size:14px; }
+  #sw-sub { color:#cfe; }
+  #sweep .act { padding:6px 8px; flex:0 0 auto; }
+  #sw-x { color:#7fb6a6; font-weight:800; }
+
   /* ---- overlays ---- */
   .ov { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
     background:rgba(0,0,0,.62); backdrop-filter:blur(3px); z-index:6; padding:12px; }
@@ -209,6 +225,8 @@
       <div id="menupop">
         <div class="mi" id="mi-free">Free Play&nbsp;&rarr;</div>
         <div class="div"></div>
+        <div class="mi" id="mi-sweep">Sweep-Up Offer</div>
+        <div class="div"></div>
         <div class="lbl">Animation speed</div>
         <div class="mi sp" data-speed="instant">Instant</div>
         <div class="mi sp" data-speed="fast">Fast</div>
@@ -236,6 +254,12 @@
     <div id="status">—</div>
     <div class="act" id="endturn">End Turn</div>
   </footer>
+
+  <div id="sweep">
+    <div id="sw-text"><b>Sweep up?</b><span id="sw-sub">Every move from here wins (&gt;99.8%)</span></div>
+    <div class="act" id="sw-go">Sweep</div>
+    <div class="act" id="sw-x">&#10005;</div>
+  </div>
 </div>
 
 <!-- tally -->
@@ -508,7 +532,9 @@ function revealPair(i) {
 }
 
 // ============================ your play ============================
-// Fully blind: no search is ever issued on your worker while you play.
+// Fully blind: no search is ever issued on your worker while you play — with ONE
+// opt-in exception, the sweep-up detection below (off by default; it surfaces
+// nothing but a yes/no offer, and only once the game is already decided).
 async function startSeed() {
   const r = cur();
   const res = await api('/api/game', 'POST', { seed: r.seed });
@@ -529,7 +555,7 @@ function adopt(s) {
 }
 
 async function yourAttack(from, to) {
-  inputLocked = true; board.abort = false;
+  inputLocked = true; board.abort = false; cancelSweepOffer();
   board.selected = null; board.battle = { from, to }; board.draw();
   setStatus('Attacking…');
   cur().you.moves.push({ a: [from, to], l: mkLabel(state, from, to) });
@@ -542,11 +568,12 @@ async function yourAttack(from, to) {
     : `Attack on ${e.to} repelled (left ${e.fromStrength}).`) : 'Done.');
   inputLocked = false;
   if (recordEnd(cur().you, res)) await afterYourGame();
+  else maybeOfferSweep();
 }
 
 async function yourEndTurn() {
   if (!state || state.over || inputLocked) return;
-  inputLocked = true; board.abort = false;
+  inputLocked = true; board.abort = false; cancelSweepOffer();
   board.selected = null; board.draw();
   setStatus('Ending turn…');
   cur().you.moves.push({ e: 1 });
@@ -557,6 +584,7 @@ async function yourEndTurn() {
   adopt(res); sampleHist(cur().you, res); save();
   if (recordEnd(cur().you, res)) { await afterYourGame(); return; }
   setStatus(`Bots captured ${caps} node(s). Your move.`);
+  maybeOfferSweep();
 }
 
 async function afterYourGame() {
@@ -579,7 +607,7 @@ async function afterYourGame() {
 }
 
 $('cv').addEventListener('pointerdown', (ev) => {
-  if (!M || !state || state.over || inputLocked) return;
+  if (!M || !state || state.over || inputLocked || sweeping) return;
   const b = $('cv').getBoundingClientRect();
   const n = board.hitNode(ev.clientX - b.left, ev.clientY - b.top);
   if (!n) { board.selected = null; board.draw(); return; }
@@ -597,8 +625,83 @@ $('cv').addEventListener('pointerdown', (ev) => {
   }
   board.draw();
 });
-$('endturn').onclick = () => yourEndTurn();
+$('endturn').onclick = () => { if (!sweeping) yourEndTurn(); };
 $('aibadge').onclick = () => showResults();
+
+// ============================ sweep-up ============================
+// Off-by-default assist (nwSweep toggle, shared with index.html): after each of
+// your moves a small grading-mode search checks whether EVERY legal move still
+// wins (>99.8%). If so, a banner offers to auto-play the rest with the real
+// bot's aggression rule — through yourAttack/yourEndTurn, so swept moves are
+// recorded, animated and scored exactly like taps. This is the one exception to
+// "your worker never searches" (see above): nothing from the search is surfaced
+// except the yes/no offer, only in positions that are already decided, and the
+// AI plays in its own worker regardless — the duplicate comparison stands.
+const SWEEP_Q = 0.998;
+let sweepOn = false, sweeping = false, sweepDismissed = -1, sweepSeq = 0;
+function hideSweep() { $('sweep').classList.remove('show'); }
+// A committed move invalidates any in-flight detection (the worker aborts it,
+// but its early result must not pop a stale offer for the pre-move position).
+function cancelSweepOffer() { ++sweepSeq; hideSweep(); }
+function setSweep(on) {
+  sweepOn = on;
+  $('mi-sweep').classList.toggle('sel', on);
+  try { localStorage.setItem('nwSweep', on ? '1' : '0'); } catch (_) {}
+  if (!on) { ++sweepSeq; hideSweep(); }
+}
+(function loadSweep() {
+  let v; try { v = localStorage.getItem('nwSweep'); } catch (_) {}
+  sweepOn = v === '1';
+  $('mi-sweep').classList.toggle('sel', sweepOn);
+})();
+$('mi-sweep').onclick = () => setSweep(!sweepOn);
+
+async function maybeOfferSweep() {
+  if (!sweepOn || sweeping || !state || state.over) return;
+  if (sweepDismissed === M.idx) return;                // dismissed for this seed
+  const my = ++sweepSeq, gid = state.id;
+  // Grading mode: honest Qs ACROSS root moves — "every move wins" hinges on the
+  // tail ones. Small budget: a >99.8%-everywhere position converges instantly,
+  // and your next tap aborts it anyway (the worker serves the inbox in order).
+  const res = await api(`/api/game/${gid}/search`, 'POST',
+    { sims: 4000, maxSims: 8000, grade: true });
+  if (my !== sweepSeq || sweeping || !state || state.id !== gid || state.over) return;
+  const all = res.all || [];
+  if (all.length && all.every(m => m.q > SWEEP_Q)) $('sweep').classList.add('show');
+}
+$('sw-x').onclick = () => { sweepDismissed = M ? M.idx : -1; hideSweep(); };
+$('sw-go').onclick = () => runSweep();
+
+// The real bot's okAttack rule: strongest attacker first, any strictly weaker
+// adjacent enemy (bigger margin breaks ties); no such attack -> end turn.
+function sweepMove(s) {
+  let best = null, bs = 0, bm = 0;
+  for (const m of (s.legalMoves || [])) {
+    const a = s.nodes[m.from].strength, d = s.nodes[m.to].strength;
+    if (a <= d) continue;
+    if (!best || a > bs || (a === bs && a - d > bm)) { best = m; bs = a; bm = a - d; }
+  }
+  return best;
+}
+
+async function runSweep() {
+  if (sweeping || !state || state.over || inputLocked) return;
+  hideSweep();
+  sweeping = true;
+  const gid = state.id;
+  try {
+    let guard = 400;                     // terminal-or-bust backstop, never hit in a won game
+    // afterYourGame deals the next seed inside yourAttack/yourEndTurn, so a
+    // changed game id is the loop's "this seed finished" signal.
+    while (state && state.id === gid && !state.over && guard--) {
+      const m = sweepMove(state);
+      if (m) await yourAttack(m.from, m.to);
+      else await yourEndTurn();
+    }
+  } finally {
+    sweeping = false;
+  }
+}
 
 // ============================ tally ============================
 function showResults() {
@@ -1037,8 +1140,7 @@ document.querySelectorAll('#menupop .sp').forEach(el => {
     speedName = el.dataset.speed;
     board.speed = SPEEDS[speedName];
     try { localStorage.setItem('nwSpeed', speedName); } catch (_) {}
-    renderSpeedMenu();
-    menupop.classList.remove('show');
+    renderSpeedMenu();                   // leave the menu open so the check is visible
   };
 });
 document.addEventListener('click', (e) => {
