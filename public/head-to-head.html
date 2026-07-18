@@ -21,6 +21,24 @@
       #04100c; }
 
   header { display:flex; align-items:center; gap:8px; padding:10px 14px 4px; }
+  /* hamburger + popup — same look as index.html's menu */
+  #menuwrap { position:relative; flex:0 0 auto; }
+  #menu { width:30px; height:30px; display:flex; flex-direction:column;
+    justify-content:center; gap:5px; cursor:pointer; opacity:.85; padding:3px; }
+  #menu span { height:2.5px; background:#bfe; border-radius:2px; }
+  #menu:active { opacity:.5; }
+  #menupop { position:absolute; top:38px; left:0; z-index:10; min-width:178px;
+    background:#04130d; border:1px solid #1c5; border-radius:12px; padding:6px;
+    box-shadow:0 10px 34px -10px rgba(0,0,0,.85); display:none; }
+  #menupop.show { display:block; }
+  #menupop .mi { padding:9px 12px; border-radius:8px; font-size:14px; color:#cfe;
+    cursor:pointer; display:flex; align-items:center; justify-content:space-between; }
+  #menupop .mi:active { background:rgba(255,255,255,.09); }
+  #menupop .mi.sel { color:#bfe; }
+  #menupop .mi.sel::after { content:'✓'; color:var(--teal); font-weight:800; }
+  #menupop .lbl { padding:9px 12px 4px; font-size:11px; text-transform:uppercase;
+    letter-spacing:.05em; color:#6fae9e; }
+  #menupop .div { height:1px; background:rgba(255,255,255,.08); margin:5px 6px; }
   #chips { flex:1; display:flex; justify-content:center; gap:12px; }
   .chip { position:relative; width:34px; height:34px; border-radius:50%;
     display:flex; align-items:center; justify-content:center;
@@ -185,7 +203,21 @@
 </head>
 <body>
 <div id="app">
-  <header><div id="chips"></div></header>
+  <header>
+    <div id="menuwrap">
+      <div id="menu" title="Menu"><span></span><span></span><span></span></div>
+      <div id="menupop">
+        <div class="mi" id="mi-free">Free Play&nbsp;&rarr;</div>
+        <div class="div"></div>
+        <div class="lbl">Animation speed</div>
+        <div class="mi sp" data-speed="instant">Instant</div>
+        <div class="mi sp" data-speed="fast">Fast</div>
+        <div class="mi sp" data-speed="medium">Medium</div>
+        <div class="mi sp" data-speed="slow">Slow</div>
+      </div>
+    </div>
+    <div id="chips"></div>
+  </header>
   <div id="mstrip">
     <span id="mgame">—</span>
     <span id="tally">—</span>
@@ -201,7 +233,6 @@
   </div>
 
   <footer>
-    <div class="act" id="left"></div>
     <div id="status">—</div>
     <div class="act" id="endturn">End Turn</div>
   </footer>
@@ -373,7 +404,6 @@ function stats() {
 
 function renderStrip() {
   if (!M) return;
-  renderLeft();
   $('mgame').textContent = `Seed ${M.idx + 1}`;
   const s = stats();
   $('tally').innerHTML = `<span class="y">You ${s.yw}–${s.yl}</span>`
@@ -988,20 +1018,33 @@ function reviewAggregates(out) {
   return out;
 }
 
-// ============================ speed (footer left) ============================
+// ============================ menu (hamburger) ============================
+// Free Play link back to index.html + the animation-speed picker (moved here
+// from the footer). Same look and wiring as index.html's menu.
 let speedName = 'medium';
 try { const v = localStorage.getItem('nwSpeed'); if (v && v in SPEEDS) speedName = v; } catch (_) {}
 board.speed = SPEEDS[speedName];
-const SPEED_CYCLE = ['slow', 'medium', 'fast', 'instant'];
-function renderLeft() {
-  $('left').textContent = speedName.charAt(0).toUpperCase() + speedName.slice(1);
+const menupop = $('menupop');
+function renderSpeedMenu() {
+  document.querySelectorAll('#menupop .sp').forEach(el =>
+    el.classList.toggle('sel', el.dataset.speed === speedName));
 }
-$('left').onclick = () => {
-  speedName = SPEED_CYCLE[(SPEED_CYCLE.indexOf(speedName) + 1) % SPEED_CYCLE.length];
-  board.speed = SPEEDS[speedName];
-  try { localStorage.setItem('nwSpeed', speedName); } catch (_) {}
-  renderLeft();
-};
+renderSpeedMenu();
+$('menu').onclick = () => menupop.classList.toggle('show');
+$('mi-free').onclick = () => { location.href = 'index.html'; };
+document.querySelectorAll('#menupop .sp').forEach(el => {
+  el.onclick = () => {
+    speedName = el.dataset.speed;
+    board.speed = SPEEDS[speedName];
+    try { localStorage.setItem('nwSpeed', speedName); } catch (_) {}
+    renderSpeedMenu();
+    menupop.classList.remove('show');
+  };
+});
+document.addEventListener('click', (e) => {
+  if (menupop.classList.contains('show') && !$('menuwrap').contains(e.target))
+    menupop.classList.remove('show');
+});
 
 // ============================ boot ============================
 // Resume: your recorded moves replay back into a fresh game for the seed in progress
@@ -1035,7 +1078,6 @@ async function resume() {
 }
 
 paintBadge(null, 'AI<br>idle', true);
-renderLeft();
 // Straight into a game: no intro gate. A stored tally resumes where you left off,
 // otherwise the first seed is dealt immediately.
 const prev = load();
