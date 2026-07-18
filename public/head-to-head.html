@@ -829,6 +829,7 @@ function renderList() {
       + `<span class="qq">${q != null ? Math.round(q * 100) + '%' : ''}</span>`
       + `<span class="gap">${gapTxt}</span>`;
     row.onclick = () => select(k);
+    if (canHover) row.onmouseenter = () => hoverPreview(k);
     list.appendChild(row);
     if (sm && sm.bestLbl && !sm.dead && sm.gap >= 5) {
       const hint = document.createElement('div');
@@ -837,16 +838,17 @@ function renderList() {
       list.appendChild(hint);
     }
   });
+  if (canHover) list.onmouseleave = hoverEnd;
 }
 
 // ---- move inspector: replay the seed to move k and show that exact board ----
 let inspectSeq = 0;
-async function select(k) {
+// Paint the board as it stood going into move k (bit-exact replay from the seed).
+// Shared by tap-to-select and hover preview — only select() moves the selection.
+async function showMove(k) {
   const r = M.rounds[sdIdx];
   const side = sdTab === 'you' ? r.you : r.ai;
   if (k < 0 || k >= side.moves.length) return;
-  sdSel = k;
-  renderList();
   const my = ++inspectSeq;
   $('ibinfo').textContent = 'Replaying…';
   // Replay on YOUR worker (idle while you're in a menu). Bit-exact from the seed.
@@ -867,7 +869,34 @@ async function select(k) {
   $('ibinfo').innerHTML = `<b>Move ${k + 1}</b> · turn ${s.turn} · ${s.counts.red} red nodes`
     + ` · ${who}: ${mv.e ? 'end turn' : `attack ${mv.a[0]} → ${mv.a[1]}`}`;
 }
+function select(k) {
+  const r = M.rounds[sdIdx];
+  const side = sdTab === 'you' ? r.you : r.ai;
+  if (k < 0 || k >= side.moves.length) return;
+  sdSel = k;
+  renderList();
+  showMove(k);
+}
 const step = (d) => select(sdSel < 0 ? 0 : sdSel + d);
+
+// Hovering a move row previews it on the board without moving the selection;
+// leaving the list snaps back to the selected move. Pointer devices only —
+// on touch the tap already selects. Debounced so sweeping the cursor down the
+// list doesn't fire a replay per row; inspectSeq makes stale replays no-ops.
+const canHover = matchMedia('(hover: hover)').matches;
+let hoverTimer = 0, hoverK = -1;
+function hoverPreview(k) {
+  if (k === hoverK) return;
+  hoverK = k;
+  clearTimeout(hoverTimer);
+  hoverTimer = setTimeout(() => showMove(k), 60);
+}
+function hoverEnd() {
+  clearTimeout(hoverTimer);
+  if (hoverK < 0) return;
+  hoverK = -1;
+  if (sdSel >= 0) showMove(sdSel);
+}
 
 const reviewing = new Set();   // round indices being scored (transient — never saved)
 const reviewErr = {};          // last scoring error per round index (transient)
