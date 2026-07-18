@@ -65,11 +65,12 @@
         score) + **both move lists**, steppable — tapping a move replays the seed to that
         point (bit-exact) and shows the exact board with the move highlighted. AI moves
         carry the search's own win% per move; labels are snapshotted at play time (`mv.l`)
-        so lists render without a replay. "Score my decisions" re-searches every position
+        so lists render without a replay. Decision scoring re-searches every position
         of your game (grading-mode searches, 16k floor / 24k ceiling) and grades each
-        choice vs the search's best — the blunder-alert metric over a whole game; results
+        choice vs the search's best — the blunder-alert metric over a whole game; it
+        starts **automatically whenever a seed's analysis opens** (no button), results
         render **rolling** (each scored move fills in as its search finishes; only a
-        complete review is persisted) and it **auto-opens and auto-scores after a loss**
+        complete review is persisted), and a loss **auto-opens its analysis**
         (the next seed is dealt underneath, so closing drops you into it).
         Only **live** decisions (best-Q in 2–98%) are scored: in a decided position every
         move scores gap 0, so including them flatters the player (measured: a

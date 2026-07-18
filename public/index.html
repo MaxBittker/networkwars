@@ -130,7 +130,7 @@
   #bl-x { color:#7fb6a6; font-weight:800; }
 
   /* sweep-up offer: same banner slot as the blunder alert, green — the game is
-     won from here (every move >99.8%), offer to auto-mop-up. */
+     won from here (every move >99.95%), offer to auto-mop-up. */
   #sweep { position:absolute; left:12px; right:12px;
     bottom:calc(56px + env(safe-area-inset-bottom)); z-index:4;
     display:none; align-items:center; gap:12px; padding:10px 14px;
@@ -241,7 +241,7 @@
   </div>
 
   <div id="sweep">
-    <div id="sw-text"><b>Sweep up?</b><span id="sw-sub">Every move from here wins (&gt;99.8%)</span></div>
+    <div id="sw-text"><b>Sweep up?</b><span id="sw-sub">Every move from here wins (&gt;99.95%)</span></div>
     <div class="act" id="sw-go">Sweep</div>
     <div class="act" id="sw-x">&#10005;</div>
   </div>
@@ -800,11 +800,11 @@ function setUndoMode(on) {
 document.getElementById('mi-undo').onclick = () => setUndoMode(!undoOn);
 
 // ---- sweep-up: when the converged search says EVERY root move still wins
-// (>99.8%), the game is decided — offer to auto-play the rest with the real
+// (>99.95%), the game is decided — offer to auto-play the rest with the real
 // bot's aggression rule (strongest attacker first, hit any strictly weaker
 // neighbor, else end turn). Off by default; the nwSweep toggle is shared with
 // head-to-head. Dismissing the offer silences it for the rest of that game. ----
-const SWEEP_Q = 0.998;
+const SWEEP_Q = 0.9995;
 let sweepOn = false, sweeping = false, sweepDismissed = null;   // dismissed game id
 function hideSweep() { document.getElementById('sweep').classList.remove('show'); }
 function setSweep(on) {

@@ -92,7 +92,7 @@
   #status { color:#8fcfb8; font-size:12px; flex:1; text-align:center; padding:0 6px; }
 
   /* sweep-up offer: green banner above the footer — the game is won from here
-     (every move >99.8%), offer to auto-mop-up. Same look as index.html's. */
+     (every move >99.95%), offer to auto-mop-up. Same look as index.html's. */
   #sweep { position:absolute; left:12px; right:12px;
     bottom:calc(56px + env(safe-area-inset-bottom)); z-index:4;
     display:none; align-items:center; gap:12px; padding:10px 14px;
@@ -256,7 +256,7 @@
   </footer>
 
   <div id="sweep">
-    <div id="sw-text"><b>Sweep up?</b><span id="sw-sub">Every move from here wins (&gt;99.8%)</span></div>
+    <div id="sw-text"><b>Sweep up?</b><span id="sw-sub">Every move from here wins (&gt;99.95%)</span></div>
     <div class="act" id="sw-go">Sweep</div>
     <div class="act" id="sw-x">&#10005;</div>
   </div>
@@ -603,7 +603,7 @@ async function afterYourGame() {
   await startSeed();
   // A loss is the interesting case — open its analysis and start scoring immediately.
   // The next seed is already dealt underneath, so closing drops you straight into it.
-  if (lost) openSeed(i, { autoScore: true });
+  if (lost) openSeed(i);
 }
 
 $('cv').addEventListener('pointerdown', (ev) => {
@@ -631,13 +631,13 @@ $('aibadge').onclick = () => showResults();
 // ============================ sweep-up ============================
 // Off-by-default assist (nwSweep toggle, shared with index.html): after each of
 // your moves a small grading-mode search checks whether EVERY legal move still
-// wins (>99.8%). If so, a banner offers to auto-play the rest with the real
+// wins (>99.95%). If so, a banner offers to auto-play the rest with the real
 // bot's aggression rule — through yourAttack/yourEndTurn, so swept moves are
 // recorded, animated and scored exactly like taps. This is the one exception to
 // "your worker never searches" (see above): nothing from the search is surfaced
 // except the yes/no offer, only in positions that are already decided, and the
 // AI plays in its own worker regardless — the duplicate comparison stands.
-const SWEEP_Q = 0.998;
+const SWEEP_Q = 0.9995;
 let sweepOn = false, sweeping = false, sweepDismissed = -1, sweepSeq = 0;
 function hideSweep() { $('sweep').classList.remove('show'); }
 // A committed move invalidates any in-flight detection (the worker aborts it,
@@ -661,7 +661,7 @@ async function maybeOfferSweep() {
   if (sweepDismissed === M.idx) return;                // dismissed for this seed
   const my = ++sweepSeq, gid = state.id;
   // Grading mode: honest Qs ACROSS root moves — "every move wins" hinges on the
-  // tail ones. Small budget: a >99.8%-everywhere position converges instantly,
+  // tail ones. Small budget: a >99.95%-everywhere position converges instantly,
   // and your next tap aborts it anyway (the worker serves the inbox in order).
   const res = await api(`/api/game/${gid}/search`, 'POST',
     { sims: 4000, maxSims: 8000, grade: true });
@@ -879,12 +879,8 @@ function openSeed(i, opts = {}) {
   sdTab = 'you';
   renderList();
   select(0);
-  // Auto-opened after a loss: start the scoring straight away — that IS the analysis,
-  // and making you hunt for a button first is pointless.
-  if (opts.autoScore && !r.you.review && r.you.moves.length) {
-    const btn = $('sd-score');
-    if (btn) runReview(i, btn);
-  }
+  // Scoring IS the analysis — start it the moment the panel opens, no button.
+  if (!r.you.review && r.you.moves.length) runReview(i);
 }
 // Back returns wherever you came from: the tally if you drilled in from it, otherwise
 // (auto-opened after a loss) straight back to the seed you're now playing.
@@ -922,24 +918,22 @@ function renderList() {
       }
       // While rolling (rv.partial) the growing tier bar is the progress readout —
       // no "Scoring… x/y" line, so nothing disappears (and reflows) on completion.
-    } else {
+    } else if (reviewErr[sdIdx] && !reviewing.has(sdIdx)) {
+      // Scoring starts automatically when the panel opens — the only interactive
+      // state left is a failed run, which stays tappable to retry.
       const btn = document.createElement('div');
       btn.className = 'act';
-      btn.id = 'sd-score';
       btn.style.cssText = 'text-align:center;padding:10px;border-radius:9px;'
         + 'background:rgba(95,208,214,.10);border:1px solid rgba(95,208,214,.35);margin-bottom:12px';
-      if (reviewing.has(sdIdx)) {
-        // scoring just started (first move's search still running) — a re-render
-        // here must not resurrect a clickable button under the in-flight run
-        btn.textContent = 'Scoring…';
-        btn.style.pointerEvents = 'none';
-      } else {
-        btn.textContent = reviewErr[sdIdx]
-          ? `Scoring failed — tap to retry (${reviewErr[sdIdx]})`
-          : `Score my ${side.moves.length} decisions`;
-        btn.onclick = () => runReview(sdIdx, btn);
-      }
+      btn.textContent = `Scoring failed — tap to retry (${reviewErr[sdIdx]})`;
+      btn.onclick = () => runReview(sdIdx);
       list.appendChild(btn);
+    } else {
+      // first move's search still out — the tier bar takes over as soon as it lands
+      const p = document.createElement('div');
+      p.className = 'spin';
+      p.textContent = 'Scoring…';
+      list.appendChild(p);
     }
   }
 
@@ -1033,13 +1027,12 @@ function hoverEnd() {
 
 const reviewing = new Set();   // round indices being scored (transient — never saved)
 const reviewErr = {};          // last scoring error per round index (transient)
-async function runReview(i, btn) {
+async function runReview(i) {
   if (reviewing.has(i)) return;
   reviewing.add(i);
   delete reviewErr[i];
   const r = M.rounds[i];
-  btn.textContent = 'Scoring…';
-  btn.style.pointerEvents = 'none';
+  if (sdIdx === i && sdTab === 'you') renderList();  // swap a retry line to 'Scoring…'
   try {
     // Rolling readout: every scored move lands in r.you.review immediately
     // (marked .partial, so renderList shows '…' pending rows) — the early
