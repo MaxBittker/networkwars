@@ -787,12 +787,8 @@ function renderList() {
         el.style.width = (100 * c / tot) + '%'; el.style.background = col;
         bar.appendChild(el);
       }
-      if (rv.partial) {          // rolling: scoring still running, bar grows as it goes
-        const p = document.createElement('div');
-        p.className = 'spin';
-        p.textContent = `Scoring… ${rv.partial.done}/${rv.partial.total}`;
-        list.appendChild(p);
-      }
+      // While rolling (rv.partial) the growing tier bar is the progress readout —
+      // no "Scoring… x/y" line, so nothing disappears (and reflows) on completion.
     } else {
       const btn = document.createElement('div');
       btn.className = 'act';
@@ -880,12 +876,12 @@ async function runReview(i, btn) {
   reviewing.add(i);
   delete reviewErr[i];
   const r = M.rounds[i];
-  btn.textContent = 'Scoring… 0/' + r.you.moves.length;
+  btn.textContent = 'Scoring…';
   btn.style.pointerEvents = 'none';
   try {
     // Rolling readout: every scored move lands in r.you.review immediately
-    // (marked .partial, so renderList shows the progress line and '…' pending
-    // rows) — the early rows are readable while the rest are still searching.
+    // (marked .partial, so renderList shows '…' pending rows) — the early
+    // rows are readable while the rest are still searching.
     // Only the COMPLETE review is persisted; an interrupted scoring saves nothing.
     r.you.review = await computeReview(i, (partial) => {
       r.you.review = partial;
