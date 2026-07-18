@@ -225,6 +225,9 @@
       <div id="menupop">
         <div class="mi" id="mi-free">Free Play&nbsp;&rarr;</div>
         <div class="div"></div>
+        <div class="mi" id="mi-copy">Copy Seed</div>
+        <div class="mi" id="mi-paste">Paste Seed&hellip;</div>
+        <div class="div"></div>
         <div class="mi" id="mi-sweep">Sweep-Up Offer</div>
         <div class="div"></div>
         <div class="lbl">Animation speed</div>
@@ -1140,6 +1143,31 @@ document.addEventListener('click', (e) => {
   if (menupop.classList.contains('show') && !$('menuwrap').contains(e.target))
     menupop.classList.remove('show');
 });
+
+// ---- seed sharing: copy the seed being played, or paste one (yours or a
+// friend's) to play it as THIS round — the current round is re-dealt on the
+// pasted seed, and the AI pump picks it up like any other. If it was mid-game
+// on the old seed it finishes into the detached round object, harmlessly. ----
+$('mi-copy').onclick = async () => {
+  menupop.classList.remove('show');
+  const seed = cur().seed;
+  try { await navigator.clipboard.writeText(String(seed)); setStatus(`Seed ${seed} copied.`); }
+  catch (_) { prompt('Copy the seed:', String(seed)); }   // clipboard blocked — show it instead
+};
+$('mi-paste').onclick = async () => {
+  menupop.classList.remove('show');
+  if (inputLocked || sweeping) return;
+  const v = prompt('Paste a seed to play it as this round:');
+  if (v == null) return;
+  const seed = parseInt(String(v).trim(), 10);
+  if (!Number.isInteger(seed) || seed < 1 || seed > 0x7fffffff) { setStatus('Not a valid seed.'); return; }
+  const r = cur();
+  if (r.you.moves.length && !r.you.result && !confirm('Abandon the seed in progress?')) return;
+  M.rounds[M.idx] = blankRound(seed);
+  save();
+  renderStrip();
+  await startSeed();
+};
 
 // ============================ boot ============================
 // Resume: your recorded moves replay back into a fresh game for the seed in progress

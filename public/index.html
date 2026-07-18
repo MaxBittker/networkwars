@@ -198,6 +198,8 @@
       <div id="menu" title="Menu"><span></span><span></span><span></span></div>
       <div id="menupop">
         <div class="mi" id="mi-new">New Game</div>
+        <div class="mi" id="mi-copy">Copy Seed</div>
+        <div class="mi" id="mi-paste">Paste Seed&hellip;</div>
         <div class="mi" id="mi-h2h">Head to Head&nbsp;&rarr;</div>
         <div class="mi" id="mi-auto">Autoplay</div>
         <div class="mi" id="mi-ai">AI Assist</div>
@@ -900,6 +902,33 @@ document.getElementById('mi-new').onclick = () => {
 document.getElementById('mi-auto').onclick = () => {
   setAutoplay(!autoplay);                         // leave menu open so the check shows
 };
+// ---- seed sharing: the seed pins the whole deal (and dice stream), so copying
+// it is copying the game's start. Paste one to replay that exact deal — e.g. a
+// seed copied from head-to-head or from a friend. ----
+async function copySeed(seed) {
+  if (seed == null) { setStatus('This board has no seed (loaded from a capture).'); return; }
+  try { await navigator.clipboard.writeText(String(seed)); setStatus(`Seed ${seed} copied.`); }
+  catch (_) { prompt('Copy the seed:', String(seed)); }   // clipboard blocked — show it instead
+}
+const parseSeed = (v) => {
+  const s = parseInt(String(v).trim(), 10);
+  return Number.isInteger(s) && s >= 1 && s <= 0x7fffffff ? s : null;
+};
+document.getElementById('mi-copy').onclick = () => {
+  menupop.classList.remove('show');
+  copySeed(state && state.seed);
+};
+document.getElementById('mi-paste').onclick = () => {
+  menupop.classList.remove('show');
+  if (autoplay) setAutoplay(false);               // same rules as New Game
+  if (inputLocked) return;
+  const v = prompt('Paste a seed to replay its exact deal:');
+  if (v == null) return;
+  const seed = parseSeed(v);
+  if (!seed) { setStatus('Not a valid seed.'); return; }
+  if (state && !state.over && !confirm('Start a new game?')) return;
+  newGame(seed);
+};
 // Duplicate-format match vs the agent. The filename works under both server.py
 // (which also serves the extensionless /head-to-head) and plain static hosting.
 document.getElementById('mi-h2h').onclick = () => { location.href = 'head-to-head.html'; };
@@ -992,21 +1021,22 @@ async function reloadGame(h) {
   setStatus('Reloaded a past game. Select a red node to attack.');
 }
 
-async function newGame() {
+async function newGame(seed) {
   const load = new URLSearchParams(location.search).get('load');
   let res;
-  if (load) {
+  if (load && !seed) {
     // Fetch the saved board from the optional server, then re-home it into the WASM
     // worker so the in-browser engine owns the game for every subsequent move.
     const board = await api('/load?file=' + encodeURIComponent(load), 'GET');
     res = board.error ? board : await api('/load-board', 'POST', { nodes: board.nodes });
   } else {
-    res = await api('/api/game', 'POST', {});
+    res = await api('/api/game', 'POST', seed ? { seed } : {});
   }
   if (res.error) { setStatus('Load failed: ' + res.error); return; }
   setState(res);
   resize();
-  setStatus(load ? `Loaded board "${load}". Your move.` : 'New game. Select a red node to attack.');
+  setStatus(seed ? `Dealt seed ${seed}. Select a red node to attack.`
+    : load ? `Loaded board "${load}". Your move.` : 'New game. Select a red node to attack.');
 }
 
 window.addEventListener('resize', resize);
