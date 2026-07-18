@@ -69,6 +69,8 @@ export class Board {
     this.selected = null;           // selected red node id
     this.targetsFor = new Map();    // from -> Set(to), indexed from view.legalMoves
     this.hoverMove = null;          // {from,to} previewed on the grid
+    this.topInset = 0;              // px at the top the layout must keep clear
+                                    // (e.g. head-to-head's AI badge overlays the canvas)
 
     // ---- transient state owned by the animations ----
     this.overrides = new Map();     // nodeId -> {strength, owner?} mid-battle
@@ -110,9 +112,13 @@ export class Board {
     const maxX = Math.max(...this.state.nodes.map(n => n.x)) || 1;
     const maxY = Math.max(...this.state.nodes.map(n => n.y)) || 1;
     const pad = 38;
-    const s = Math.min((b.width - pad*2) / maxX, (b.height - pad*2) / maxY);
+    // topInset shrinks the fit only when the centered board would reach under it;
+    // with vertical slack the max() leaves the board dead-centered as before.
+    const topPad = Math.max(pad, this.topInset);
+    const s = Math.min((b.width - pad*2) / maxX, (b.height - topPad - pad) / maxY);
     this.layout = { r: Math.min(s * 0.34, 26), s,
-      ox: (b.width - maxX * s) / 2, oy: (b.height - maxY * s) / 2 };
+      ox: (b.width - maxX * s) / 2,
+      oy: Math.max(topPad, (b.height - maxY * s) / 2) };
     this.draw();
   }
 

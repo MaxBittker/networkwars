@@ -379,7 +379,14 @@ function renderStrip() {
 }
 
 const setStatus = (t) => { $('status').textContent = t; };
-function resize() { board.resize(); }
+function resize() {
+  // The AI badge overlays the canvas top-right; keep the board clear of it so it
+  // never covers nodes on short viewports (the inset is a no-op when centering
+  // already leaves enough headroom).
+  const bd = $('aibadge');
+  board.topInset = bd.offsetTop + bd.offsetHeight + 6;
+  board.resize();
+}
 window.addEventListener('resize', resize);
 if (window.ResizeObserver) new ResizeObserver(resize).observe($('board'));
 
