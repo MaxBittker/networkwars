@@ -60,6 +60,16 @@ The live default is **`OpponentAIOriginal`**: across the 100-game live series
 nodes holding 3–6 armies in rounds 0–2 eleven times — moves NiceEarly's mercy
 rule forbids.
 
+Aside from the string-dump dig (2026-07-17): the full `OAIType` comparison
+vocabulary in `NetworkWars.Standard.dll` is `BASE` / `NICEEARLY` (fallthrough =
+Original), and there is a parallel **`HAIType`** selector for a built-in AI that
+plays the *human* side — `HumanAIBase/Original/Arity/Arity2/SlowStart` plus a
+`wildHAI` random-move mode, wired to "Enable AI Player 1" menu items. The
+shipped app has its own self-play harness. These are dev-config surface only
+(selectable via an admin backdoor; credentials + the cloud-telemetry key are
+noted in the untracked `ipa_decompile/` notes, deliberately kept out of this
+repo) and don't touch the rules our engine models.
+
 ## What shipped (fast_engine.c)
 
 `bot_turn_begin/bot_turn_next` expose the turn as a cursor (snapshot + sorted

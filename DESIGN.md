@@ -85,19 +85,20 @@ Applied to a faction at the end of that faction's turn:
 - A faction with 0 nodes is eliminated and skips its turns.
 - **Surrender**: RED can surrender, ending the game as a loss.
 
-## 7. Bot AI (deterministic, transparent — this is the heart of the game)
+## 7. Bot AI (decompiled — the real `OpponentAIOriginal` from the shipped app)
 
-On a bot's turn, repeatedly (this ordering was matched to the observed real iOS bot):
+Recovered bit-exact from the IPA (see `solver/REAL_BOT_DECOMPILED.md`). On a bot's turn it
+makes **one strongest-first pass** over the nodes it owned at the start of the turn:
 
-- Pick the bot's **strongest own node** with strength > 1 that has a beatable enemy neighbor
-  (attacker strength **>** the neighbor's strength).
-- From that node, attack its **weakest reachable enemy target**.
-- **Ties are broken at random** (per-game seeded RNG, so outcomes stay reproducible) — this
-  matches the real app better than the old deterministic id-order tie-break.
-- Repeat until no owned node is stronger than a reachable enemy. Then end turn (reinforcements
-  apply).
-- Bots only attack when strictly stronger, so they never start a fight they aren't favored to
-  win — matching "attack whenever a node is stronger than a neighboring enemy."
+- Iterate the bot's own nodes in **descending strength** order (snapshot taken before the
+  first attack — nodes captured mid-turn are never iterated directly).
+- Each node attacks its **smallest adjacent enemy**, but only when favored:
+  `okAttack(a, d)` = attacker strength ≥ 2 **and** strictly > defender strength.
+- On a **capture**, the bot **keeps attacking with the stack it just moved** (a chain),
+  repeating smallest-adjacent-enemy + okAttack until a repel or no strictly-weaker target.
+- A stack is never revisited, and attacks that open up later in the turn are not taken.
+- **No RNG in move selection** — ties are deterministic (node-id / adjacency order); bot
+  turns consume dice only inside battles. Then end turn (reinforcements apply).
 
 ## 8. Architecture
 
