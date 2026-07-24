@@ -680,6 +680,91 @@ void end_turn(int *owner, int *strength) {
     }
 }
 
+/* ---- sweep-up: the web UI's mop-up policy + its Monte-Carlo certificate ------
+ * The pages offer to auto-play the rest of a won game with a simple aggression
+ * rule (the real bot's okAttack shape: strongest attacker first, hit any strictly
+ * weaker adjacent enemy, bigger margin breaking ties; no such attack -> end turn).
+ * sweep_best_move IS that rule — the browser calls it instead of keeping its own
+ * copy, so the policy that gets certified below and the policy the button plays
+ * cannot drift apart.
+ *
+ * sweep_certify then measures the ONLY quantity the offer should rest on: does
+ * THIS policy, from THIS position, win over fresh dice? The old gate asked the
+ * search instead ("every root move wins >99.95%"), which is the wrong question
+ * twice over — the search's Q is about SEARCH play, not this policy, and in a
+ * near-won position the search's grading-mode Q is the mean of a handful of
+ * rollouts (the decisive value-stop ends the search just past the halfway
+ * snapshot), so it reads exactly 1.0 on evidence that cannot tell 99% from 100%.
+ * Measured (solver/sweep_audit.py, 188 offered positions x 200 playouts): the
+ * shipped gate fired in 188/190 games at a median of turn 3 / 10 RED nodes and
+ * the mop-up it authorized lost 5.3% of the time. A certificate is also ~100x
+ * cheaper than the search it replaces: one playout costs about one rollout. */
+int sweep_best_move(const int *owner, const int *strength) {
+    int best = A_END, bs = 0, bm = 0;
+    for (int i = 0; i < N; i++) {
+        if (owner[i] != 0 || strength[i] < 2) continue;
+        for (int k = ADJ_OFF[i]; k < ADJ_OFF[i+1]; k++) {
+            int j = ADJ[k];
+            if (owner[j] == 0) continue;
+            int a = strength[i], d = strength[j], m = a - d;
+            if (m <= 0) continue;
+            if (best == A_END || a > bs || (a == bs && m > bm)) {
+                best = (i << 8) | j; bs = a; bm = m;
+            }
+        }
+    }
+    return best;
+}
+
+/* one sweep playout to terminal on the active RNG; 1 iff RED wins. */
+static int sweep_playout(const int *owner_in, const int *strength_in, int turns) {
+    int owner[MAXN], strength[MAXN];
+    memcpy(owner, owner_in, N * sizeof(int));
+    memcpy(strength, strength_in, N * sizeof(int));
+    int c[NF];
+    for (;;) {
+        int w = check_winner(owner);
+        if (w != -1) return w == 0;
+        counts(owner, c);
+        if (c[0] == 0) return 0;        /* red wiped: attacks launch only FROM an
+                                         * owned node, so the game is already lost
+                                         * (same rule as the worker's updateWinner) */
+        int mv = sweep_best_move(owner, strength);
+        if (mv != A_END) {
+            resolve_battle(owner, strength, mv >> 8, mv & 0xFF);
+            continue;                   /* still RED's turn — keep attacking */
+        }
+        end_turn(owner, strength);       /* red reinforce + all four bot turns */
+        turns++;
+        if (turns > MAX_TURNS) {
+            counts(owner, c);
+            int mx = c[1];
+            for (int f = 2; f < NF; f++) if (c[f] > mx) mx = c[f];
+            return c[0] > mx;
+        }
+    }
+}
+
+/* Run up to `trials` sweep playouts from (owner, strength) on the private sim RNG
+ * (never the real game's mb32 dice; the caller's active RNG is restored) and return
+ * the number LOST, giving up as soon as that exceeds max_losses — so the caller's
+ * pass test is `sweep_certify(...) <= max_losses` and a failing certificate is
+ * cheap. max_losses=0 is the all-or-nothing gate used to make the offer (trials
+ * clean playouts bound the policy's loss probability at ~3/trials, 95%); a small
+ * max_losses is the looser "still decided" bar for staying in a sweep already in
+ * progress, where bailing out over one unlucky playout in 400 would hand a 99.5%
+ * position back to the player for nothing. */
+int sweep_certify(const int *owner, const int *strength, int turns,
+                  int trials, int max_losses) {
+    double (*saved)(void) = RNG;
+    use_sim_rng();
+    int losses = 0;
+    for (int i = 0; i < trials && losses <= max_losses; i++)
+        if (!sweep_playout(owner, strength, turns)) losses++;
+    RNG = saved;
+    return losses;
+}
+
 /* full playout to terminal; RED plays the ranked C1 policy. Returns 1 if RED wins.
  * Operates on a private copy so the caller's arrays are untouched. */
 int rollout(const int *owner_in, const int *strength_in, int turns) {

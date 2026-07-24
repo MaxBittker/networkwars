@@ -129,8 +129,8 @@
   #blunder .act { padding:6px 8px; flex:0 0 auto; }
   #bl-x { color:#7fb6a6; font-weight:800; }
 
-  /* sweep-up offer: same banner slot as the blunder alert, green — the game is
-     won from here (every move >99.95%), offer to auto-mop-up. */
+  /* sweep-up offer: same banner slot as the blunder alert, green — the mop-up
+     policy wins this position 1000/1000 times, offer to run it. */
   #sweep { position:absolute; left:12px; right:12px;
     bottom:calc(56px + env(safe-area-inset-bottom)); z-index:4;
     display:none; align-items:center; gap:12px; padding:10px 14px;
@@ -243,7 +243,7 @@
   </div>
 
   <div id="sweep">
-    <div id="sw-text"><b>Sweep up?</b><span id="sw-sub">Every move from here wins (&gt;99.95%)</span></div>
+    <div id="sw-text"><b>Sweep up?</b><span id="sw-sub">This is won — 1000/1000 mop-ups win it</span></div>
     <div class="act" id="sw-go">Sweep</div>
     <div class="act" id="sw-x">&#10005;</div>
   </div>
@@ -400,11 +400,12 @@ function setState(s, keepBlunder = false) {
   noteState(s);
   board.setView(s);
   if (!keepBlunder) hideBlunder();
-  hideSweep();                   // the offer is per-position; the next search re-issues it
+  cancelSweepOffer();            // the offer is per-position; re-earn it on this one
   renderHeader();
   board.draw();
   if (autoplay) return;          // the autoplay loop owns search + W/L + restart
   if (s.over) { suggestions = []; renderAI(); showModal(); return; }
+  maybeOfferSweep();
   requestSearch();
 }
 
@@ -423,9 +424,10 @@ function renderHeader() {
 // ---- AI search + suggestions ----
 async function requestSearch() {
   if (!state || state.over || inputLocked) return;
-  // AI features hidden — don't spend a search. Exceptions: the blunder alert and
-  // the sweep-up offer need the search even with the panel off.
-  if (!aiOn && !autoplay && !blunderThresh && !sweepOn) return;
+  // AI features hidden — don't spend a search. Exception: the blunder alert needs
+  // one even with the panel off. (The sweep-up offer does NOT: it certifies its own
+  // mop-up policy by playing it out, which never touches the search.)
+  if (!aiOn && !autoplay && !blunderThresh) return;
   // Always search even with no attacks available — the search returns END TURN as
   // the sole suggestion, so the panel still shows the right move.
   const my = ++searchId;
@@ -451,7 +453,6 @@ async function requestSearch() {
   pushWin(res.winexp);                     // one graph point per converged decision
   renderAI();
   board.draw();
-  maybeOfferSweep();                       // converged result only — no mid-search flicker
 }
 
 // ---- autoplay: agent self-plays its top move at full search strength, no animation,
@@ -467,7 +468,7 @@ function updateRecord() {
 
 function setAutoplay(on) {
   autoplay = on;
-  if (on) { hideBlunder(); hideSweep(); }  // the agent grades itself; no banners during autoplay
+  if (on) { hideBlunder(); cancelSweepOffer(); }  // the agent grades itself; no banners during autoplay
   document.getElementById('mi-auto').classList.toggle('sel', on);
   updateRecord();
   if (on) autoplayLoop();        // toggling off is observed by the loop between moves
@@ -801,21 +802,34 @@ function setUndoMode(on) {
 })();
 document.getElementById('mi-undo').onclick = () => setUndoMode(!undoOn);
 
-// ---- sweep-up: when the converged search says EVERY root move still wins
-// (>99.95%), the game is decided — offer to auto-play the rest with the real
-// bot's aggression rule (strongest attacker first, hit any strictly weaker
-// neighbor, else end turn). Off by default; the nwSweep toggle is shared with
-// head-to-head. Dismissing the offer silences it for the rest of that game. ----
-const SWEEP_Q = 0.9995;
+// ---- sweep-up: offer to auto-play the rest of a won game with the mop-up policy
+// in fast_engine.c (the real bot's aggression rule: strongest attacker first, hit
+// any strictly weaker neighbor, else end turn). Off by default; the nwSweep toggle
+// is shared with head-to-head. Dismissing silences it for the rest of that game.
+//
+// The gate is a CERTIFICATE OF THAT POLICY, not a win% off the search: the worker
+// plays the mop-up to the end SWEEP_TRIALS times on fresh dice and the offer
+// appears only if none of them lose. The old gate ("the search says every root move
+// wins >99.95%") asked the wrong question twice — it measured how the SEARCH would
+// play, and it read Qs averaged over a handful of rollouts, which say 1.0 long
+// before a position is decided. Measured over 190 games (solver/sweep_audit.py) it
+// fired in 188 of them at a median of turn 3 / 10 RED nodes, and the mop-ups it
+// authorized lost 5.3% of the time; the certificate is ~100x cheaper AND drops that
+// to ~0.07% (solver/sweep_variants.py). The sweep also re-checks before every
+// action against a slightly looser bar and hands the game back if the dice turn
+// (solver/sweep_final.py: 0 losses, and bailing on a single bad playout in 400
+// would give up on positions still winning 99.5%). ----
+const SWEEP_TRIALS = 1000, SWEEP_STEP_TRIALS = 400, SWEEP_STEP_LOSSES = 2;
 let sweepOn = false, sweeping = false, sweepDismissed = null;   // dismissed game id
+let sweepSeq = 0;                       // invalidates in-flight certificate checks
 function hideSweep() { document.getElementById('sweep').classList.remove('show'); }
+function cancelSweepOffer() { ++sweepSeq; hideSweep(); }
 function setSweep(on) {
   sweepOn = on;
   document.getElementById('mi-sweep').classList.toggle('sel', on);
   try { localStorage.setItem('nwSweep', on ? '1' : '0'); } catch (_) {}
-  if (!on) hideSweep();
-  // panel hidden + nothing searching for it yet — start detecting right away
-  else if (!aiOn && !blunderThresh && !autoplay && !searching && state && !state.over) requestSearch();
+  if (!on) cancelSweepOffer();
+  else maybeOfferSweep();               // no search needed — just certify this position
 }
 (function loadSweep() {
   let v; try { v = localStorage.getItem('nwSweep'); } catch (_) {}
@@ -824,38 +838,35 @@ function setSweep(on) {
 })();
 document.getElementById('mi-sweep').onclick = () => setSweep(!sweepOn);
 
-function maybeOfferSweep() {
+async function maybeOfferSweep() {
   if (!sweepOn || autoplay || sweeping || !state || state.over) return;
   if (sweepDismissed === state.id) return;
-  if (!searchAll.length || !searchAll.every(m => m.q > SWEEP_Q)) return;
-  document.getElementById('sweep').classList.add('show');
+  const my = ++sweepSeq, gid = state.id;
+  const res = await api(`/api/game/${gid}/sweep-check`, 'POST', { trials: SWEEP_TRIALS });
+  if (my !== sweepSeq || sweeping || !state || state.id !== gid || state.over) return;
+  if (res.ok) document.getElementById('sweep').classList.add('show');
 }
 document.getElementById('sw-x').onclick = () => { sweepDismissed = state && state.id; hideSweep(); };
 document.getElementById('sw-go').onclick = () => runSweep();
 
-// The real bot's okAttack rule: strongest attacker first, any strictly weaker
-// adjacent enemy (bigger margin breaks ties); no such attack -> end turn.
-function sweepMove(s) {
-  let best = null, bs = 0, bm = 0;
-  for (const m of (s.legalMoves || [])) {
-    const a = s.nodes[m.from].strength, d = s.nodes[m.to].strength;
-    if (a <= d) continue;
-    if (!best || a > bs || (a === bs && a - d > bm)) { best = m; bs = a; bm = a - d; }
-  }
-  return best;
-}
-
 async function runSweep() {
   if (sweeping || !state || state.over || inputLocked) return;
-  hideSweep(); hideBlunder();
+  cancelSweepOffer(); hideBlunder();
   sweeping = true; inputLocked = true;
   ++searchId; searching = false;         // drop the in-flight search; the sweep owns the game
   board.selected = null; suggestions = []; searchAll = []; renderAI(); board.draw();
   setStatus('Sweeping up…');
+  let bailed = false;
   try {
     let guard = 400;                     // terminal-or-bust backstop, never hit in a won game
     while (state && !state.over && guard--) {
-      const m = sweepMove(state);
+      // Re-certify this position before committing to it: the mop-up plays on and
+      // the dice keep rolling, so "won when you pressed the button" is not the same
+      // claim as "still won now". Failing hands the wheel back mid-sweep.
+      const chk = await api(`/api/game/${state.id}/sweep-check`, 'POST',
+        { trials: SWEEP_STEP_TRIALS, maxLosses: SWEEP_STEP_LOSSES });
+      if (!chk.ok) { bailed = true; break; }
+      const m = chk.move;                // from C — the same policy that was certified
       let res;
       if (m) {
         board.battle = { from: m.from, to: m.to }; board.draw();
@@ -872,7 +883,11 @@ async function runSweep() {
   } finally {
     sweeping = false; inputLocked = false;
     if (state && state.over) { suggestions = []; renderAI(); showModal(); }
-    else { setStatus('Sweep stopped. Your move.'); requestSearch(); }
+    else {
+      setStatus(bailed ? 'Sweep stopped — this is no longer a sure win. Your move.'
+        : 'Sweep stopped. Your move.');
+      requestSearch();
+    }
   }
 }
 

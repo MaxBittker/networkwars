@@ -139,6 +139,37 @@ const s = E.uctSearch(gs.owner, gs.strength, 1, 4000, 2.5, 1);
 const qOk = s.acts.length > 0 && [...s.q].every((q) => q >= 0 && q <= 1);
 console.error(`search sanity: ${qOk ? 'ok' : 'FAIL'} (${s.acts.length} children)`);
 
-const pass = invFails === 0 && detFails === 0 && bFails === 0 && qOk;
+// ---- sweep-up: the mop-up move must match what the parity harness computes from
+// the same rule (it drives the UI's auto-play), and the certificate must reject an
+// opening while leaving the real dice stream alone. Its win/loss counts are dice, so
+// only the pass/fail contract is checkable here — the honesty of the gate itself is
+// measured natively in solver/sweep_audit.py / sweep_variants.py.
+let swFails = 0;
+for (const seed of [1, 2, 3, 42, 99]) {
+  const g = E.newGame(seed);
+  E.setTopologyCsr(g.owner.length, g.adj);
+  const mv = E.sweepMove(g.owner, g.strength);
+  // independent recompute: strongest attacker, biggest margin, first-found ties
+  let want = null, bs = 0, bm = 0;
+  for (const [i, j] of E.legalMoves(g.owner, g.strength, g.adj)) {
+    const a = g.strength[i], d = g.strength[j];
+    if (a <= d) continue;
+    if (!want || a > bs || (a === bs && a - d > bm)) { want = { from: i, to: j }; bs = a; bm = a - d; }
+  }
+  const same = (mv === null) === (want === null)
+    && (!mv || (mv.from === want.from && mv.to === want.to));
+  E.useMb32(seed >>> 0);
+  const before = E.getMb32();
+  const losses = E.sweepCertify(g.owner, g.strength, 1, 200, 0);
+  if (!same || losses === 0 || E.getMb32() !== before) {
+    swFails++;
+    console.error(`  sweep seed ${seed}: move=${JSON.stringify(mv)} want=${JSON.stringify(want)} `
+      + `losses=${losses} dice ${before}->${E.getMb32()}`);
+  }
+}
+console.error(`sweep certificate: ${swFails === 0 ? 'PASS' : swFails + ' FAIL'} `
+  + '(policy matches the rule, openings rejected, real dice untouched)');
+
+const pass = invFails === 0 && detFails === 0 && bFails === 0 && qOk && swFails === 0;
 console.error('WASM-GATE:', pass ? 'PASS' : 'FAIL');
 process.exit(pass ? 0 : 1);

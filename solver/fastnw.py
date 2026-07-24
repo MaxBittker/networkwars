@@ -58,6 +58,10 @@ _lib.uct_set_value_stop.argtypes = [ctypes.c_double, ctypes.c_double,
                                     ctypes.c_double, ctypes.c_int]
 _lib.uct_set_deepthink.argtypes = [ctypes.c_double, ctypes.c_int, ctypes.c_double]
 _lib.uct_set_grade.argtypes = [ctypes.c_int]
+_lib.sweep_best_move.argtypes = [_i32p, _i32p]
+_lib.sweep_best_move.restype = ctypes.c_int
+_lib.sweep_certify.argtypes = [_i32p, _i32p, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+_lib.sweep_certify.restype = ctypes.c_int
 _lib.uct_sims_done.restype = ctypes.c_int
 
 
@@ -256,6 +260,23 @@ def end_turn(owner, strength):
 
 def rollout(owner, strength, turns):
     return _lib.rollout(_p(owner), _p(strength), turns)
+
+
+# ---- sweep-up (the web UI's mop-up policy + its certificate) -----------------
+def sweep_best_move(owner, strength):
+    """The mop-up rule the browser's sweep-up plays: (frm, to), or None to end the
+    turn. Same C function the certificate below plays out, so the two can't drift."""
+    mv = _lib.sweep_best_move(_p(owner), _p(strength))
+    return None if mv < 0 else (mv >> 8, mv & 0xFF)
+
+
+def sweep_certify(owner, strength, turns, trials, max_losses=0):
+    """Play the mop-up policy to terminal up to `trials` times on the private sim
+    stream (the real mb32 dice are untouched) and return how many LOST, giving up
+    once that exceeds max_losses. Pass test: <= max_losses. This is the gate the web
+    UI uses to offer a sweep — see solver/sweep_audit.py for why reading the
+    search's win% instead was unsound."""
+    return _lib.sweep_certify(_p(owner), _p(strength), turns, trials, max_losses)
 
 
 # ---- search -----------------------------------------------------------------

@@ -244,6 +244,22 @@ async function doSearch(g, sims = 2000, cPuct = 2.5, nroll = 1, simSeed = 0x1234
   }
 }
 
+// ---- sweep-up: is this game actually over, and what does the mop-up play next?
+// Both pages ask here after every position change instead of reading win% off a
+// search. The certificate plays the mop-up policy itself to the end `trials` times
+// on fresh dice and passes only if at most `maxLosses` of them lose, so the answer
+// is about the policy the button runs rather than about how the SEARCH would play
+// (see fast_engine.c: the old "every root move wins >99.95%" gate authorized
+// mop-ups that lost 5.3% of the time). Cheap enough to run every move: a trial
+// costs about one rollout, so 1000 of them ~ a 1000-sim search.
+function doSweepCheck(g, trials, maxLosses) {
+  select(g);
+  if (g.over) return { ok: false, over: true, losses: 0, trials, maxLosses };
+  const losses = E.sweepCertify(g.owner, g.strength, g.turn, trials, maxLosses);
+  return { ok: losses <= maxLosses, losses, trials, maxLosses,
+    move: E.sweepMove(g.owner, g.strength) };   // null = no attack left, end turn
+}
+
 function doSurrender(g) {
   g.over = true; g.redResigned = true; g.youWon = false;
   const out = view(g); out.log = [];
@@ -273,6 +289,9 @@ function route(path, method, body) {
       body.maxSims != null ? body.maxSims | 0 : 150000,
       body.tag != null ? body.tag : null,
       !!body.grade);
+    if (action === 'sweep-check') return doSweepCheck(g,
+      body.trials != null ? body.trials | 0 : 1000,
+      body.maxLosses != null ? body.maxLosses | 0 : 0);
     if (action === 'surrender') return doSurrender(g);
     if (action === 'undo') return doUndo(g);
   }

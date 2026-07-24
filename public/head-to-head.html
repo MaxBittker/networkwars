@@ -91,8 +91,8 @@
   #endturn { font-size:20px; }
   #status { color:#8fcfb8; font-size:12px; flex:1; text-align:center; padding:0 6px; }
 
-  /* sweep-up offer: green banner above the footer — the game is won from here
-     (every move >99.95%), offer to auto-mop-up. Same look as index.html's. */
+  /* sweep-up offer: green banner above the footer — the mop-up policy wins this
+     position 1000/1000 times, offer to run it. Same look as index.html's. */
   #sweep { position:absolute; left:12px; right:12px;
     bottom:calc(56px + env(safe-area-inset-bottom)); z-index:4;
     display:none; align-items:center; gap:12px; padding:10px 14px;
@@ -259,7 +259,7 @@
   </footer>
 
   <div id="sweep">
-    <div id="sw-text"><b>Sweep up?</b><span id="sw-sub">Every move from here wins (&gt;99.95%)</span></div>
+    <div id="sw-text"><b>Sweep up?</b><span id="sw-sub">This is won — 1000/1000 mop-ups win it</span></div>
     <div class="act" id="sw-go">Sweep</div>
     <div class="act" id="sw-x">&#10005;</div>
   </div>
@@ -535,9 +535,9 @@ function revealPair(i) {
 }
 
 // ============================ your play ============================
-// Fully blind: no search is ever issued on your worker while you play — with ONE
-// opt-in exception, the sweep-up detection below (off by default; it surfaces
-// nothing but a yes/no offer, and only once the game is already decided).
+// Fully blind: no search is ever issued on your worker while you play. (The opt-in
+// sweep-up offer below used to be an exception; it now certifies its mop-up policy
+// by playing the policy out, so there is no exception left.)
 async function startSeed() {
   const r = cur();
   const res = await api('/api/game', 'POST', { seed: r.seed });
@@ -633,14 +633,21 @@ $('aibadge').onclick = () => showResults();
 
 // ============================ sweep-up ============================
 // Off-by-default assist (nwSweep toggle, shared with index.html): after each of
-// your moves a small grading-mode search checks whether EVERY legal move still
-// wins (>99.95%). If so, a banner offers to auto-play the rest with the real
-// bot's aggression rule — through yourAttack/yourEndTurn, so swept moves are
-// recorded, animated and scored exactly like taps. This is the one exception to
-// "your worker never searches" (see above): nothing from the search is surfaced
-// except the yes/no offer, only in positions that are already decided, and the
-// AI plays in its own worker regardless — the duplicate comparison stands.
-const SWEEP_Q = 0.9995;
+// your moves the worker certifies the mop-up policy from fast_engine.c by PLAYING
+// IT OUT SWEEP_TRIALS times on fresh dice; if none of them lose, a banner offers to
+// auto-play the rest with it — through yourAttack/yourEndTurn, so swept moves are
+// recorded, animated and scored exactly like taps. It re-certifies before every
+// swept action (looser bar) and hands the game back if the dice turn.
+//
+// This replaces a gate that asked the search "does every root move win >99.95%?",
+// which was wrong in a way that mattered here: measured over 190 games it fired in
+// 188 of them at a median of turn 3 / 10 RED nodes and the mop-ups it authorized
+// lost 5.3% of the time (solver/sweep_audit.py) — it was handing LIVE games to a
+// greedy policy, and those moves then went into your move list and your decision
+// score as if you had chosen them. A certificate of the actual policy also removes
+// the "your worker never searches" exception entirely: playouts are not searches,
+// so this page's worker now issues ZERO searches while you play, full stop.
+const SWEEP_TRIALS = 1000, SWEEP_STEP_TRIALS = 400, SWEEP_STEP_LOSSES = 2;
 let sweepOn = false, sweeping = false, sweepDismissed = -1, sweepSeq = 0;
 function hideSweep() { $('sweep').classList.remove('show'); }
 // A committed move invalidates any in-flight detection (the worker aborts it,
@@ -663,46 +670,37 @@ async function maybeOfferSweep() {
   if (!sweepOn || sweeping || !state || state.over) return;
   if (sweepDismissed === M.idx) return;                // dismissed for this seed
   const my = ++sweepSeq, gid = state.id;
-  // Grading mode: honest Qs ACROSS root moves — "every move wins" hinges on the
-  // tail ones. Small budget: a >99.95%-everywhere position converges instantly,
-  // and your next tap aborts it anyway (the worker serves the inbox in order).
-  const res = await api(`/api/game/${gid}/search`, 'POST',
-    { sims: 4000, maxSims: 8000, grade: true });
+  const res = await api(`/api/game/${gid}/sweep-check`, 'POST', { trials: SWEEP_TRIALS });
   if (my !== sweepSeq || sweeping || !state || state.id !== gid || state.over) return;
-  const all = res.all || [];
-  if (all.length && all.every(m => m.q > SWEEP_Q)) $('sweep').classList.add('show');
+  if (res.ok) $('sweep').classList.add('show');
 }
 $('sw-x').onclick = () => { sweepDismissed = M ? M.idx : -1; hideSweep(); };
 $('sw-go').onclick = () => runSweep();
-
-// The real bot's okAttack rule: strongest attacker first, any strictly weaker
-// adjacent enemy (bigger margin breaks ties); no such attack -> end turn.
-function sweepMove(s) {
-  let best = null, bs = 0, bm = 0;
-  for (const m of (s.legalMoves || [])) {
-    const a = s.nodes[m.from].strength, d = s.nodes[m.to].strength;
-    if (a <= d) continue;
-    if (!best || a > bs || (a === bs && a - d > bm)) { best = m; bs = a; bm = a - d; }
-  }
-  return best;
-}
 
 async function runSweep() {
   if (sweeping || !state || state.over || inputLocked) return;
   hideSweep();
   sweeping = true;
   const gid = state.id;
+  let bailed = false;
   try {
     let guard = 400;                     // terminal-or-bust backstop, never hit in a won game
     // afterYourGame deals the next seed inside yourAttack/yourEndTurn, so a
     // changed game id is the loop's "this seed finished" signal.
     while (state && state.id === gid && !state.over && guard--) {
-      const m = sweepMove(state);
+      // Re-certify before committing: the dice keep rolling as the mop-up plays, so
+      // "won when you pressed the button" is not the same claim as "still won now".
+      const chk = await api(`/api/game/${gid}/sweep-check`, 'POST',
+        { trials: SWEEP_STEP_TRIALS, maxLosses: SWEEP_STEP_LOSSES });
+      if (!chk.ok) { bailed = true; break; }
+      const m = chk.move;                // from C — the same policy that was certified
       if (m) await yourAttack(m.from, m.to);
       else await yourEndTurn();
     }
   } finally {
     sweeping = false;
+    if (bailed && state && state.id === gid && !state.over)
+      setStatus('Sweep stopped — this is no longer a sure win. Your move.');
   }
 }
 

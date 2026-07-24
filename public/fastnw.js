@@ -174,6 +174,25 @@ class Engine {
     this._getBack(this._strength, strength);
   }
 
+  // ---- sweep-up (mop-up policy + its certificate; see fast_engine.c) ----
+  // The rule the sweep plays, straight from C — the pages must not keep their own
+  // copy, or the policy that gets certified stops being the policy that plays.
+  sweepMove(owner, strength) {
+    this._put(this._owner, owner);
+    this._put(this._strength, strength);
+    const mv = this.M._sweep_best_move(this._owner, this._strength);
+    return mv < 0 ? null : { from: mv >> 8, to: mv & 0xFF };
+  }
+
+  // Plays that policy to the end `trials` times on the private sim stream (the real
+  // dice are untouched) and returns how many were LOST, giving up once that passes
+  // maxLosses. Pass test: <= maxLosses. Costs about one search rollout per trial.
+  sweepCertify(owner, strength, turns, trials, maxLosses = 0) {
+    this._put(this._owner, owner);
+    this._put(this._strength, strength);
+    return this.M._sweep_certify(this._owner, this._strength, turns, trials, maxLosses);
+  }
+
   // ---- search ----
   // Always rolls out on the private sim stream (seed it with useSim() first), never
   // the real mb32 game dice, so a preceding real-game battle can't leak into search.

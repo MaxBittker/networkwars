@@ -81,6 +81,21 @@
         are consumed serially, so once your moves diverge from the AI's you pull
         different coins. Duplicate bridge, not dice-for-dice (which isn't coherent once
         actions differ).
+    Both pages share one opt-in assist, the **sweep-up offer** (`nwSweep`): auto-play
+    the rest of a won game with the mop-up rule in `fast_engine.c`
+    (`sweep_best_move` — strongest attacker, hit any strictly weaker neighbor, else
+    end turn). Its gate is a **Monte-Carlo certificate of that policy**
+    (`sweep_certify`: play the mop-up to the end 1000x on the private sim dice, offer
+    only if none lose), NOT a win% off the search, and it **re-certifies before every
+    swept action** (400 trials, bail if >2 lose) and hands the game back if the dice
+    turn. The old gate — "the search says every root move wins >99.95%" — was unsound
+    twice over (it measured how the SEARCH would play, and grading-mode Qs in
+    near-won positions average ~20 rollouts, so the threshold couldn't resolve 99%
+    from 100% and raising it did nothing): it fired in 188/190 games at a median of
+    **turn 3 / 10 RED nodes** and the mop-ups it authorized **lost 5.3%**. The
+    certificate is ~100x cheaper (0.1ms median / 8.6ms worst in WASM) and measures
+    0 losses in 12400 sweeps. Full numbers + tooling: `solver/SWEEP_UP.md`
+    (`sweep_audit.py`, `sweep_variants.py`, `sweep_final.py`).
   - `solver/server.py` — now OPTIONAL: it serves `public/` static assets and the
     legacy `/api/game/*` (no longer used by the browser), and is only needed for the
     iOS `/grab` and `/load` workflow (live iPhone Mirroring). Pure offline play needs
@@ -91,6 +106,9 @@
   battle invariants over 1000 seeds + frozen golden-seed outcomes) and
   `solver/validate_wasm.py` (WASM board-gen BIT-PARITY vs native over 1000 seeds +
   structural/battle invariants + determinism, via `solver/wasm_gate.mjs` in node).
+  Third gate for the browser layer: `node solver/worker_gate.mjs [nseeds]` fakes a Web
+  Worker so `engine.worker.js` can be driven in node over the pages' own
+  `/api/game/*` request sequence (routes + the sweep-up loop, incl. its bail path).
 - Two things came from the real game: the deal (every faction totals 20, 4 fixed
   templates) and battle. BATTLE is now the **real decompiled mechanic** —
   **iterated fair-coin attrition, zero fitted parameters** (2026-07-02; recovered

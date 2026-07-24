@@ -250,10 +250,53 @@ def check_grade():
     return ok
 
 
+def check_sweep():
+    """The web sweep-up's mop-up policy + certificate (sweep_best_move /
+    sweep_certify). The certificate is what authorizes the UI to finish a game for
+    the player, so pin its contract: it never certifies an opening, it does certify
+    an already-won position, it leaves the REAL dice stream untouched (it must roll
+    on the private sim stream — otherwise merely OFFERING a sweep would change the
+    game's dice), and the move it plays is legal + strictly-stronger-attacker."""
+    ok = True
+    fastnw.set_grade(0)
+    for seed in (1, 2, 3, 42, 99):
+        state = nw.make_game(seed)
+        fastnw.set_topology(state)
+        owner, strength = fastnw.board_arrays(state)
+        mb0 = fastnw.get_mb32()
+        if fastnw.sweep_certify(owner, strength, 1, 200) == 0:
+            ok = False
+            print(f"  seed {seed}: opening certified as a won mop-up (200 clean playouts)")
+        if fastnw.get_mb32() != mb0:
+            ok = False
+            print(f"  seed {seed}: certificate consumed the REAL dice stream")
+        mv = fastnw.sweep_best_move(owner, strength)
+        if mv is not None:
+            frm, to = mv
+            if not (owner[frm] == 0 and owner[to] != 0 and strength[frm] > strength[to]
+                    and to in state.adj[frm]):
+                ok = False
+                print(f"  seed {seed}: sweep move {mv} illegal or not strictly stronger")
+    # positive control: RED owns everything but one node -> every mop-up wins
+    state = nw.make_game(7)
+    fastnw.set_topology(state)
+    owner, strength = fastnw.board_arrays(state)
+    owner[:] = 0
+    strength[:] = 3
+    owner[-1] = 1
+    strength[-1] = 1
+    if fastnw.sweep_certify(owner, strength, 1, 200) != 0:
+        ok = False
+        print("  a 29-of-30-nodes RED position failed to certify")
+    print(f"sweep certificate: {'PASS' if ok else 'FAIL'} "
+          f"(openings rejected, won position accepted, real dice untouched)")
+    return ok
+
+
 def main():
     nseeds = int(sys.argv[1]) if len(sys.argv) > 1 else 1000
     ok = check_invariants(nseeds) & check_battle_invariants() & check_golden() \
-        & check_grade()
+        & check_grade() & check_sweep()
     print("RESULT:", "ALL CHECKS PASS" if ok else "FAILURES")
     sys.exit(0 if ok else 1)
 
