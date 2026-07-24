@@ -67,18 +67,14 @@
      The AI plays the same seed concurrently in its own worker. Its board is shown
      blurred + grayscale so you can see it IS working without reading who's winning —
      that would spoil the seed you're still playing. */
-  #aibadge { position:absolute; top:8px; right:10px; z-index:3; width:74px;
-    display:flex; flex-direction:column; align-items:center; gap:3px; cursor:pointer;
-    padding:6px 4px 5px; border-radius:10px; background:rgba(0,0,0,.34);
+  #aibadge { position:absolute; top:8px; right:10px; z-index:3; cursor:pointer;
+    border-radius:8px; background:rgba(0,0,0,.34);
     border:1px solid rgba(245,197,66,.28); }
   #aibadge:active { opacity:.6; }
   #aibadge.idle { border-color:rgba(255,255,255,.10); }
-  #aicv { width:56px; height:56px; border-radius:6px; background:rgba(0,0,0,.4);
+  #aicv { display:block; width:56px; height:56px; border-radius:7px; background:rgba(0,0,0,.4);
     filter:blur(1.7px) grayscale(1) contrast(.85) brightness(1.25); }
-  #ailab { font-size:8.5px; letter-spacing:.05em; text-transform:uppercase;
-    color:var(--yellow); font-weight:800; text-align:center; line-height:1.25; }
-  #aibadge.idle #ailab { color:#6fae9e; }
-  #aidot { position:absolute; top:7px; left:7px; width:6px; height:6px; border-radius:50%;
+  #aidot { position:absolute; top:5px; left:5px; width:6px; height:6px; border-radius:50%;
     background:var(--yellow); box-shadow:0 0 6px var(--yellow); animation:pulse 1.1s infinite; }
   #aibadge.idle #aidot { background:#5f9e8e; box-shadow:none; animation:none; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
@@ -101,7 +97,8 @@
     font-size:13px; }
   #sweep.show { display:flex; animation:blup .18s ease-out; }
   @keyframes blup { from { transform:translateY(10px); opacity:0; } to { transform:none; opacity:1; } }
-  #sw-text { flex:1; display:flex; align-items:baseline; gap:8px; min-width:0; }
+  #sw-text { flex:1; display:flex; align-items:baseline; gap:8px; min-width:0;
+    white-space:nowrap; }
   #sw-text b { color:var(--green); font-size:14px; }
   #sw-sub { color:#cfe; }
   #sweep .act { padding:6px 8px; flex:0 0 auto; }
@@ -249,7 +246,6 @@
     <div id="aibadge" title="The AI is playing this seed in the background">
       <div id="aidot"></div>
       <canvas id="aicv" width="56" height="56"></canvas>
-      <div id="ailab">AI</div>
     </div>
   </div>
 
@@ -259,7 +255,7 @@
   </footer>
 
   <div id="sweep">
-    <div id="sw-text"><b>Sweep up?</b><span id="sw-sub">This is won — 1000/1000 mop-ups win it</span></div>
+    <div id="sw-text"><b>1000/1000</b><span id="sw-sub">mop-ups win it</span></div>
     <div class="act" id="sw-go">Sweep</div>
     <div class="act" id="sw-x">&#10005;</div>
   </div>
@@ -454,20 +450,10 @@ if (window.ResizeObserver) new ResizeObserver(resize).observe($('board'));
 // forever. It never touches your worker, your game state or your dice.
 let aiBusy = false;
 
-function paintBadge(nodes, label, idle) {
-  const b = $('aibadge');
-  b.classList.toggle('idle', !!idle);
-  $('ailab').innerHTML = label;
+function paintBadge(nodes, idle) {
+  $('aibadge').classList.toggle('idle', !!idle);
   if (nodes) drawThumb($('aicv'), nodes);
 }
-
-// How far behind the AI is. It plays one seed at a time and you never wait for it, so
-// a backlog is normal and worth showing rather than hiding.
-const aiBacklog = () => M.rounds.filter(r => r.startNodes && !r.ai.result).length - 1;
-const aiLabel = () => {
-  const q = aiBacklog();
-  return `AI${q > 0 ? ` · +${q}` : ''}`;
-};
 
 async function aiPump() {
   if (aiBusy) return;
@@ -481,8 +467,7 @@ async function aiPump() {
     }
   } finally {
     aiBusy = false;
-    const done = M.rounds.filter(r => r.ai.result).length;
-    paintBadge(null, `AI idle<br>${done} done`, true);
+    paintBadge(null, true);
   }
 }
 
@@ -494,7 +479,7 @@ async function aiPlaySeed(i) {
   sampleHist(g, s);
   // Paint BEFORE the first search: its opening think can take seconds, and a badge
   // reading "idle" while the AI is actually grinding is a lie.
-  paintBadge(s.nodes, aiLabel(), false);
+  paintBadge(s.nodes, false);
   for (let guard = 0; guard < 4000 && !s.over; guard++) {
     const res = await aiApi(`/api/game/${s.id}/search`, 'POST', { sims: AI_SIMS });
     const b = res.best;
@@ -509,7 +494,7 @@ async function aiPlaySeed(i) {
     sampleHist(g, s);
     // ambient badge: blurred+grey board. No seed/turn/win%/result readout —
     // that would spoil the seed you're playing.
-    paintBadge(s.nodes, aiLabel(), false);
+    paintBadge(s.nodes, false);
     if (g.moves.length % 4 === 0) save();        // throttled: full-state write per move is wasteful
     await sleep(0);                              // yield so the UI stays smooth
   }
@@ -546,7 +531,7 @@ async function startSeed() {
   save();
   adopt(res); resize(); renderStrip();
   sampleHist(r.you, res); save();
-  setStatus('Your game. Select a red node to attack.');
+  setStatus('Select a red node to attack.');
   aiPump();                                    // the AI starts this seed too, right now
 }
 
@@ -567,8 +552,8 @@ async function yourAttack(from, to) {
   if (e && e.flips && !board.instant) await board.animateBattle(e);
   board.battle = null;
   adopt(res); sampleHist(cur().you, res); save();
-  setStatus(e ? (e.captured ? `Captured node ${e.to}!`
-    : `Attack on ${e.to} repelled (left ${e.fromStrength}).`) : 'Done.');
+  // No node ids (the board never labels them) and no repel remnant (always 1).
+  setStatus(e ? (e.captured ? 'Captured!' : 'Repelled.') : 'Done.');
   inputLocked = false;
   if (recordEnd(cur().you, res)) await afterYourGame();
   else maybeOfferSweep();
@@ -581,12 +566,11 @@ async function yourEndTurn() {
   setStatus('Ending turn…');
   cur().you.moves.push({ e: 1 });
   const res = await api(`/api/game/${state.id}/end-turn`, 'POST');
-  const caps = (res.events || []).filter(e => e.type === 'attack' && e.captured).length;
   if (res.events && res.events.length && !board.instant) await board.animateEndTurn(res, setStatus);
   inputLocked = false;
   adopt(res); sampleHist(cur().you, res); save();
   if (recordEnd(cur().you, res)) { await afterYourGame(); return; }
-  setStatus(`Bots captured ${caps} node(s). Your move.`);
+  setStatus('Your move.');
   maybeOfferSweep();
 }
 
@@ -597,7 +581,7 @@ async function afterYourGame() {
   setStatus(lost ? 'You lost this seed.' : 'You WON this seed.');
   await sleep(1000);
   if (r.ai.result) revealPair(i);
-  else setStatus('AI is still playing this seed — next one is yours.');
+  else setStatus('AI still playing — next seed dealt.');
   await sleep(lost ? 600 : 1400);
   // straight on to the next seed; the AI catches up in its own time
   M.rounds.push(blankRound(randSeed()));
@@ -621,10 +605,10 @@ $('cv').addEventListener('pointerdown', (ev) => {
     board.selected = null; setStatus('Select a red node to attack.'); board.draw(); return;
   }
   if (n.owner === 'red' && n.strength > 1 && board.targetsFor.has(n.id)) {
-    board.selected = n.id; setStatus('Tap a highlighted enemy node to attack.');
+    board.selected = n.id; setStatus('Tap a highlighted node to attack.');
   } else {
     board.selected = null;
-    if (n.owner === 'red') setStatus('That node has no attackable neighbors.');
+    if (n.owner === 'red') setStatus('No attackable neighbors.');
   }
   board.draw();
 });
@@ -700,7 +684,7 @@ async function runSweep() {
   } finally {
     sweeping = false;
     if (bailed && state && state.id === gid && !state.over)
-      setStatus('Sweep stopped — this is no longer a sure win. Your move.');
+      setStatus('Sweep stopped — no longer a sure win.');
   }
 }
 
@@ -1195,10 +1179,10 @@ async function resume() {
   save();
   adopt(s); resize(); renderStrip();
   if (recordEnd(r.you, s)) { await afterYourGame(); return; }
-  setStatus('Resumed your game. Your move.');
+  setStatus('Resumed. Your move.');
 }
 
-paintBadge(null, 'AI<br>idle', true);
+paintBadge(null, true);
 // Straight into a game: no intro gate. A stored tally resumes where you left off,
 // otherwise the first seed is dealt immediately.
 const prev = load();

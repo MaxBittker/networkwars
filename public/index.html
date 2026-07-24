@@ -138,7 +138,8 @@
     box-shadow:0 8px 30px -8px rgba(0,0,0,.85), 0 0 18px -6px var(--green);
     font-size:13px; }
   #sweep.show { display:flex; animation:blup .18s ease-out; }
-  #sw-text { flex:1; display:flex; align-items:baseline; gap:8px; min-width:0; }
+  #sw-text { flex:1; display:flex; align-items:baseline; gap:8px; min-width:0;
+    white-space:nowrap; }
   #sw-text b { color:var(--green); font-size:14px; }
   #sw-sub { color:#cfe; }
   #sweep .act { padding:6px 8px; flex:0 0 auto; }
@@ -243,7 +244,7 @@
   </div>
 
   <div id="sweep">
-    <div id="sw-text"><b>Sweep up?</b><span id="sw-sub">This is won — 1000/1000 mop-ups win it</span></div>
+    <div id="sw-text"><b>1000/1000</b><span id="sw-sub">mop-ups win it</span></div>
     <div class="act" id="sw-go">Sweep</div>
     <div class="act" id="sw-x">&#10005;</div>
   </div>
