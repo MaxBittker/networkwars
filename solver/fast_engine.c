@@ -736,12 +736,13 @@ static int sweep_playout(const int *owner_in, const int *strength_in, int turns)
         }
         end_turn(owner, strength);       /* red reinforce + all four bot turns */
         turns++;
-        if (turns > MAX_TURNS) {
-            counts(owner, c);
-            int mx = c[1];
-            for (int f = 2; f < NF; f++) if (c[f] > mx) mx = c[f];
-            return c[0] > mx;
-        }
+        /* Stall = LOSS, not plurality-win: mutual borders can reinforce in
+         * lockstep so nobody ever sees a strictly-weaker target, and this policy
+         * never takes an even fight — the game then literally never ends. A
+         * mop-up that can't finish the game must not be certified, or the live
+         * sweep will end-turn forever (only the player can break a stalemate,
+         * by attacking at even odds). */
+        if (turns > MAX_TURNS) return 0;
     }
 }
 

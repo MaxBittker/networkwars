@@ -55,6 +55,17 @@ win?"* — and costs about one rollout per trial, so it is ~100× cheaper than t
 trials, `solver/worker_gate.mjs`). The browser also stops keeping its own copy of the
 rule: both the certificate and the executed move come from that one C function.
 
+A playout that hasn't terminated by `MAX_TURNS` counts as a **loss**, not a
+plurality-win (changed 2026-07-24). The mop-up never takes an even fight, so a
+position where every mutual border reinforces in lockstep is a true stalemate: the
+policy end-turns forever and the game never reaches a terminal. Under the old
+plurality tiebreak those stalled playouts scored as RED wins whenever RED held the
+most nodes, so the certificate kept passing and the live sweep end-turned in an
+infinite loop. Scoring a stall as a loss makes the offer never appear on a
+stalemated position and makes the per-action re-cert bail within one step —
+handing the game back to the player, who (unlike the policy) can break the
+stalemate by attacking at even odds.
+
 Gate strength, measured on positions each variant itself selected, with the truth
 drawn from a **disjoint dice-seed range** (`solver/sweep_variants.py`, 58 games):
 

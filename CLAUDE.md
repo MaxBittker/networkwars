@@ -88,7 +88,10 @@
     (`sweep_certify`: play the mop-up to the end 1000x on the private sim dice, offer
     only if none lose), NOT a win% off the search, and it **re-certifies before every
     swept action** (400 trials, bail if >2 lose) and hands the game back if the dice
-    turn. The old gate — "the search says every root move wins >99.95%" — was unsound
+    turn. A playout that stalls at MAX_TURNS counts as a **loss** (2026-07-24): the
+    mop-up never takes an even fight, so lockstep-reinforcing borders are a true
+    stalemate — under the old plurality tiebreak the cert kept passing and the live
+    sweep end-turned forever; stall=loss means no offer / immediate bail instead. The old gate — "the search says every root move wins >99.95%" — was unsound
     twice over (it measured how the SEARCH would play, and grading-mode Qs in
     near-won positions average ~20 rollouts, so the threshold couldn't resolve 99%
     from 100% and raising it did nothing): it fired in 188/190 games at a median of

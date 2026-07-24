@@ -288,8 +288,24 @@ def check_sweep():
     if fastnw.sweep_certify(owner, strength, 1, 200) != 0:
         ok = False
         print("  a 29-of-30-nodes RED position failed to certify")
+    # negative control: a STALEMATE must fail the certificate. Equal strengths on
+    # this split -> mutual borders reinforce in lockstep, nobody (mop-up or bots)
+    # ever sees a strictly weaker target, the game never terminates — and RED holds
+    # a strict plurality (18 vs 12), which is the exact old-bug path: the stalled
+    # playout used to score as a red win by plurality, so the cert kept passing and
+    # the live sweep end-turned forever. A stalled playout must count as a LOSS.
+    state = nw.make_game(15)
+    fastnw.set_topology(state)
+    owner, strength = fastnw.board_arrays(state)
+    owner[:18] = 0
+    owner[18:] = 1
+    strength[:] = 5
+    if fastnw.sweep_certify(owner, strength, 1, 200) == 0:
+        ok = False
+        print("  a stalemate certified as a won mop-up (sweep would end-turn forever)")
     print(f"sweep certificate: {'PASS' if ok else 'FAIL'} "
-          f"(openings rejected, won position accepted, real dice untouched)")
+          f"(openings rejected, won position accepted, stalemate rejected, "
+          f"real dice untouched)")
     return ok
 
 
