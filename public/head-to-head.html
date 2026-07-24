@@ -464,9 +464,9 @@ function paintBadge(nodes, label, idle) {
 // How far behind the AI is. It plays one seed at a time and you never wait for it, so
 // a backlog is normal and worth showing rather than hiding.
 const aiBacklog = () => M.rounds.filter(r => r.startNodes && !r.ai.result).length - 1;
-const aiLabel = (i, turn) => {
+const aiLabel = () => {
   const q = aiBacklog();
-  return `Seed ${i + 1}<br>turn ${turn}${q > 0 ? ` · +${q}` : ''}`;
+  return `AI${q > 0 ? ` · +${q}` : ''}`;
 };
 
 async function aiPump() {
@@ -494,7 +494,7 @@ async function aiPlaySeed(i) {
   sampleHist(g, s);
   // Paint BEFORE the first search: its opening think can take seconds, and a badge
   // reading "idle" while the AI is actually grinding is a lie.
-  paintBadge(s.nodes, aiLabel(i, s.turn), false);
+  paintBadge(s.nodes, aiLabel(), false);
   for (let guard = 0; guard < 4000 && !s.over; guard++) {
     const res = await aiApi(`/api/game/${s.id}/search`, 'POST', { sims: AI_SIMS });
     const b = res.best;
@@ -507,9 +507,9 @@ async function aiPlaySeed(i) {
       s = await aiApi(`/api/game/${s.id}/attack`, 'POST', { from: b.from, to: b.to });
     }
     sampleHist(g, s);
-    // ambient badge: blurred+grey board, and how far along it is. No win%, no result —
+    // ambient badge: blurred+grey board. No seed/turn/win%/result readout —
     // that would spoil the seed you're playing.
-    paintBadge(s.nodes, aiLabel(i, s.turn), false);
+    paintBadge(s.nodes, aiLabel(), false);
     if (g.moves.length % 4 === 0) save();        // throttled: full-state write per move is wasteful
     await sleep(0);                              // yield so the UI stays smooth
   }
