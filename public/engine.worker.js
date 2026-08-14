@@ -43,7 +43,7 @@ function view(g) {
   for (let f = 0; f < 5; f++) counts[FACTIONS[f]] = c[f];
   const legal = E.legalMoves(g.owner, g.strength, g.adj).map(([a, b]) => ({ from: a, to: b }));
   return { id: g.id, seed: g.seed, nodes, links: g.links, counts, turn: g.turn, legalMoves: legal,
-    over: g.over, youWon: g.youWon, redResigned: g.redResigned, winner: g.winner };
+    over: g.over, youWon: g.youWon, winner: g.winner };
 }
 
 function newGame(seed) {
@@ -51,7 +51,7 @@ function newGame(seed) {
   const d = E.newGame(seed);
   const g = { id: newId(), owner: d.owner, strength: d.strength, x: d.x, y: d.y,
     adj: d.adj, links: d.links, mb: d.mb, turn: 1, over: false, youWon: false,
-    redResigned: false, winner: null, seed };
+    winner: null, seed };
   GAMES[g.id] = g;
   return g;
 }
@@ -75,37 +75,12 @@ function gameFromBoard(boardNodes, mbSeed) {
   const links = E.getLinks();
   const g = { id: newId(), owner, strength, x, y, adj, links,
     mb: (mbSeed != null ? mbSeed : (Math.floor(Math.random() * 0x7fffffff) + 1)),
-    turn: 1, over: false, youWon: false, redResigned: false, winner: null, seed: null };
+    turn: 1, over: false, youWon: false, winner: null, seed: null };
   GAMES[g.id] = g;
   return g;
 }
 
-// Undo support: every player-visible action (attack / end-turn) pushes the full
-// pre-action game state — owner/strength arrays plus the mb32 dice cursor — so undo
-// is an exact rewind (replaying the same move re-rolls the same dice).
-function snapshot(g) {
-  if (!g.hist) g.hist = [];
-  g.hist.push({ owner: g.owner.slice(), strength: g.strength.slice(), mb: g.mb,
-    turn: g.turn, over: g.over, youWon: g.youWon, redResigned: g.redResigned,
-    winner: g.winner });
-  if (g.hist.length > 500) g.hist.shift();
-}
-
-function doUndo(g) {
-  if (!g.hist || !g.hist.length) {
-    const out = view(g); out.log = []; out.nothingToUndo = true;
-    return out;
-  }
-  const s = g.hist.pop();
-  g.owner = s.owner; g.strength = s.strength; g.mb = s.mb; g.turn = s.turn;
-  g.over = s.over; g.youWon = s.youWon; g.redResigned = s.redResigned;
-  g.winner = s.winner;
-  const out = view(g); out.log = [];
-  return out;
-}
-
 function doAttack(g, frm, to) {
-  snapshot(g);
   select(g);
   E.useMb32(g.mb);
   const { flips, meta } = E.attackLogged(g.owner, g.strength, frm, to);
@@ -124,7 +99,6 @@ function doAttack(g, frm, to) {
 // final board + g.mb are bit-identical to end_turn — just observable. Port of
 // server.do_end_turn.
 function doEndTurn(g) {
-  snapshot(g);
   select(g);
   E.useMb32(g.mb);
   const owner = g.owner, strength = g.strength;
@@ -204,7 +178,7 @@ function buildResult(acts, visits, q) {
 // normally; it's the threshold-gated answer autoplay commits its move on.
 //
 // The loop yields to the event loop between chunks and ABORTS (returning the
-// tree's current best) the moment another request lands in `inbox` — an undo,
+// tree's current best) the moment another request lands in `inbox` — an
 // attack or end-turn must never wait out a multi-second search. Autoplay is
 // unaffected: it awaits each search with nothing else queued, so its searches
 // always run to their converged stop.
@@ -260,12 +234,6 @@ function doSweepCheck(g, trials, maxLosses) {
     move: E.sweepMove(g.owner, g.strength) };   // null = no attack left, end turn
 }
 
-function doSurrender(g) {
-  g.over = true; g.redResigned = true; g.youWon = false;
-  const out = view(g); out.log = [];
-  return out;
-}
-
 // ---- message dispatch: mirrors server.py's HTTP routes ----
 function route(path, method, body) {
   const q = path.indexOf('?');
@@ -292,8 +260,6 @@ function route(path, method, body) {
     if (action === 'sweep-check') return doSweepCheck(g,
       body.trials != null ? body.trials | 0 : 1000,
       body.maxLosses != null ? body.maxLosses | 0 : 0);
-    if (action === 'surrender') return doSurrender(g);
-    if (action === 'undo') return doUndo(g);
   }
 
   // Loading a saved board from the iOS workflow: the caller fetches the file text

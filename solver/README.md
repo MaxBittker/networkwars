@@ -46,8 +46,8 @@ for the live iOS `/grab` workflow.
   `c_puct=2.5`, `sims=1600–3200`.
 - **`par_eval.py`** — splits seeds across processes for fast winrate evals.
 - **`server.py`** — OPTIONAL stdlib HTTP server. The browser game is serverless WASM
-  (see `../public/`); this only serves the legacy `/api/game/*` and the iOS `/grab`
-  endpoint that pulls the live iOS-mirrored board into a new game.
+  (see `../public/`); this only serves `public/` and the iOS `/grab`/`/load`
+  endpoints that pull a live iOS-mirrored board into a new game.
 
 The single win% readout (live dashboard + JSONL) is **`winexp`** — the search's own
 backed-up Q of the chosen move. It falls out of the MCTS (no separate calibration

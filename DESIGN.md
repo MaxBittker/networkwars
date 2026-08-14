@@ -82,8 +82,8 @@ Applied to a faction at the end of that faction's turn:
 
 - Any faction reaching **24 owned nodes wins immediately** (checked after every capture and
   every turn). For RED that's "You Won!"; otherwise "You Lost."
-- A faction with 0 nodes is eliminated and skips its turns.
-- **Surrender**: RED can surrender, ending the game as a loss.
+- A faction with 0 nodes is eliminated and skips its turns. RED at 0 nodes ends the
+  game immediately as a loss (a wiped red can never move again).
 
 ## 7. Bot AI (decompiled — the real `OpponentAIOriginal` from the shipped app)
 
@@ -121,7 +121,8 @@ makes **one strongest-first pass** over the nodes it owned at the start of the t
 | GET  `/api/game/:id`       | —                     | Current state |
 | POST `/api/game/:id/attack`| `{from, to}`          | Resolve one battle (RED's turn only) |
 | POST `/api/game/:id/end-turn` | —                  | Run all bot turns + reinforcements |
-| POST `/api/game/:id/surrender` | —                 | End game as RED loss |
+| POST `/api/game/:id/search`| `{sims?, maxSims?, grade?, ...}` | C-UCT search from the current position; returns ranked root moves + win% |
+| POST `/api/game/:id/sweep-check` | `{trials?, maxLosses?}` | Monte-Carlo certificate of the mop-up policy (sweep-up offer gate) |
 
 State payload: `{ id, nodes:[{id,x,y,owner,strength}], links:[[a,b]], counts:{red,...},
 turn, phase, winner, log:[...], legalMoves:[{from,to}] }`. `legalMoves` lets a UI or API

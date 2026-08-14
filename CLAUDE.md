@@ -99,9 +99,9 @@
     certificate is ~100x cheaper (0.1ms median / 8.6ms worst in WASM) and measures
     0 losses in 12400 sweeps. Full numbers + tooling: `solver/SWEEP_UP.md`
     (`sweep_audit.py`, `sweep_variants.py`, `sweep_final.py`).
-  - `solver/server.py` — now OPTIONAL: it serves `public/` static assets and the
-    legacy `/api/game/*` (no longer used by the browser), and is only needed for the
-    iOS `/grab` and `/load` workflow (live iPhone Mirroring). Pure offline play needs
+  - `solver/server.py` — now OPTIONAL: it serves `public/` static assets and is only
+    needed for the iOS `/grab` and `/load` board-import endpoints (live iPhone
+    Mirroring; the old server-side `/api/game/*` is gone). Pure offline play needs
     no Python — serve `public/` with any static server (`cd public && python3 -m
     http.server`) or open via the server.
   There is no JS rules engine — board-gen, bots, battle, reinforce, and search are all

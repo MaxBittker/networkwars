@@ -266,7 +266,7 @@ export class Board {
     await sleep(180 * this.speed);
     const delay = Math.max(45, Math.min(150, Math.round(850 / Math.max(flips.length, 1)))) * this.speed;
     for (const f of flips) {
-      if (this.abort) break;                    // undo requested — fast-forward
+      if (this.abort) break;                    // page asked to fast-forward
       if (f === 'd') { d--; this.flashId = to; } else { a--; this.flashId = from; }
       this.overrides.set(from, { strength: a });
       this.overrides.set(to, { strength: Math.max(d, 0) });
@@ -313,7 +313,7 @@ export class Board {
     this.selected = null;
     let curFaction = null;
     for (const ev of res.events) {
-      if (this.abort) break;                 // undo requested — skip the rest of the replay
+      if (this.abort) break;                 // page asked to skip the rest of the replay
       if (ev.type === 'reinforce') {
         for (const ch of ev.changes) this.animBoard[ch.id].strength = ch.to;
         this.reinforceFlash = new Set(ev.changes.map(c => c.id));
