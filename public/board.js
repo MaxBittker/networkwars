@@ -1,7 +1,7 @@
-// Shared board renderer + battle/bot-turn animation, used by BOTH index.html (free
-// play) and head-to-head.html (the duplicate-format match). Extracted so the two
-// pages can't drift apart on how the game LOOKS — same octagon nodes, same
-// coin-flip replay, same reinforce flashes.
+// Board renderer + battle/bot-turn animation for index.html (the duplicate-format
+// head-to-head match) — the one place the game's LOOK lives: octagon nodes,
+// coin-flip replay, reinforce flashes. (Originally shared with a free-play page,
+// removed 2026-08-14.)
 //
 // It renders only; it holds no rules and drives no engine. The page owns the game
 // state (the authoritative view from engine.worker.js) and hands it here via
@@ -40,7 +40,7 @@ function nodeStyle(hex) {
 }
 
 // Paint a tiny starting-board thumbnail (faction-colored dots laid out by x,y).
-// Used by index.html's game history and head-to-head's per-seed scoreboard rows.
+// Used by the per-seed scoreboard rows and the AI-progress badge.
 export function drawThumb(cv, nodes) {
   const ctx = cv.getContext('2d'), W = cv.width, H = cv.height, pad = 5;
   ctx.clearRect(0, 0, W, H);
@@ -70,7 +70,7 @@ export class Board {
     this.targetsFor = new Map();    // from -> Set(to), indexed from view.legalMoves
     this.hoverMove = null;          // {from,to} previewed on the grid
     this.topInset = 0;              // px at the top the layout must keep clear
-                                    // (e.g. head-to-head's AI badge overlays the canvas)
+                                    // (e.g. the AI-progress badge overlays the canvas)
 
     // ---- transient state owned by the animations ----
     this.overrides = new Map();     // nodeId -> {strength, owner?} mid-battle

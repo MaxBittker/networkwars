@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Network Wars</title>
+<title>Network Wars — Head to Head</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <style>
   :root {
@@ -13,7 +13,6 @@
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin:0; height:100%; background:#04100c; color:#cfe;
     font-family: -apple-system, "SF Pro Display", Segoe UI, Roboto, sans-serif; overflow:hidden; }
-  /* phone-shaped column with the real game's bottom-up green glow */
   #app { display:flex; flex-direction:column; height:100%; max-width:440px; margin:0 auto;
     position:relative;
     background:
@@ -21,8 +20,8 @@
       radial-gradient(100% 60% at 50% -10%, rgba(40,120,90,.12), transparent 60%),
       #04100c; }
 
-  /* top bar: menu + faction count chips */
-  header { display:flex; align-items:center; gap:8px; padding:12px 14px 6px; }
+  header { display:flex; align-items:center; gap:8px; padding:10px 14px 4px; }
+  /* hamburger + popup menu */
   #menuwrap { position:relative; flex:0 0 auto; }
   #menu { width:30px; height:30px; display:flex; flex-direction:column;
     justify-content:center; gap:5px; cursor:pointer; opacity:.85; padding:3px; }
@@ -44,93 +43,52 @@
   .chip { position:relative; width:34px; height:34px; border-radius:50%;
     display:flex; align-items:center; justify-content:center;
     font-weight:800; font-size:14px; color:#fff;
-    border:2.4px solid currentColor; background:rgba(0,0,0,.55); }
+    border:2.4px solid currentColor; background:rgba(0,0,0,.55);
+    box-shadow:0 0 10px -1px currentColor, inset 0 0 6px -2px currentColor; }
   .chip.red{color:var(--red)} .chip.green{color:var(--green)} .chip.yellow{color:var(--yellow)}
   .chip.blue{color:var(--blue)} .chip.purple{color:var(--purple)}
-  .chip { box-shadow:0 0 10px -1px currentColor, inset 0 0 6px -2px currentColor; }
   .chip.cur { box-shadow:0 0 0 2px #fff, 0 0 16px 1px currentColor; }
   .chip.dead { opacity:.28; filter:grayscale(.4); }
   .chip b { color:#fff; }
 
+  #mstrip { display:flex; align-items:center; gap:8px; padding:2px 14px 6px; font-size:11px;
+    text-transform:uppercase; letter-spacing:.06em; color:#7fb6a6; }
+  #mgame { flex:1; min-width:0; font-weight:800; color:var(--teal); letter-spacing:.04em; }
+  #tally { flex:0 0 auto; font-weight:800; cursor:pointer; color:#bfe;
+    text-decoration:underline; text-decoration-color:rgba(191,238,255,.35);
+    text-underline-offset:3px; letter-spacing:.02em; }
+  #tally:active { opacity:.55; }
+  #tally .y { color:var(--teal); } #tally .a { color:var(--yellow); }
+
   #board { flex:1; position:relative; min-height:0; }
-  canvas { width:100%; height:100%; display:block; touch-action:none; }
+  canvas#cv { width:100%; height:100%; display:block; touch-action:none; }
 
-  /* AI suggestions panel */
-  #ai { padding:4px 12px 2px; }
-  #ai-head { display:flex; align-items:center; justify-content:space-between;
-    font-size:12px; letter-spacing:.04em; text-transform:uppercase; margin-bottom:5px; }
-  #record { font-weight:700; font-size:12px; color:#8fcfb8; letter-spacing:.02em; }
-  #record.off { visibility:hidden; }
-  #winpct { font-weight:800; font-size:14px; color:#bfe; }
-  /* win-expectation over the game: wide, short, subtle line graph */
-  #wingraph { display:block; width:100%; height:34px; margin-bottom:7px; }
-  /* fixed height = 8 rows (the server caps top moves at 8) so the board never
-     re-layouts when the suggestion count changes */
-  #sugg { display:flex; flex-direction:column; gap:4px; height:284px; overflow:hidden; }
-  .sg { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:9px;
-    background:rgba(255,255,255,.035); cursor:pointer; font-size:13px; }
-  .sg:active { background:rgba(255,255,255,.10); }
-  .sg.top { background:rgba(255,211,107,.10); box-shadow:inset 0 0 0 1px rgba(255,211,107,.35); }
-  .sg .rk { width:14px; color:#7fb6a6; font-weight:700; text-align:center; font-size:11px; }
-  .pip { display:flex; align-items:center; justify-content:center; min-width:18px;
-    font-weight:800; font-size:15px; flex:0 0 auto; }
-  .pip.red{color:var(--red)} .pip.green{color:var(--green)} .pip.yellow{color:var(--yellow)}
-  .pip.blue{color:var(--blue)} .pip.purple{color:var(--purple)}
-  .sg .arrow { color:#6fae9e; font-weight:700; }
-  .sg .lbl { flex:1; color:#cfe; }
-  .sg .q { font-weight:800; color:#e9f7f0; min-width:42px; text-align:right; }
-  .sg .bar { width:46px; height:4px; border-radius:2px; background:rgba(255,255,255,.10); overflow:hidden; flex:0 0 auto; }
-  .sg .bar > i { display:block; height:100%; background:#5fd0d6; }
-  .sg.muted { opacity:.55; font-style:italic; }
+  /* ---- background-AI badge: ambient proof-of-work, deliberately unreadable ----
+     The AI plays the same seed concurrently in its own worker. Its board is shown
+     blurred + grayscale so you can see it IS working without reading who's winning —
+     that would spoil the seed you're still playing. */
+  #aibadge { position:absolute; top:4px; right:10px; z-index:3; cursor:pointer;
+    border-radius:8px; background:rgba(0,0,0,.34);
+    border:1px solid rgba(245,197,66,.28); }
+  #aibadge:active { opacity:.6; }
+  #aibadge.idle { border-color:rgba(255,255,255,.10); }
+  #aicv { display:block; width:56px; height:56px; border-radius:7px; background:rgba(0,0,0,.4);
+    filter:blur(1.7px) grayscale(1) contrast(.85) brightness(1.25); }
+  #aidot { position:absolute; top:5px; left:5px; width:6px; height:6px; border-radius:50%;
+    background:var(--yellow); box-shadow:0 0 6px var(--yellow); animation:pulse 1.1s infinite; }
+  #aibadge.idle #aidot { background:#5f9e8e; box-shadow:none; animation:none; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
 
-  /* "Hide AI features" (menu toggle): drop the whole suggestions panel so the
-     board claims the full height/width. #board is flex:1 so it expands for free. */
-  body.ai-off #ai { display:none; }
-
-  /* On phones, give the board as much room as possible: shrink the win graph and
-     show fewer suggestion rows (the panel clips to its height) so the play area
-     stays tall. Keyed on the narrow/short viewport, not desktop. */
-  @media (max-width:480px) {
-    #ai { padding:2px 10px 0; }
-    #ai-head { margin-bottom:3px; }
-    #wingraph { height:26px; margin-bottom:4px; }
-    #sugg { height:150px; }            /* ~5 rows instead of 8 */
-    header { padding:8px 14px 4px; }
-  }
-  @media (max-height:670px) {
-    #wingraph { display:none; }
-    #sugg { height:96px; }             /* ~3 rows when vertically cramped */
-    header { padding:6px 14px 3px; }
-    footer { padding:6px 22px calc(6px + env(safe-area-inset-bottom)) !important; }
-  }
-
-  footer { display:flex; justify-content:space-between; align-items:center;
-    padding:10px 22px calc(10px + env(safe-area-inset-bottom)); font-size:16px; }
+  footer { display:flex; justify-content:space-between; align-items:center; gap:8px;
+    padding:10px 18px calc(10px + env(safe-area-inset-bottom)); font-size:16px; }
   .act { color:var(--teal); font-weight:700; cursor:pointer; user-select:none; padding:6px 2px; }
   .act:active { opacity:.55; }
-  #endturn { font-size:20px; }
   .act.off { opacity:.3; pointer-events:none; }
-  #status { color:#8fcfb8; font-size:12px; flex:1; text-align:center; padding:0 8px; }
+  #endturn { font-size:20px; }
+  #status { color:#8fcfb8; font-size:12px; flex:1; text-align:center; padding:0 6px; }
 
-  /* blunder-alert banner: slides up just above the footer when a committed move's
-     win expectation trails the search's best move by more than the chosen tier.
-     --bl carries the severity color (yellow/orange/red). */
-  #blunder { position:absolute; left:12px; right:12px;
-    bottom:calc(56px + env(safe-area-inset-bottom)); z-index:4;
-    display:none; align-items:center; gap:12px; padding:10px 14px;
-    background:#120806; border:1px solid var(--bl,#ff4d5e); border-radius:12px;
-    box-shadow:0 8px 30px -8px rgba(0,0,0,.85), 0 0 18px -6px var(--bl,#ff4d5e);
-    font-size:13px; }
-  #blunder.show { display:flex; animation:blup .18s ease-out; }
-  @keyframes blup { from { transform:translateY(10px); opacity:0; } to { transform:none; opacity:1; } }
-  #bl-text { flex:1; display:flex; align-items:baseline; gap:8px; min-width:0; }
-  #bl-tier { color:var(--bl,#ff4d5e); font-size:14px; }
-  #bl-sub { color:#cfe; }
-  #blunder .act { padding:6px 8px; flex:0 0 auto; }
-  #bl-x { color:#7fb6a6; font-weight:800; }
-
-  /* sweep-up offer: same banner slot as the blunder alert, green — the mop-up
-     policy wins this position 1000/1000 times, offer to run it. */
+  /* sweep-up offer: green banner above the footer — the mop-up policy wins this
+     position 1000/1000 times, offer to run it. */
   #sweep { position:absolute; left:12px; right:12px;
     bottom:calc(56px + env(safe-area-inset-bottom)); z-index:4;
     display:none; align-items:center; gap:12px; padding:10px 14px;
@@ -138,6 +96,7 @@
     box-shadow:0 8px 30px -8px rgba(0,0,0,.85), 0 0 18px -6px var(--green);
     font-size:13px; }
   #sweep.show { display:flex; animation:blup .18s ease-out; }
+  @keyframes blup { from { transform:translateY(10px); opacity:0; } to { transform:none; opacity:1; } }
   #sw-text { flex:1; display:flex; align-items:baseline; gap:8px; min-width:0;
     white-space:nowrap; }
   #sw-text b { color:var(--green); font-size:14px; }
@@ -145,51 +104,114 @@
   #sweep .act { padding:6px 8px; flex:0 0 auto; }
   #sw-x { color:#7fb6a6; font-weight:800; }
 
-  #modal { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
-    background:rgba(0,0,0,.55); backdrop-filter:blur(2px); z-index:5; }
-  #modal.show { display:flex; }
-  .dialog { background:#020b08; border:1px solid #1c5; border-radius:14px; padding:26px 34px;
-    text-align:center; min-width:250px; box-shadow:0 0 40px -8px rgba(54,211,154,.5); }
-  .dialog h2 { margin:0 0 4px; font-size:25px; color:#fff; }
-  .dialog p { margin:0 0 20px; color:#9fc; font-size:14px; }
-  .dialog .row { display:flex; gap:34px; justify-content:center; }
-
-  /* clickable W/L record opens the game-history overlay */
-  #record { cursor:pointer; text-decoration:underline; text-decoration-color:rgba(143,207,184,.4);
-    text-underline-offset:3px; }
-  #record:active { opacity:.55; }
-
-  /* game-history overlay: scrollable past games (start board + outcome), tap to reload */
-  #histwrap { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
-    background:rgba(0,0,0,.6); backdrop-filter:blur(2px); z-index:6; }
-  #histwrap.show { display:flex; }
-  #histpanel { background:#020b08; border:1px solid #1c5; border-radius:14px;
-    width:min(420px,92vw); max-height:84vh; display:flex; flex-direction:column;
+  /* ---- overlays ---- */
+  .ov { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(0,0,0,.62); backdrop-filter:blur(3px); z-index:6; padding:12px; }
+  .ov.show { display:flex; }
+  .panel { background:#020b08; border:1px solid #1c5; border-radius:14px;
+    width:min(430px,96vw); max-height:92vh; display:flex; flex-direction:column;
     box-shadow:0 0 40px -8px rgba(54,211,154,.5); overflow:hidden; }
-  #hist-head { display:flex; align-items:center; justify-content:space-between;
+  .p-head { display:flex; align-items:center; justify-content:space-between; gap:8px;
     padding:14px 18px; border-bottom:1px solid rgba(255,255,255,.08);
-    font-size:15px; font-weight:700; color:#cfe; letter-spacing:.03em; }
-  #hist-list { overflow-y:auto; padding:8px; display:flex; flex-direction:column; gap:6px;
-    overscroll-behavior:contain; scrollbar-width:thin;
-    scrollbar-color:rgba(95,208,214,.45) transparent; }
+    font-size:15px; font-weight:700; color:#cfe; letter-spacing:.03em; flex:0 0 auto; }
+  .p-body { overflow-y:auto; padding:16px 18px; overscroll-behavior:contain;
+    scrollbar-width:thin; scrollbar-color:rgba(95,208,214,.45) transparent; }
   /* slim glowing teal scrollbar instead of the OS default slab */
-  #hist-list::-webkit-scrollbar { width:7px; }
-  #hist-list::-webkit-scrollbar-track { background:transparent; }
-  #hist-list::-webkit-scrollbar-thumb { border-radius:4px;
+  .p-body::-webkit-scrollbar { width:7px; }
+  .p-body::-webkit-scrollbar-track { background:transparent; }
+  .p-body::-webkit-scrollbar-thumb { border-radius:4px;
     background:linear-gradient(180deg, rgba(95,208,214,.55), rgba(54,211,154,.45));
     box-shadow:0 0 6px -1px rgba(95,208,214,.5); }
-  #hist-list .muted { color:#7fb6a6; font-style:italic; padding:22px; text-align:center; }
-  .hrow { display:flex; align-items:center; gap:12px; padding:8px 10px; border-radius:10px;
-    background:rgba(255,255,255,.035); cursor:pointer; }
-  .hrow:active { background:rgba(255,255,255,.10); }
-  .hrow canvas { width:54px; height:54px; flex:0 0 auto;
-    background:rgba(0,0,0,.3); border-radius:8px; }
-  .hrow .meta { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
-  .hrow .res { font-weight:800; font-size:14px; }
-  .hrow .res.won { color:var(--green); } .hrow .res.lost { color:var(--red); }
-  .hrow .res.surrendered { color:var(--yellow); } .hrow .res.live { color:var(--teal); }
-  .hrow .sub { font-size:11px; color:#7fb6a6; }
-  .hrow .when { font-size:11px; color:#5f9e8e; flex:0 0 auto; text-align:right; }
+  .p-body::-webkit-scrollbar-thumb:hover {
+    background:linear-gradient(180deg, rgba(95,208,214,.85), rgba(54,211,154,.7)); }
+  .p-foot { padding:12px 18px calc(12px + env(safe-area-inset-bottom));
+    border-top:1px solid rgba(255,255,255,.08); display:flex; gap:16px;
+    justify-content:space-between; align-items:center; flex:0 0 auto; }
+  .p-body h3 { margin:0 0 6px; font-size:13px; color:#bfe; text-transform:uppercase;
+    letter-spacing:.05em; font-weight:700; }
+  .danger { color:#ff7d8a; }
+
+  #score { display:flex; gap:10px; margin:0 0 16px; }
+  .sc { flex:1; text-align:center; padding:12px 6px; border-radius:11px;
+    background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08); }
+  .sc.lead { border-color:var(--green); box-shadow:0 0 18px -8px var(--green); }
+  .sc .who { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#7fb6a6; }
+  .sc .n { font-size:28px; font-weight:800; color:#e9f7f0; line-height:1.25;
+    font-variant-numeric:tabular-nums; }
+  .sc .pct { font-size:12px; color:#8fcfb8; }
+
+  .srow { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:10px;
+    background:rgba(255,255,255,.035); margin-bottom:6px; cursor:pointer; }
+  .srow:active { background:rgba(255,255,255,.10); }
+  .srow canvas { width:46px; height:46px; flex:0 0 auto; background:rgba(0,0,0,.3); border-radius:7px; }
+  .srow .meta { flex:1; min-width:0; }
+  .srow .sd { font-size:11px; color:#5f9e8e; font-family:ui-monospace, Menlo, monospace; }
+  .srow .vs { font-size:13px; font-weight:700; margin-top:2px; }
+  .tag { display:inline-block; padding:1px 6px; border-radius:5px; font-size:11px;
+    font-weight:800; letter-spacing:.03em; }
+  .tag.won { background:rgba(54,211,154,.16); color:var(--green); }
+  .tag.lost { background:rgba(255,77,94,.16); color:var(--red); }
+  .tag.none { background:rgba(255,255,255,.07); color:#7fb6a6; }
+  .srow .loss { font-size:11px; color:#7fb6a6; margin-top:2px; }
+  .srow .go { color:var(--teal); font-weight:800; flex:0 0 auto; font-size:15px; }
+
+  /* ---- per-seed detail: one shared power graph + inspectable move lists ---- */
+  canvas.pg { display:block; width:100%; height:112px; background:rgba(255,255,255,.02);
+    border-radius:8px; }
+  /* legend doubles as each side's final score, so the graph needs no axis labels */
+  #glegend { display:flex; flex-wrap:wrap; gap:6px 14px; justify-content:center;
+    font-size:11px; color:#8fcfb8; margin:8px 0 14px; }
+  #glegend span { display:flex; align-items:center; gap:5px; }
+  #glegend i { width:12px; height:3px; border-radius:2px; flex:0 0 auto; }
+  #glegend i.dash { background:repeating-linear-gradient(90deg,
+    rgba(54,211,154,.7) 0 3px, transparent 3px 6px); }
+
+  /* inspector: the board at the selected move. Square-ish and as wide as the panel —
+     the board is the point of this view, so it gets the room. */
+  #ibwrap { position:relative; height:min(360px, 78vw); background:rgba(0,0,0,.28);
+    border-radius:10px; margin:0 0 8px; overflow:hidden; }
+  #ib { width:100%; height:100%; display:block; }
+  #ibcap { display:flex; align-items:center; justify-content:space-between; gap:8px;
+    margin:0 0 12px; font-size:12px; color:#8fcfb8; }
+  #ibcap .nav { display:flex; gap:6px; align-items:center; }
+  /* generous hit targets: these get tapped repeatedly to walk a game */
+  #ibcap .act { font-size:24px; line-height:1; padding:4px 12px; border-radius:8px;
+    background:rgba(95,208,214,.10); border:1px solid rgba(95,208,214,.28); }
+  #ibcap .act:active { background:rgba(95,208,214,.24); }
+  #ibinfo { flex:1; min-width:0; }
+
+  .tabs { display:flex; gap:6px; margin:0 0 10px; }
+  .tabs > div { flex:1; text-align:center; padding:8px 0; border-radius:9px; font-size:13px;
+    font-weight:700; color:#8fcfb8; background:rgba(255,255,255,.05); cursor:pointer;
+    border:1px solid transparent; }
+  .tabs > div.sel { color:#04100c; background:var(--teal); border-color:var(--teal); }
+  .tabs > div.sel.ai { background:var(--yellow); border-color:var(--yellow); }
+
+  .mv { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:8px;
+    font-size:13px; margin-bottom:3px; background:rgba(255,255,255,.03); cursor:pointer; }
+  .mv:active { background:rgba(255,255,255,.12); }
+  .mv.cur { box-shadow:inset 0 0 0 1.5px var(--teal); }
+  .mv .no { width:26px; font-size:11px; color:#5f9e8e; font-variant-numeric:tabular-nums; }
+  .mv .lbl { flex:1; color:#cfe; }
+  .pip { display:flex; align-items:center; justify-content:center; min-width:18px;
+    font-weight:800; font-size:15px; flex:0 0 auto; }
+  .pip.red{color:var(--red)} .pip.green{color:var(--green)} .pip.yellow{color:var(--yellow)}
+  .pip.blue{color:var(--blue)} .pip.purple{color:var(--purple)}
+  .arrow { color:#6fae9e; font-weight:700; }
+  .mv .gap { font-weight:800; min-width:46px; text-align:right; font-variant-numeric:tabular-nums; }
+  .mv .qq { min-width:44px; text-align:right; font-size:11px; color:#7fb6a6;
+    font-variant-numeric:tabular-nums; }
+  .mv.t0 .gap { color:#6fae9e; }
+  .mv.t1 { background:rgba(245,197,66,.09); }  .mv.t1 .gap { color:var(--yellow); }
+  .mv.t2 { background:rgba(255,159,69,.11); }  .mv.t2 .gap { color:#ff9f45; }
+  .mv.t3 { background:rgba(255,77,94,.13); }   .mv.t3 .gap { color:var(--red); }
+  .mv.dead { opacity:.4; } .mv.dead .gap { color:#5f9e8e; font-weight:600; font-size:11px; }
+  .mvbest { font-size:11px; color:#7fb6a6; display:flex; align-items:center; gap:6px;
+    padding:1px 8px 6px 34px; }
+  #rvbar { height:5px; border-radius:3px; background:rgba(255,255,255,.08);
+    overflow:hidden; margin:0 0 10px; display:flex; }
+  #rvbar > i { display:block; height:100%; }
+  .spin { color:#7fb6a6; font-style:italic; font-size:13px; padding:14px 0; text-align:center; }
 </style>
 </head>
 <body>
@@ -198,20 +220,10 @@
     <div id="menuwrap">
       <div id="menu" title="Menu"><span></span><span></span><span></span></div>
       <div id="menupop">
-        <div class="mi" id="mi-new">New Game</div>
         <div class="mi" id="mi-copy">Copy Seed</div>
         <div class="mi" id="mi-paste">Paste Seed&hellip;</div>
-        <div class="mi" id="mi-h2h">Head to Head&nbsp;&rarr;</div>
-        <div class="mi" id="mi-auto">Autoplay</div>
-        <div class="mi" id="mi-ai">AI Assist</div>
-        <div class="mi" id="mi-undo">Undo Mode</div>
-        <div class="mi" id="mi-sweep">Sweep-Up Offer</div>
         <div class="div"></div>
-        <div class="lbl">Blunder alert</div>
-        <div class="mi bl" data-bl="0">Off</div>
-        <div class="mi bl" data-bl="5">Inaccuracy &ge;5%</div>
-        <div class="mi bl" data-bl="10">Mistake &ge;10%</div>
-        <div class="mi bl" data-bl="20">Blunder &ge;20%</div>
+        <div class="mi" id="mi-sweep">Sweep-Up Offer</div>
         <div class="div"></div>
         <div class="lbl">Animation speed</div>
         <div class="mi sp" data-speed="instant">Instant</div>
@@ -222,26 +234,23 @@
     </div>
     <div id="chips"></div>
   </header>
+  <div id="mstrip">
+    <span id="mgame">—</span>
+    <span id="tally">—</span>
+  </div>
 
-  <div id="board"><canvas id="cv"></canvas></div>
-
-  <div id="ai">
-    <div id="ai-head"><span id="record" class="off"></span><span id="winpct">—</span></div>
-    <canvas id="wingraph"></canvas>
-    <div id="sugg"></div>
+  <div id="board">
+    <canvas id="cv"></canvas>
+    <div id="aibadge" title="The AI is playing this seed in the background">
+      <div id="aidot"></div>
+      <canvas id="aicv" width="56" height="56"></canvas>
+    </div>
   </div>
 
   <footer>
-    <div class="act" id="surrender">Surrender</div>
-    <div id="status">Select a red node to attack.</div>
+    <div id="status">—</div>
     <div class="act" id="endturn">End Turn</div>
   </footer>
-
-  <div id="blunder">
-    <div id="bl-text"><b id="bl-tier">Blunder</b><span id="bl-sub"></span></div>
-    <div class="act" id="bl-undo">Undo</div>
-    <div class="act" id="bl-x">&#10005;</div>
-  </div>
 
   <div id="sweep">
     <div id="sw-text"><b>1000/1000</b><span id="sw-sub">mop-ups win it</span></div>
@@ -250,285 +259,487 @@
   </div>
 </div>
 
-<div id="modal"><div class="dialog">
-  <h2 id="m-title">You Won!</h2>
-  <p id="m-sub">Play again?</p>
-  <div class="row"><div class="act" id="m-no">Close</div><div class="act" id="m-yes">New Game</div></div>
+<!-- tally -->
+<div class="ov" id="ov-res"><div class="panel">
+  <div class="p-head"><span id="res-title">Tally</span><div class="act" id="res-close">Close</div></div>
+  <div class="p-body" id="res-body"></div>
+  <div class="p-foot">
+    <div class="act danger" id="res-reset">Reset tally</div>
+    <div class="act" id="res-close2">Keep playing</div>
+  </div>
 </div></div>
 
-<div id="histwrap"><div id="histpanel">
-  <div id="hist-head"><span>Game History</span><div class="act" id="hist-close">Close</div></div>
-  <div id="hist-list"></div>
+<!-- per-seed detail -->
+<div class="ov" id="ov-seed"><div class="panel">
+  <div class="p-head"><span id="sd-title">Seed</span><div class="act" id="sd-close">Back</div></div>
+  <div class="p-body" id="sd-body"></div>
 </div></div>
 
 <script type="module">
-// Board rendering + battle/bot-turn animation live in board.js, shared with
-// head-to-head.html so the two pages always look and animate identically.
+// ============================================================================
+// Head-to-head: continuous DUPLICATE-format play against the C-UCT engine, with the
+// AI playing the same seed CONCURRENTLY in a second worker.
+//
+// Why two workers: engine.worker.js serves its inbox strictly in order and aborts an
+// in-flight search the moment a request queues behind it. If the AI shared your
+// worker, every tap you made would truncate its search and silently handicap it —
+// which would corrupt the exact comparison this page exists to make. Its own worker =
+// its own WASM engine, its own game state, a full uncontested core (your half of the
+// app issues ZERO searches, by design), and no way for its dice or its evaluation to
+// touch your game.
+//
+// Why duplicate: unpaired win-rates are dominated by deal quality (see the solver
+// memories `sim-vs-real-deal-imbalance` and `hard-set-2026-07-02` — deal + dice, not
+// search, decide most games). Comparing "my %" to "its ~94%" across DIFFERENT boards
+// is nearly uninformative at small n. Pinning the seed isolates decision quality; the
+// tally shows the two W-L records, and per-move scoring (which converges far faster
+// than W/L) is the real skill readout.
+//
+// Honest caveat: mulberry32 draws are consumed serially, so once your move sequence
+// diverges from the AI's you pull different coins off the same stream. Duplicate
+// bridge (same deal), not dice-for-dice identity — the latter isn't coherent once
+// actions differ.
+//
+// All rendering/animation comes from board.js; all rules and
+// search come from fast_engine.c via engine.worker.js. This file is bookkeeping and
+// presentation only.
+// ============================================================================
 import { Board, ORDER, SPEEDS, sleep, dirArrow, drawThumb } from './board.js';
 
-const SIMS = 6000;
-// Grading-mode budget: dominance stops are off there, so live positions run to the
-// ceiling regardless; the 16k floor guarantees even near-decided ones get a real
-// sample before the decisive value-stop may fire.
-const GRADE_MIN = 16000, GRADE_MAX = 24000;
-let animSpeed = 'medium';
-const cv = document.getElementById('cv');
-const board = new Board(cv, document.getElementById('board'));
-const instant = () => board.instant;
+// The AI plays at the strength the app's autoplay/live driver uses: 6000-sim floor,
+// adaptive up to the worker's 150k ceiling with the visit/value-margin early stop.
+const AI_SIMS = 6000;
+// Review budget: one grading-mode search per decision you made. Grading mode
+// disables the dominance early-stops, so live positions run to the 24k ceiling
+// (per `hard-set-2026-07-02` quality saturates ~32k) and the 16k floor only
+// bounds how early the decisive "position is decided" stop may fire — every
+// scored decision gets at least 16k sims.
+const REVIEW_SIMS = 16000, REVIEW_MAX = 24000;
+const WIN_NODES = 24;                     // faction node count that ends the game
 
-let state = null;          // latest server view
+const $ = (id) => document.getElementById(id);
+const board = new Board($('cv'), $('board'));
+
+let state = null;            // authoritative view of YOUR game
 let inputLocked = false;
-let pendingUndo = false;    // undo clicked while inputLocked — run it when the lock drops
-let autoplay = false;       // self-play loop: agent plays its top move, no animation
-let autoplayRunning = false;
-let aiOn = true;            // show the AI win%/graph/suggestions panel (menu toggle)
-let blunderThresh = 0;      // blunder alert: 0 = off, else min win% gap that warns
-let searchAll = [];         // full ranked root moves of the current search (blunder lookup)
-const record = { w: 0, l: 0 };  // autoplay win/loss tally (this session)
 
-// ---- persistent game history: starting board + outcome of every game played,
-// newest first; click a row to reload that exact start (replays the seed). ----
-const HIST_KEY = 'nwHistory', HIST_MAX = 60;
-let history = [];
-try { history = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); } catch (_) { history = []; }
-const saveHistory = () => { try { localStorage.setItem(HIST_KEY, JSON.stringify(history)); } catch (_) {} };
-let curGameId = null, curEntry = null;   // the history row for the game in progress
-
-// Observe every authoritative board: open a row when a new game id appears, and
-// stamp its outcome once it ends. Called from each state-adoption point.
-function noteState(s) {
-  if (!s || s.id == null) return;
-  if (s.id !== curGameId) {                         // a fresh game just began
-    curGameId = s.id;
-    winSeries = [];                                  // start the win-expectation graph fresh
-    curEntry = { seed: s.seed, ts: Date.now(), result: 'live',
-      startCounts: { ...s.counts },
-      startNodes: s.nodes.map(n => ({ x: n.x, y: n.y, owner: n.owner, strength: n.strength })) };
-    history.unshift(curEntry);
-    if (history.length > HIST_MAX) history.length = HIST_MAX;
-    saveHistory(); updateRecord();
-  }
-  if (s.over && curEntry && curEntry.result === 'live') {
-    curEntry.result = s.youWon ? 'won' : (s.redResigned ? 'surrendered' : 'lost');
-    curEntry.finalCounts = { ...s.counts };
-    curEntry.turns = s.turn;
-    saveHistory(); updateRecord();
-  }
-}
-
-let suggestions = [];       // ranked top moves from the C-UCT search
-let searchId = 0;           // cancels stale searches
-let searching = false;
-let searchSims = 0;         // live sim count of the in-flight search (streamed)
-let winSeries = [];         // converged win-expectation at each decision, this game (line graph)
-const pushWin = (w) => { if (w != null) { winSeries.push(w); if (winSeries.length > 300) winSeries.shift(); } };
-let lastPointer = { x: -1, y: -1 };  // last seen cursor position, so re-rendered rows can re-sync the hover
-// After the suggestion rows are rebuilt, the cursor may sit over a different row
-// (or none) without firing mouseenter/leave — re-derive hoverMove from the element
-// actually under the cursor so the yellow preview always matches what's hovered.
-function syncHoverToCursor() {
-  let next = null;
-  if (lastPointer.x >= 0) {
-    const el = document.elementFromPoint(lastPointer.x, lastPointer.y);
-    const row = el && el.closest && el.closest('.sg');
-    if (row && row._move) next = row._move;
-  }
-  const hoverMove = board.hoverMove;
-  const changed = (hoverMove && next && (hoverMove.from !== next.from || hoverMove.to !== next.to))
-    || (!hoverMove !== !next);
-  board.hoverMove = next;
-  if (changed) board.draw();
-}
-document.addEventListener('pointermove', (e) => { lastPointer = { x: e.clientX, y: e.clientY }; });
-
-// A streamed mid-search update: adopt the partial ranking so the panel + board
-// show the suggestions and win% converging. Guarded by searchId in onmessage, so
-// only the current search paints. The final move is still the converged result.
-function onSearchProgress(p) {
-  suggestions = p.top || [];
-  searchAll = p.all || p.top || [];
-  searchSims = p.sims || 0;
-  if (p.winexp != null) state._winexp = p.winexp;
-  renderAI();
-  board.draw();
-}
-
-// The C engine now runs IN THE BROWSER as WASM inside a Web Worker (search never
-// blocks the UI). engine.worker.js is a port of solver/server.py — it speaks the
-// exact same /api/game/* contract, so the rest of this file is unchanged: api()
-// just posts to the worker instead of fetching an HTTP server.
-const worker = new Worker('engine.worker.js', { type: 'module' });
-const _pending = new Map();
-let _msgId = 0;
-worker.onmessage = (e) => {
-  const d = e.data;
-  if (d.type === 'progress') {                 // streaming search update
-    if (d.tag === searchId) onSearchProgress(d.result);
-    return;
-  }
-  const { id, result } = d;
-  const r = _pending.get(id);
-  if (r) { _pending.delete(id); r(result); }
-};
-function workerCall(path, method, body) {
-  return new Promise((resolve) => {
-    const id = ++_msgId; _pending.set(id, resolve);
-    worker.postMessage({ id, path, method, body });
+// ---- two independent engines: yours, and the AI's background one ----
+function makeEngine() {
+  const w = new Worker('engine.worker.js', { type: 'module' });
+  const pending = new Map();
+  let id = 0;
+  w.onmessage = (e) => {
+    const d = e.data;
+    if (d.type === 'progress') return;             // neither side streams here
+    const r = pending.get(d.id);
+    if (r) { pending.delete(d.id); r(d.result); }
+  };
+  return (path, method = 'GET', body) => new Promise((resolve) => {
+    const k = ++id; pending.set(k, resolve);
+    w.postMessage({ id: k, path, method, body });
   });
 }
+const api = makeEngine();      // your game — never issues a search while you play
+const aiApi = makeEngine();    // the AI's background game
 
-async function api(path, method='GET', body) {
-  // Core play (new game / attack / end-turn / search / surrender) + re-homing a
-  // loaded board all run in the WASM worker — fully offline, no server needed.
-  if (path.startsWith('/api/game') || path.startsWith('/load-board'))
-    return workerCall(path, method, body);
-  // /load and /grab are the optional iOS workflow: they need solver/server.py
-  // running. Best-effort fetch; offline they just fail with a friendly error.
+// ============================ model ============================
+// One entry per seed. `moves` on each side is the full ordered list of RED decisions
+// ({a:[from,to]} attack | {e:1} end turn) — replaying it from the seed is bit-exact,
+// which is what makes both the retroactive review and the move inspector possible.
+// `hist` is red power sampled per turn: {t: turn, n: nodes, s: total strength}.
+const KEY = 'nwH2H';
+let M = null;   // { rounds: [...], idx }
+
+const blankSide = () => ({ result: null, turns: 0, red: 0, moves: [], hist: [], review: null });
+const blankRound = (seed) => ({ seed, startNodes: null, you: blankSide(), ai: blankSide() });
+// new_game() seeds mulberry32 with this; keep it in 1..2^31-1 like the app does.
+const randSeed = () => Math.floor(Math.random() * 0x7ffffffe) + 1;
+
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(M)); } catch (_) {} };
+function load() {
   try {
-    const r = await fetch(path, { method, headers:{'Content-Type':'application/json'},
-      body: body ? JSON.stringify(body) : undefined });
-    return r.json();
-  } catch (_) {
-    return { error: 'this board source needs solver/server.py running' };
-  }
+    const m = JSON.parse(localStorage.getItem(KEY) || 'null');
+    if (m && Array.isArray(m.rounds) && m.rounds.length) return m;
+  } catch (_) {}
+  return null;
+}
+const cur = () => M.rounds[M.idx];
+
+const redStrength = (s) => s.nodes.reduce((a, n) => a + (n.owner === 'red' ? n.strength : 0), 0);
+
+// Snapshot the two nodes an attack was played into, at the moment it was played. Kept
+// on the move itself so BOTH move lists render as colored pips + a direction arrow
+// without needing a replay (or a review) first. x/y are what dirArrow needs.
+const mkLabel = (s, from, to) => ({
+  f: { owner: s.nodes[from].owner, strength: s.nodes[from].strength, x: s.nodes[from].x, y: s.nodes[from].y },
+  t: { owner: s.nodes[to].owner, strength: s.nodes[to].strength, x: s.nodes[to].x, y: s.nodes[to].y },
+});
+
+// Red power, one point per turn. Re-sampling the same turn overwrites it, so each
+// point is the state after that turn's RED actions — consistent for both sides.
+function sampleHist(side, s) {
+  const pt = { t: s.turn, n: s.counts.red, s: redStrength(s) };
+  const last = side.hist[side.hist.length - 1];
+  if (last && last.t === s.turn) side.hist[side.hist.length - 1] = pt;
+  else side.hist.push(pt);
 }
 
-// Adopt a fresh server view and (re)plan with the search. keepBlunder: end-turn
-// shows its blunder banner up front (during the replay), so adopting the final
-// board must not wipe it.
-function setState(s, keepBlunder = false) {
-  state = s;
-  noteState(s);
-  board.setView(s);
-  if (!keepBlunder) hideBlunder();
-  cancelSweepOffer();            // the offer is per-position; re-earn it on this one
-  renderHeader();
-  board.draw();
-  if (autoplay) return;          // the autoplay loop owns search + W/L + restart
-  if (s.over) { suggestions = []; renderAI(); showModal(); return; }
-  maybeOfferSweep();
-  requestSearch();
+// Stamp a finished game's outcome. Per the project's gameplay policy there is no
+// surrender — every seed reaches a natural terminal.
+function recordEnd(side, s) {
+  if (!s.over) return false;
+  side.result = s.youWon ? 'won' : 'lost';
+  side.turns = s.turn;
+  side.red = s.counts.red;
+  save();
+  return true;
 }
 
+// ============================ chrome ============================
 function renderHeader() {
-  const h = document.getElementById('chips');
+  const h = $('chips');
   h.innerHTML = '';
+  if (!state) return;
   for (const f of ORDER) {
     const c = state.counts[f];
     const d = document.createElement('div');
-    d.className = 'chip ' + f + (f==='red' ? ' cur' : '') + (c===0 ? ' dead' : '');
+    d.className = 'chip ' + f + (f === 'red' ? ' cur' : '') + (c === 0 ? ' dead' : '');
     d.innerHTML = '<b>' + c + '</b>';
     h.appendChild(d);
   }
 }
 
-// ---- AI search + suggestions ----
-async function requestSearch() {
-  if (!state || state.over || inputLocked) return;
-  // AI features hidden — don't spend a search. Exception: the blunder alert needs
-  // one even with the panel off. (The sweep-up offer does NOT: it certifies its own
-  // mop-up policy by playing it out, which never touches the search.)
-  if (!aiOn && !autoplay && !blunderThresh) return;
-  // Always search even with no attacks available — the search returns END TURN as
-  // the sole suggestion, so the panel still shows the right move.
-  const my = ++searchId;
-  searching = true; searchSims = 0; searchAll = []; renderAI();
-  // tag=my streams mid-search updates (onSearchProgress) so the panel animates as
-  // the search converges; the awaited result is the final, threshold-gated answer.
-  // With the blunder alert on, this search's job includes GRADING whatever move the
-  // player commits — request the engine's grading mode (root min-visit floor +
-  // burn-in-free Qs) so tail-move Qs are comparable to the best move's and gaps
-  // aren't inflated. Grading mode disables the move-dominance early stops (they'd
-  // starve exactly the moves being graded), so run the h2h review's 16k-24k budget
-  // instead of the default 6k-150k — a second or two of refinement per position.
-  // The suggestion list rides along unchanged (best = argmax visits either way);
-  // autoplay never comes through here, so play stays pure.
-  const grade = !!blunderThresh;
-  const res = await api(`/api/game/${state.id}/search`, 'POST',
-    grade ? { sims: GRADE_MIN, tag: my, grade, maxSims: GRADE_MAX } : { sims: SIMS, tag: my });
-  if (my !== searchId) return;            // a newer position superseded this one
-  searching = false;
-  suggestions = res.top || [];
-  searchAll = res.all || res.top || [];
-  state._winexp = res.winexp;
-  pushWin(res.winexp);                     // one graph point per converged decision
-  renderAI();
-  board.draw();
+function stats() {
+  let yw = 0, yl = 0, aw = 0, al = 0, both = 0, onlyYou = 0, onlyAI = 0, neither = 0;
+  for (const r of M.rounds) {
+    if (r.you.result === 'won') yw++; else if (r.you.result === 'lost') yl++;
+    if (r.ai.result === 'won') aw++; else if (r.ai.result === 'lost') al++;
+    if (!r.you.result || !r.ai.result) continue;
+    if (r.you.result === 'won' && r.ai.result === 'won') both++;
+    else if (r.you.result === 'won') onlyYou++;
+    else if (r.ai.result === 'won') onlyAI++;
+    else neither++;
+  }
+  return { yw, yl, aw, al, both, onlyYou, onlyAI, neither };
 }
 
-// ---- autoplay: agent self-plays its top move at full search strength, no animation,
-// back-to-back, tallying W/L. A live winrate measurement of our best agent. ----
-function updateRecord() {
-  const el = document.getElementById('record');
-  const w = history.filter(h => h.result === 'won').length;
-  const l = history.filter(h => h.result === 'lost' || h.result === 'surrendered').length;
-  const n = w + l;
-  el.classList.remove('off');     // always visible — it's the clickable history entry point
-  el.textContent = n ? `${w}W–${l}L · ${Math.round(100 * w / n)}%` : 'History';
+function renderStrip() {
+  if (!M) return;
+  $('mgame').textContent = `Seed ${M.idx + 1}`;
+  const s = stats();
+  $('tally').innerHTML = `<span class="y">You ${s.yw}–${s.yl}</span>`
+    + ` · <span class="a">AI ${s.aw}–${s.al}</span>`;
 }
 
-function setAutoplay(on) {
-  autoplay = on;
-  if (on) { hideBlunder(); cancelSweepOffer(); }  // the agent grades itself; no banners during autoplay
-  document.getElementById('mi-auto').classList.toggle('sel', on);
-  updateRecord();
-  if (on) autoplayLoop();        // toggling off is observed by the loop between moves
+const setStatus = (t) => { $('status').textContent = t; };
+function resize() {
+  // The AI badge overlays the canvas top-right; keep the board clear of it so it
+  // never covers nodes on short viewports (the inset is a no-op when centering
+  // already leaves enough headroom).
+  const bd = $('aibadge');
+  board.topInset = bd.offsetTop + bd.offsetHeight + 6;
+  board.resize();
+}
+window.addEventListener('resize', resize);
+if (window.ResizeObserver) new ResizeObserver(resize).observe($('board'));
+
+// ============================ background AI ============================
+// A pump that keeps the AI busy: it plays any dealt seed it hasn't finished, in order,
+// forever. It never touches your worker, your game state or your dice.
+let aiBusy = false;
+
+function paintBadge(nodes, idle) {
+  $('aibadge').classList.toggle('idle', !!idle);
+  if (nodes) drawThumb($('aicv'), nodes);
 }
 
-async function autoplayLoop() {
-  if (autoplayRunning) return;   // single loop at a time
-  autoplayRunning = true;
-  inputLocked = true;
-  hideModal();
+async function aiPump() {
+  if (aiBusy) return;
+  aiBusy = true;
   try {
-    while (autoplay) {
-      if (!state || state.over) {                 // need a live game to play
-        const fresh = await api('/api/game', 'POST', {});
-        if (!autoplay) break;
-        setState(fresh); resize();                // setState is autoplay-guarded
-      }
-      while (autoplay && state && !state.over) {   // play one game to terminal
-        const my = ++searchId;                     // stream this search to the panel
-        searchSims = 0;
-        // autoplay streams for the watcher but only commits on the FINAL result —
-        // the search's own early-stop is the confidence threshold for the move.
-        const s = await api(`/api/game/${state.id}/search`, 'POST', { sims: SIMS, tag: my });
-        if (!autoplay) break;
-        suggestions = s.top || [];
-        state._winexp = s.winexp; pushWin(s.winexp); renderAI(); board.draw();    // converged view of the agent's pick
-        const b = s.best;
-        const res = (!b || b.action === -1)
-          ? await api(`/api/game/${state.id}/end-turn`, 'POST')
-          : await api(`/api/game/${state.id}/attack`, 'POST', { from: b.from, to: b.to });
-        if (!autoplay) break;
-        state = res; noteState(res); board.setView(res); renderHeader(); board.draw();
-      }
-      if (autoplay && state && state.over) {
-        if (state.youWon) record.w++; else record.l++;
-        updateRecord();
-        setStatus(`Autoplay: ${record.w}W–${record.l}L (${state.youWon ? 'won' : 'lost'})`);
-        await sleep(300);                          // let the terminal board register
-      }
+    for (;;) {
+      // oldest dealt-but-unfinished seed
+      const i = M.rounds.findIndex(r => r.startNodes && !r.ai.result);
+      if (i < 0) break;
+      await aiPlaySeed(i);
     }
   } finally {
-    autoplayRunning = false;
-    inputLocked = false;
-    updateRecord();
-    if (!autoplay && state) {                      // hand control back cleanly
-      if (state.over) { suggestions = []; renderAI(); showModal(); }
-      else requestSearch();
-    }
+    aiBusy = false;
+    paintBadge(null, true);
   }
 }
 
-function pip(owner, strength) {
-  return `<span class="pip ${owner}">${strength}</span>`;
+async function aiPlaySeed(i) {
+  const r = M.rounds[i];
+  const g = r.ai;
+  g.moves = []; g.hist = [];                    // restart cleanly (e.g. after a reload)
+  let s = await aiApi('/api/game', 'POST', { seed: r.seed });
+  sampleHist(g, s);
+  // Paint BEFORE the first search: its opening think can take seconds, and a badge
+  // reading "idle" while the AI is actually grinding is a lie.
+  paintBadge(s.nodes, false);
+  for (let guard = 0; guard < 4000 && !s.over; guard++) {
+    const res = await aiApi(`/api/game/${s.id}/search`, 'POST', { sims: AI_SIMS });
+    const b = res.best;
+    const q = res.winexp;
+    if (!b || b.action === -1) {
+      g.moves.push({ e: 1, q });
+      s = await aiApi(`/api/game/${s.id}/end-turn`, 'POST');
+    } else {
+      g.moves.push({ a: [b.from, b.to], q, l: mkLabel(s, b.from, b.to) });
+      s = await aiApi(`/api/game/${s.id}/attack`, 'POST', { from: b.from, to: b.to });
+    }
+    sampleHist(g, s);
+    // ambient badge: blurred+grey board. No seed/turn/win%/result readout —
+    // that would spoil the seed you're playing.
+    paintBadge(s.nodes, false);
+    if (g.moves.length % 4 === 0) save();        // throttled: full-state write per move is wasteful
+    await sleep(0);                              // yield so the UI stays smooth
+  }
+  recordEnd(g, s);
+  save();
+  renderStrip();
+  refreshSeedPanel(i);                  // an analysis open on this seed fills in now
+  // If you already finished this seed, the pair is complete — reveal it.
+  if (r.you.result) revealPair(i);
 }
 
-// Wide, short, subtle line graph of win expectation across the game so far.
-function drawWinGraph() {
-  const cv = document.getElementById('wingraph');
-  if (!cv) return;
+// A finished pair is the only informative unit: say so, without nagging.
+function revealPair(i) {
+  const r = M.rounds[i];
+  if (i !== M.idx - 1 && i !== M.idx) return;      // only chatter about the recent one
+  if (!r.you.result || !r.ai.result) return;
+  if (r.you.result === r.ai.result)
+    setStatus(r.you.result === 'won' ? `Seed ${i + 1}: you both won it.`
+                                     : `Seed ${i + 1}: you both lost it — dice, not you.`);
+  else
+    setStatus(r.you.result === 'won' ? `Seed ${i + 1}: you won it, the AI didn't.`
+                                     : `Seed ${i + 1}: the AI won the seed you lost.`);
+}
+
+// ============================ your play ============================
+// Fully blind: no search is ever issued on your worker while you play. (The opt-in
+// sweep-up offer below used to be an exception; it now certifies its mop-up policy
+// by playing the policy out, so there is no exception left.)
+async function startSeed() {
+  const r = cur();
+  const res = await api('/api/game', 'POST', { seed: r.seed });
+  r.startNodes = res.nodes.map(n => ({ x: n.x, y: n.y, owner: n.owner, strength: n.strength }));
+  r.you.moves = []; r.you.hist = [];
+  save();
+  adopt(res); resize(); renderStrip();
+  sampleHist(r.you, res); save();
+  setStatus('Select a red node to attack.');
+  aiPump();                                    // the AI starts this seed too, right now
+}
+
+function adopt(s) {
+  state = s;
+  board.setView(s);
+  renderHeader();
+  board.draw();
+}
+
+async function yourAttack(from, to) {
+  inputLocked = true; board.abort = false; cancelSweepOffer();
+  board.selected = null; board.battle = { from, to }; board.draw();
+  setStatus('Attacking…');
+  cur().you.moves.push({ a: [from, to], l: mkLabel(state, from, to) });
+  const res = await api(`/api/game/${state.id}/attack`, 'POST', { from, to });
+  const e = res.log && res.log[0];
+  if (e && e.flips && !board.instant) await board.animateBattle(e);
+  board.battle = null;
+  adopt(res); sampleHist(cur().you, res); save();
+  // No node ids (the board never labels them) and no repel remnant (always 1).
+  setStatus(e ? (e.captured ? 'Captured!' : 'Repelled.') : 'Done.');
+  inputLocked = false;
+  if (recordEnd(cur().you, res)) await afterYourGame();
+  else maybeOfferSweep();
+}
+
+async function yourEndTurn() {
+  if (!state || state.over || inputLocked) return;
+  inputLocked = true; board.abort = false; cancelSweepOffer();
+  board.selected = null; board.draw();
+  setStatus('Ending turn…');
+  cur().you.moves.push({ e: 1 });
+  const res = await api(`/api/game/${state.id}/end-turn`, 'POST');
+  if (res.events && res.events.length && !board.instant) await board.animateEndTurn(res, setStatus);
+  inputLocked = false;
+  adopt(res); sampleHist(cur().you, res); save();
+  if (recordEnd(cur().you, res)) { await afterYourGame(); return; }
+  setStatus('Your move.');
+  maybeOfferSweep();
+}
+
+async function afterYourGame() {
+  const i = M.idx, r = M.rounds[i];
+  const lost = r.you.result === 'lost';
+  renderStrip();
+  setStatus(lost ? 'You lost this seed.' : 'You WON this seed.');
+  await sleep(1000);
+  if (r.ai.result) revealPair(i);
+  else setStatus('AI still playing — next seed dealt.');
+  await sleep(lost ? 600 : 1400);
+  // straight on to the next seed; the AI catches up in its own time
+  M.rounds.push(blankRound(randSeed()));
+  M.idx = M.rounds.length - 1;
+  save();
+  await startSeed();
+  // A loss is the interesting case — open its analysis and start scoring immediately.
+  // The next seed is already dealt underneath, so closing drops you straight into it.
+  if (lost) openSeed(i);
+}
+
+$('cv').addEventListener('pointerdown', (ev) => {
+  if (!M || !state || state.over || inputLocked || sweeping) return;
+  const b = $('cv').getBoundingClientRect();
+  const n = board.hitNode(ev.clientX - b.left, ev.clientY - b.top);
+  if (!n) { board.selected = null; board.draw(); return; }
+  if (board.selected !== null && board.targetsFor.get(board.selected)?.has(n.id)) {
+    yourAttack(board.selected, n.id); return;
+  }
+  if (n.id === board.selected) {
+    board.selected = null; setStatus('Select a red node to attack.'); board.draw(); return;
+  }
+  if (n.owner === 'red' && n.strength > 1 && board.targetsFor.has(n.id)) {
+    board.selected = n.id; setStatus('Tap a highlighted node to attack.');
+  } else {
+    board.selected = null;
+    if (n.owner === 'red') setStatus('No attackable neighbors.');
+  }
+  board.draw();
+});
+$('endturn').onclick = () => { if (!sweeping) yourEndTurn(); };
+$('aibadge').onclick = () => showResults();
+
+// ============================ sweep-up ============================
+// Off-by-default assist (nwSweep toggle): after each of
+// your moves the worker certifies the mop-up policy from fast_engine.c by PLAYING
+// IT OUT SWEEP_TRIALS times on fresh dice; if none of them lose, a banner offers to
+// auto-play the rest with it — through yourAttack/yourEndTurn, so swept moves are
+// recorded, animated and scored exactly like taps. It re-certifies before every
+// swept action (looser bar) and hands the game back if the dice turn.
+//
+// This replaces a gate that asked the search "does every root move win >99.95%?",
+// which was wrong in a way that mattered here: measured over 190 games it fired in
+// 188 of them at a median of turn 3 / 10 RED nodes and the mop-ups it authorized
+// lost 5.3% of the time (solver/sweep_audit.py) — it was handing LIVE games to a
+// greedy policy, and those moves then went into your move list and your decision
+// score as if you had chosen them. A certificate of the actual policy also removes
+// the "your worker never searches" exception entirely: playouts are not searches,
+// so this page's worker now issues ZERO searches while you play, full stop.
+const SWEEP_TRIALS = 1000, SWEEP_STEP_TRIALS = 400, SWEEP_STEP_LOSSES = 2;
+let sweepOn = false, sweeping = false, sweepDismissed = -1, sweepSeq = 0;
+function hideSweep() { $('sweep').classList.remove('show'); }
+// A committed move invalidates any in-flight detection (the worker aborts it,
+// but its early result must not pop a stale offer for the pre-move position).
+function cancelSweepOffer() { ++sweepSeq; hideSweep(); }
+function setSweep(on) {
+  sweepOn = on;
+  $('mi-sweep').classList.toggle('sel', on);
+  try { localStorage.setItem('nwSweep', on ? '1' : '0'); } catch (_) {}
+  if (!on) { ++sweepSeq; hideSweep(); }
+}
+(function loadSweep() {
+  let v; try { v = localStorage.getItem('nwSweep'); } catch (_) {}
+  sweepOn = v === '1';
+  $('mi-sweep').classList.toggle('sel', sweepOn);
+})();
+$('mi-sweep').onclick = () => setSweep(!sweepOn);
+
+async function maybeOfferSweep() {
+  if (!sweepOn || sweeping || !state || state.over) return;
+  if (sweepDismissed === M.idx) return;                // dismissed for this seed
+  const my = ++sweepSeq, gid = state.id;
+  const res = await api(`/api/game/${gid}/sweep-check`, 'POST', { trials: SWEEP_TRIALS });
+  if (my !== sweepSeq || sweeping || !state || state.id !== gid || state.over) return;
+  if (res.ok) $('sweep').classList.add('show');
+}
+$('sw-x').onclick = () => { sweepDismissed = M ? M.idx : -1; hideSweep(); };
+$('sw-go').onclick = () => runSweep();
+
+async function runSweep() {
+  if (sweeping || !state || state.over || inputLocked) return;
+  hideSweep();
+  sweeping = true;
+  const gid = state.id;
+  let bailed = false;
+  try {
+    let guard = 400;                     // terminal-or-bust backstop, never hit in a won game
+    // afterYourGame deals the next seed inside yourAttack/yourEndTurn, so a
+    // changed game id is the loop's "this seed finished" signal.
+    while (state && state.id === gid && !state.over && guard--) {
+      // Re-certify before committing: the dice keep rolling as the mop-up plays, so
+      // "won when you pressed the button" is not the same claim as "still won now".
+      const chk = await api(`/api/game/${gid}/sweep-check`, 'POST',
+        { trials: SWEEP_STEP_TRIALS, maxLosses: SWEEP_STEP_LOSSES });
+      if (!chk.ok) { bailed = true; break; }
+      const m = chk.move;                // from C — the same policy that was certified
+      if (m) await yourAttack(m.from, m.to);
+      else await yourEndTurn();
+    }
+  } finally {
+    sweeping = false;
+    if (bailed && state && state.id === gid && !state.over)
+      setStatus('Sweep stopped — no longer a sure win.');
+  }
+}
+
+// ============================ tally ============================
+function showResults() {
+  const s = stats();
+  const yn = s.yw + s.yl, an = s.aw + s.al;
+  const paired = s.both + s.onlyYou + s.onlyAI + s.neither;
+
+  $('res-title').textContent = `Tally · ${paired} pair${paired === 1 ? '' : 's'} complete`;
+  $('res-body').innerHTML = `
+    <div id="score">
+      <div class="sc ${s.yw > s.aw ? 'lead' : ''}"><div class="who">You</div>
+        <div class="n">${s.yw}–${s.yl}</div>
+        <div class="pct">${yn ? Math.round(100 * s.yw / yn) : 0}% win</div></div>
+      <div class="sc ${s.aw > s.yw ? 'lead' : ''}"><div class="who">AI</div>
+        <div class="n">${s.aw}–${s.al}</div>
+        <div class="pct">${an ? Math.round(100 * s.aw / an) : 0}% win</div></div>
+    </div>
+    <div id="rows"></div>`;
+
+  const rows = $('rows');
+  for (let i = M.rounds.length - 1; i >= 0; i--) {
+    const r = M.rounds[i];
+    if (!r.you.result && !r.you.moves.length) continue;      // untouched current seed
+    const row = document.createElement('div');
+    row.className = 'srow';
+    const c = document.createElement('canvas'); c.width = 46; c.height = 46;
+    const meta = document.createElement('div'); meta.className = 'meta';
+    const scored = r.you.review && !r.you.review.partial ? `<div class="loss">scored ✓</div>` : '';
+    meta.innerHTML = `<div class="sd">#${i + 1} · seed ${r.seed}</div>`
+      + `<div class="vs">You ${resTag(r.you.result)} &nbsp;·&nbsp; AI ${resTag(r.ai.result)}</div>${scored}`;
+    const go = document.createElement('div'); go.className = 'go'; go.textContent = '›';
+    row.appendChild(c); row.appendChild(meta); row.appendChild(go);
+    row.onclick = () => { closeRes(); openSeed(i, { fromResults: true }); };
+    rows.appendChild(row);
+    if (r.startNodes) drawThumb(c, r.startNodes);
+  }
+  $('ov-res').classList.add('show');
+}
+
+$('tally').onclick = showResults;
+const closeRes = () => $('ov-res').classList.remove('show');
+$('res-close').onclick = closeRes;
+$('res-close2').onclick = closeRes;
+$('res-reset').onclick = () => {
+  if (!confirm('Reset the whole tally? Every seed, result and review is discarded.')) return;
+  try { localStorage.removeItem(KEY); } catch (_) {}
+  location.reload();
+};
+
+// ============================ red-power graph ============================
+// ONE graph, both players: red node count per turn, you vs the AI on the same axes —
+// the whole point is the comparison, and two separate panels made you eyeball it.
+// Node count (not total strength) is the plotted power: it's the win condition (24).
+const YOU_COL = '#5fd0d6', AI_COL = '#f5c542';
+function drawPower(cv, you, ai) {
   const dpr = window.devicePixelRatio || 1;
   const rect = cv.getBoundingClientRect();
   const W = Math.max(1, Math.round(rect.width)), H = Math.max(1, Math.round(rect.height));
@@ -536,531 +747,448 @@ function drawWinGraph() {
   const g = cv.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, W, H);
-  const padY = 3;
-  const yOf = v => padY + (1 - v) * (H - 2*padY);
-  // faint 50% reference line
-  g.strokeStyle = 'rgba(255,255,255,.10)'; g.lineWidth = 1;
-  g.beginPath(); g.moveTo(0, yOf(0.5) + 0.5); g.lineTo(W, yOf(0.5) + 0.5); g.stroke();
-  // Anchor every game's curve at a 100% "data point 0" so a fresh graph reads as
-  // a line dropping from full strength rather than a lone dot.
-  const pts = [1, ...winSeries];
-  const n = pts.length;
-  const xOf = i => n === 1 ? W/2 : (i/(n-1)) * W;
-  // the line itself
-  g.beginPath();
-  g.moveTo(xOf(0), yOf(pts[0]));
-  for (let i = 1; i < n; i++) g.lineTo(xOf(i), yOf(pts[i]));
-  g.strokeStyle = 'rgba(95,208,214,.85)'; g.lineWidth = 1.6; g.lineJoin = 'round'; g.stroke();
-  // a dot at every datapoint (current value drawn brighter)
-  for (let i = 0; i < n; i++) {
-    g.fillStyle = i === n - 1 ? '#eafdf6' : '#bfe';
-    g.beginPath(); g.arc(xOf(i), yOf(pts[i]), 2, 0, Math.PI*2); g.fill();
-  }
-}
-
-function renderAI() {
-  const wp = document.getElementById('winpct');
-  const sg = document.getElementById('sugg');
-  drawWinGraph();
-  if (searching && !suggestions.length) {
-    wp.textContent = 'thinking…';
-    sg.innerHTML = '<div class="sg muted">searching…</div>';
+  const all = [...you, ...ai];
+  const padL = 5, padR = 5, padT = 6, padB = 5;
+  const maxT = Math.max(2, ...all.map(p => p.t));
+  const maxN = Math.max(WIN_NODES, ...all.map(p => p.n));
+  const xOf = (t) => padL + (t - 1) / (maxT - 1) * (W - padL - padR);
+  const yOf = (v) => padT + (1 - v / maxN) * (H - padT - padB);
+  if (!all.length) {
+    g.fillStyle = '#5f9e8e'; g.font = '11px -apple-system, sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('no data yet', W / 2, H / 2);
     return;
   }
-  const w = state && state._winexp != null ? state._winexp : null;
-  // while a search streams, append its live sim count so the convergence is visible
-  const simTag = searching && searchSims ? ` · ${Math.round(searchSims/1000)}k` : '';
-  wp.textContent = w != null ? `${Math.round(w*100)}% win${simTag}` : (searching ? 'thinking…' : '—');
-  sg.innerHTML = '';
-  if (!suggestions.length) {
-    sg.innerHTML = '<div class="sg muted">no suggestions</div>';
-    return;
-  }
-  suggestions.forEach((m, i) => {
-    const row = document.createElement('div');
-    row.className = 'sg' + (i===0 ? ' top' : '');
-    let label;
-    if (m.action === -1) {
-      label = `<span class="lbl">End turn</span>`;
-    } else {
-      const f = state.nodes[m.from], t = state.nodes[m.to];
-      if (!f || !t) return;          // stale suggestion from a superseded board — skip, never crash
-      label = `${pip(f.owner, f.strength)}<span class="arrow">${dirArrow(f, t)}</span>${pip(t.owner, t.strength)}`
-            + `<span class="lbl"></span>`;
-    }
-    row.innerHTML = `<span class="rk">${i+1}</span>${label}`
-      + `<span class="bar"><i style="width:${Math.round(m.frac*100)}%"></i></span>`
-      + `<span class="q">${Math.round(m.q*100)}%</span>`;
-    row.onclick = () => playSuggestion(m);
-    if (m.action !== -1) {                  // hovering a real attack previews it on the grid
-      row._move = { from: m.from, to: m.to };
-      row.onmouseenter = () => { board.hoverMove = row._move; board.draw(); };
-      row.onmouseleave = () => { board.hoverMove = null; board.draw(); };
-    }
-    sg.appendChild(row);
-  });
-  syncHoverToCursor();   // rows were rebuilt — match the preview to whatever is now under the cursor
+  // the 24-node win line
+  g.strokeStyle = 'rgba(54,211,154,.30)'; g.lineWidth = 1; g.setLineDash([3, 4]);
+  g.beginPath(); g.moveTo(0, yOf(WIN_NODES) + .5); g.lineTo(W, yOf(WIN_NODES) + .5); g.stroke();
+  g.setLineDash([]);
+  const series = (h, col) => {
+    if (!h.length) return;
+    g.beginPath();
+    h.forEach((p, i) => i ? g.lineTo(xOf(p.t), yOf(p.n)) : g.moveTo(xOf(p.t), yOf(p.n)));
+    g.strokeStyle = col; g.lineWidth = 2.1; g.lineJoin = 'round';
+    g.shadowColor = col; g.shadowBlur = 5; g.stroke(); g.shadowBlur = 0;
+    const last = h[h.length - 1];
+    g.fillStyle = col;
+    g.beginPath(); g.arc(xOf(last.t), yOf(last.n), 3, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#02100b'; g.lineWidth = 1; g.stroke();
+  };
+  series(ai, AI_COL);          // AI first so your line reads on top
+  series(you, YOU_COL);
 }
 
-async function playSuggestion(m) {
-  if (inputLocked || !state || state.over) return;
-  board.hoverMove = null; board.draw();   // drop the yellow preview the moment the move is taken
-  if (m.action === -1) { endTurn(); return; }
-  await doAttack(m.from, m.to);
-}
-
-// ---- Blunder alert: grade every committed move against the search's best. If the
-// chosen move's win expectation trails best by >= the selected threshold, a banner
-// slides up with the severity tier and an Undo. The check uses only pre-move Qs
-// (decision quality, not dice luck) and never reveals WHICH move was best, so it
-// works as hint-free training with the AI panel hidden. ----
-const BL_TIERS = [
-  { min: 20, label: 'Blunder',    color: '#ff4d5e' },
-  { min: 10, label: 'Mistake',    color: '#ff9f45' },
-  { min: 5,  label: 'Inaccuracy', color: '#f5c542' },
+// ============================ per-seed detail ============================
+const TIERS = [
+  { min: 20, k: 3, label: 'Blunder' },
+  { min: 10, k: 2, label: 'Mistake' },
+  { min: 5,  k: 1, label: 'Inaccuracy' },
 ];
+// Outside this win% band the game is already decided and no choice can change it.
+const DEAD_LO = 0.02, DEAD_HI = 0.98;
+const tierOf = (gap) => (TIERS.find(t => gap >= t.min) || { k: 0, label: 'OK' });
 
-// Snapshot the current search's verdict on a move BEFORE committing it (the commit
-// supersedes searchAll). action -1 = end turn, else an attack from->to.
-function blunderEval(action, from, to) {
-  if (!blunderThresh || autoplay || !searchAll.length) return null;
-  const best = searchAll[0];
-  const mine = searchAll.find(m => action === -1
-    ? m.action === -1 : (m.from === from && m.to === to));
-  if (!mine || !mine.visits) return null;   // unvisited move — no reliable Q, stay quiet
-  return { gap: (best.q - mine.q) * 100, myQ: mine.q };
+let sdIdx = 0, sdTab = 'you', sdSel = -1, ib = null, sdFromResults = false;
+
+function mvLabel(l) {
+  if (l === 'end' || !l) return '<span class="lbl">End turn</span>';
+  return `<span class="pip ${l.f.owner}">${l.f.strength}</span>`
+       + `<span class="arrow">${dirArrow(l.f, l.t)}</span>`
+       + `<span class="pip ${l.t.owner}">${l.t.strength}</span><span class="lbl"></span>`;
 }
 
-function maybeShowBlunder(ev) {
-  if (!ev || ev.gap < blunderThresh) return;
-  const tier = BL_TIERS.find(t => ev.gap >= t.min) || BL_TIERS[BL_TIERS.length - 1];
-  const el = document.getElementById('blunder');
-  el.style.setProperty('--bl', tier.color);
-  document.getElementById('bl-tier').textContent = tier.label;
-  document.getElementById('bl-sub').textContent =
-    `−${Math.round(ev.gap)}% win vs best move`;
-  el.classList.remove('show');   // retrigger the slide-up if it was already showing
-  void el.offsetWidth;
-  el.classList.add('show');
+const resTag = (x) => `<span class="tag ${x || 'none'}">${x === 'won' ? 'W' : x === 'lost' ? 'L' : '—'}</span>`;
+// Only a finished game gets a final score — mid-game the AI's node count is not a
+// result and must not be dressed up as one.
+const sdFin = (side) => !side.hist.length ? 'queued'
+  : !side.result ? 'still playing…'
+  : `${side.red} node${side.red === 1 ? '' : 's'} · ${side.turns} turn${side.turns === 1 ? '' : 's'}`;
+const sdTitle = (i, r) => `Seed ${i + 1} · You ${resTag(r.you.result)} AI ${resTag(r.ai.result)}`;
+const sdLegend = (r) => `
+  <span><i style="background:${YOU_COL}"></i>You — ${sdFin(r.you)}</span>
+  <span><i style="background:${AI_COL}"></i>AI — ${sdFin(r.ai)}</span>
+  <span><i class="dash"></i>${WIN_NODES} to win</span>`;
+
+// The AI plays concurrently, so an analysis auto-opened after your loss usually shows
+// its half unfinished. Fill it in the moment it lands rather than leaving a stale
+// "still playing…" / "AI moves (0)" panel that never updates. Deliberately does NOT
+// re-run openSeed: that would reset your tab, selection and re-trigger scoring.
+function refreshSeedPanel(i) {
+  if (!$('ov-seed').classList.contains('show') || sdIdx !== i) return;
+  const r = M.rounds[i];
+  $('sd-title').innerHTML = sdTitle(i, r);
+  $('glegend').innerHTML = sdLegend(r);
+  drawPower($('pg'), r.you.hist, r.ai.hist);
+  const tab = document.querySelector('#sd-tabs > div[data-tab="ai"]');
+  if (tab) tab.textContent = `AI moves (${r.ai.moves.length})`;
+  if (sdTab === 'ai') { renderList(); select(0); }     // its list was empty before
 }
 
-function hideBlunder() { document.getElementById('blunder').classList.remove('show'); }
-document.getElementById('bl-x').onclick = hideBlunder;
-document.getElementById('bl-undo').onclick = () => requestUndo();
-
-function updateBlunderMenu() {
-  document.querySelectorAll('#menupop .bl').forEach(el =>
-    el.classList.toggle('sel', +el.dataset.bl === blunderThresh));
+function openSeed(i, opts = {}) {
+  sdIdx = i; sdSel = -1;
+  sdFromResults = !!opts.fromResults;
+  const r = M.rounds[i];
+  $('sd-title').innerHTML = sdTitle(i, r);
+  $('sd-body').innerHTML = `
+    <h3>Red nodes over the game</h3>
+    <canvas class="pg" id="pg"></canvas>
+    <div id="glegend">${sdLegend(r)}</div>
+    <h3>Step through the moves</h3>
+    <div id="ibwrap"><canvas id="ib"></canvas></div>
+    <div id="ibcap">
+      <span id="ibinfo">Tap a move below to see the board it was played into.</span>
+      <span class="nav"><span class="act" id="ib-prev">‹</span><span class="act" id="ib-next">›</span></span>
+    </div>
+    <div class="tabs" id="sd-tabs">
+      <div data-tab="you" class="sel">Your moves (${r.you.moves.length})</div>
+      <div data-tab="ai" class="ai">AI moves (${r.ai.moves.length})</div>
+    </div>
+    <div id="sd-list"></div>`;
+  // Show BEFORE painting: every canvas here sizes itself from getBoundingClientRect,
+  // which is 0x0 while the overlay is still display:none.
+  $('ov-seed').classList.add('show');
+  ib = new Board($('ib'), $('ibwrap'));
+  drawPower($('pg'), r.you.hist, r.ai.hist);
+  document.querySelectorAll('#sd-tabs > div').forEach(el => {
+    el.onclick = () => {
+      sdTab = el.dataset.tab; sdSel = -1;
+      document.querySelectorAll('#sd-tabs > div').forEach(d => d.classList.toggle('sel', d === el));
+      renderList();
+      select(0);                          // never leave the inspector blank
+    };
+  });
+  $('ib-prev').onclick = () => step(-1);
+  $('ib-next').onclick = () => step(1);
+  sdTab = 'you';
+  renderList();
+  select(0);
+  // Scoring IS the analysis — start it the moment the panel opens, no button.
+  if (!r.you.review && r.you.moves.length) runReview(i);
 }
-function setBlunder(v) {
-  blunderThresh = v;
-  try { localStorage.setItem('nwBlunder', String(v)); } catch (_) {}
-  updateBlunderMenu();
-  if (!v) hideBlunder();
-  // panel hidden + no search running for it yet — start grading this position now
-  else if (!aiOn && !autoplay && !searching && state && !state.over) requestSearch();
-}
-(function loadBlunder() {
-  let v; try { v = localStorage.getItem('nwBlunder'); } catch (_) {}
-  // ON by default at the middle tier; an explicit stored '0' keeps it off
-  blunderThresh = v == null ? 10 : ([5, 10, 20].includes(+v) ? +v : 0);
-  updateBlunderMenu();
-})();
-document.querySelectorAll('#menupop .bl').forEach(el => {
-  el.onclick = () => setBlunder(+el.dataset.bl);   // leave menu open so the check shows
-});
+// Back returns wherever you came from: the tally if you drilled in from it, otherwise
+// (auto-opened after a loss) straight back to the seed you're now playing.
+$('sd-close').onclick = () => {
+  $('ov-seed').classList.remove('show');
+  if (sdFromResults) showResults();
+};
 
-// ---- layout: the Board fits the canvas; the win graph is this page's own ----
-function resize() {
-  drawWinGraph();
-  board.resize();
-}
-
-async function doAttack(from, to) {
-  const bev = blunderEval(0, from, to);   // grade the choice before it supersedes the search
-  hideBlunder();
-  board.hoverMove = null;
-  inputLocked = true; board.abort = false;
-  // Commit frame, drawn synchronously on the tap: the selection collapses to the
-  // one chosen edge using the SAME battle highlight the replay draws, so the glow
-  // acknowledges the choice instantly and never drops while the worker (which may
-  // be mid-search-chunk) resolves the attack.
-  board.selected = null;
-  board.battle = { from, to };
-  board.draw();
-  setStatus('Attacking…');
-  const res = await api(`/api/game/${state.id}/attack`, 'POST', { from, to });
-  maybeShowBlunder(bev);                  // pre-move verdict — show it during the replay, not after
-  const e = res.log && res.log[0];
-  if (e && e.flips && !instant()) await board.animateBattle(e);   // state stays pre-attack during replay
-  board.battle = null;                    // instant mode / no replay: drop the commit highlight
-  // setView drops the selection — every attack ends unselected, so the next
-  // attacker is picked fresh.
-  state = res; noteState(res); board.setView(res); renderHeader();
-  setStatus(e ? (e.captured ? `Captured node ${e.to}!`
-                            : `Attack on ${e.to} repelled (left ${e.fromStrength}).`) : 'Done.');
-  inputLocked = false;
-  board.draw();
-  if (pendingUndo) { pendingUndo = false; await performUndo(); return; }
-  if (state.over) { suggestions = []; renderAI(); showModal(); }
-  else requestSearch();
-}
-
-async function onTap(mx, my) {
-  if (!state || state.over || inputLocked) return;
-  const n = board.hitNode(mx, my);
-  if (!n) { board.selected = null; board.draw(); return; }
-  if (board.selected !== null && board.targetsFor.get(board.selected)?.has(n.id)) {
-    await doAttack(board.selected, n.id);
+function renderList() {
+  const r = M.rounds[sdIdx];
+  const side = sdTab === 'you' ? r.you : r.ai;
+  const list = $('sd-list');
+  list.innerHTML = '';
+  if (!side.moves.length) {
+    list.innerHTML = `<div class="spin">${sdTab === 'ai'
+      ? 'The AI hasn\'t finished this seed yet.' : 'No moves recorded.'}</div>`;
     return;
   }
-  if (n.id === board.selected) {           // tapping the selected node deselects it
-    board.selected = null; setStatus('Select a red node to attack.'); board.draw(); return;
-  }
-  if (n.owner === 'red' && n.strength > 1 && board.targetsFor.has(n.id)) {
-    board.selected = n.id; setStatus('Tap a highlighted enemy node to attack.');
-  } else {
-    board.selected = null;
-    if (n.owner === 'red') setStatus('That node has no attackable neighbors.');
-  }
-  board.draw();
-}
-
-function setStatus(t) { document.getElementById('status').textContent = t; }
-
-cv.addEventListener('pointerdown', (ev) => {
-  const b = cv.getBoundingClientRect();
-  onTap(ev.clientX - b.left, ev.clientY - b.top);
-});
-
-async function endTurn() {
-  if (!state || state.over || inputLocked) return;
-  const bev = blunderEval(-1);         // ending the turn is a graded choice too
-  hideBlunder();
-  inputLocked = true; board.abort = false;
-  board.selected = null; suggestions = []; renderAI();
-  board.draw();                        // ack the press instantly: selection glow drops now
-  setStatus('Ending turn…');
-  const res = await api(`/api/game/${state.id}/end-turn`, 'POST');
-  maybeShowBlunder(bev);               // pre-move verdict — up front, not after the whole replay
-  const caps = (res.events||[]).filter(e => e.type==='attack' && e.captured).length;
-  if (res.events && res.events.length && !instant()) await board.animateEndTurn(res, setStatus);
-  inputLocked = false;
-  if (pendingUndo) { pendingUndo = false; await performUndo(); return; }
-  setState(res, true);                 // adopt authoritative final board + re-search (keep the banner)
-  if (!res.over) setStatus(`Bots captured ${caps} node(s). Your move.`);
-}
-document.getElementById('endturn').onclick = endTurn;
-
-// Undo entry point (Undo Mode's footer button + the blunder banner's Undo). If a
-// battle replay holds inputLocked, flag it to fast-forward and let the mover's
-// tail run the undo the moment the lock drops — a click must never be swallowed.
-async function requestUndo() {
-  if (!state || autoplay || sweeping) return;      // the autoplay/sweep loop owns the game
-  hideBlunder();
-  if (inputLocked) { board.abort = true; pendingUndo = true; setStatus('Undoing…'); return; }
-  await performUndo();
-}
-
-// Exact rewind of one player action (an attack, or a whole end-turn incl. all bots) —
-// also works on a just-ended game (close the modal, then Undo the losing move).
-async function performUndo() {
-  if (!state || inputLocked || autoplay) return;
-  ++searchId; searching = false;   // drop the in-flight search — its position is being rewound
-  const res = await api(`/api/game/${state.id}/undo`, 'POST');
-  if (res.nothingToUndo) { setStatus('Nothing to undo.'); requestSearch(); return; }
-  hideModal();
-  // un-stamp a finished game's history row: it's live again after the rewind
-  if (curEntry && curEntry.result !== 'live' && !res.over) {
-    curEntry.result = 'live'; delete curEntry.finalCounts; delete curEntry.turns;
-    saveHistory(); updateRecord();
-  }
-  setState(res);
-  setStatus('Undid your last move.');
-}
-
-// The footer's left action is Surrender, or Undo when Undo Mode is on (menu toggle).
-document.getElementById('surrender').onclick = async () => {
-  if (!state) return;
-  if (undoOn) { await requestUndo(); return; }
-  if (inputLocked || state.over) return;
-  if (!confirm('Surrender this game?')) return;
-  const res = await api(`/api/game/${state.id}/surrender`, 'POST');
-  setState(res);
-};
-
-// Undo Mode: replaces the Surrender button with Undo. Persisted across sessions.
-let undoOn = false;
-function setUndoMode(on) {
-  undoOn = on;
-  document.getElementById('mi-undo').classList.toggle('sel', on);
-  document.getElementById('surrender').textContent = on ? 'Undo' : 'Surrender';
-  try { localStorage.setItem('nwUndo', on ? '1' : '0'); } catch (_) {}
-}
-(function loadUndoMode() {
-  let v; try { v = localStorage.getItem('nwUndo'); } catch (_) {}
-  setUndoMode(v === '1');
-})();
-document.getElementById('mi-undo').onclick = () => setUndoMode(!undoOn);
-
-// ---- sweep-up: offer to auto-play the rest of a won game with the mop-up policy
-// in fast_engine.c (the real bot's aggression rule: strongest attacker first, hit
-// any strictly weaker neighbor, else end turn). Off by default; the nwSweep toggle
-// is shared with head-to-head. Dismissing silences it for the rest of that game.
-//
-// The gate is a CERTIFICATE OF THAT POLICY, not a win% off the search: the worker
-// plays the mop-up to the end SWEEP_TRIALS times on fresh dice and the offer
-// appears only if none of them lose. The old gate ("the search says every root move
-// wins >99.95%") asked the wrong question twice — it measured how the SEARCH would
-// play, and it read Qs averaged over a handful of rollouts, which say 1.0 long
-// before a position is decided. Measured over 190 games (solver/sweep_audit.py) it
-// fired in 188 of them at a median of turn 3 / 10 RED nodes, and the mop-ups it
-// authorized lost 5.3% of the time; the certificate is ~100x cheaper AND drops that
-// to ~0.07% (solver/sweep_variants.py). The sweep also re-checks before every
-// action against a slightly looser bar and hands the game back if the dice turn
-// (solver/sweep_final.py: 0 losses, and bailing on a single bad playout in 400
-// would give up on positions still winning 99.5%). ----
-const SWEEP_TRIALS = 1000, SWEEP_STEP_TRIALS = 400, SWEEP_STEP_LOSSES = 2;
-let sweepOn = false, sweeping = false, sweepDismissed = null;   // dismissed game id
-let sweepSeq = 0;                       // invalidates in-flight certificate checks
-function hideSweep() { document.getElementById('sweep').classList.remove('show'); }
-function cancelSweepOffer() { ++sweepSeq; hideSweep(); }
-function setSweep(on) {
-  sweepOn = on;
-  document.getElementById('mi-sweep').classList.toggle('sel', on);
-  try { localStorage.setItem('nwSweep', on ? '1' : '0'); } catch (_) {}
-  if (!on) cancelSweepOffer();
-  else maybeOfferSweep();               // no search needed — just certify this position
-}
-(function loadSweep() {
-  let v; try { v = localStorage.getItem('nwSweep'); } catch (_) {}
-  sweepOn = v === '1';
-  document.getElementById('mi-sweep').classList.toggle('sel', sweepOn);
-})();
-document.getElementById('mi-sweep').onclick = () => setSweep(!sweepOn);
-
-async function maybeOfferSweep() {
-  if (!sweepOn || autoplay || sweeping || !state || state.over) return;
-  if (sweepDismissed === state.id) return;
-  const my = ++sweepSeq, gid = state.id;
-  const res = await api(`/api/game/${gid}/sweep-check`, 'POST', { trials: SWEEP_TRIALS });
-  if (my !== sweepSeq || sweeping || !state || state.id !== gid || state.over) return;
-  if (res.ok) document.getElementById('sweep').classList.add('show');
-}
-document.getElementById('sw-x').onclick = () => { sweepDismissed = state && state.id; hideSweep(); };
-document.getElementById('sw-go').onclick = () => runSweep();
-
-async function runSweep() {
-  if (sweeping || !state || state.over || inputLocked) return;
-  cancelSweepOffer(); hideBlunder();
-  sweeping = true; inputLocked = true;
-  ++searchId; searching = false;         // drop the in-flight search; the sweep owns the game
-  board.selected = null; suggestions = []; searchAll = []; renderAI(); board.draw();
-  setStatus('Sweeping up…');
-  let bailed = false;
-  try {
-    let guard = 400;                     // terminal-or-bust backstop, never hit in a won game
-    while (state && !state.over && guard--) {
-      // Re-certify this position before committing to it: the mop-up plays on and
-      // the dice keep rolling, so "won when you pressed the button" is not the same
-      // claim as "still won now". Failing hands the wheel back mid-sweep.
-      const chk = await api(`/api/game/${state.id}/sweep-check`, 'POST',
-        { trials: SWEEP_STEP_TRIALS, maxLosses: SWEEP_STEP_LOSSES });
-      if (!chk.ok) { bailed = true; break; }
-      const m = chk.move;                // from C — the same policy that was certified
-      let res;
-      if (m) {
-        board.battle = { from: m.from, to: m.to }; board.draw();
-        res = await api(`/api/game/${state.id}/attack`, 'POST', { from: m.from, to: m.to });
-        const e = res.log && res.log[0];
-        if (e && e.flips && !instant()) await board.animateBattle(e);
-        board.battle = null;
-      } else {
-        res = await api(`/api/game/${state.id}/end-turn`, 'POST');
-        if (res.events && res.events.length && !instant()) await board.animateEndTurn(res, setStatus);
+  // Your list gets a Score button; the AI's moves already carry its own win%.
+  if (sdTab === 'you') {
+    const rv = side.review;
+    if (rv) {
+      const [ok, inacc, mist, blun] = rv.counts;
+      const sum = document.createElement('div');
+      // The stacked tier bar carries the whole summary. The per-move rows below are
+      // where the detail lives; aggregate cards and prose just restated them.
+      sum.innerHTML = `<div id="rvbar"></div>`;
+      list.appendChild(sum);
+      const bar = $('rvbar'), tot = Math.max(1, rv.nLive ?? rv.n);
+      for (const [c, col] of [[ok, '#36d39a'], [inacc, '#f5c542'], [mist, '#ff9f45'], [blun, '#ff4d5e']]) {
+        if (!c) continue;
+        const el = document.createElement('i');
+        el.style.width = (100 * c / tot) + '%'; el.style.background = col;
+        bar.appendChild(el);
       }
-      state = res; noteState(res); board.setView(res); renderHeader(); board.draw();
-    }
-  } finally {
-    sweeping = false; inputLocked = false;
-    if (state && state.over) { suggestions = []; renderAI(); showModal(); }
-    else {
-      setStatus(bailed ? 'Sweep stopped — this is no longer a sure win. Your move.'
-        : 'Sweep stopped. Your move.');
-      requestSearch();
+      // While rolling (rv.partial) the growing tier bar is the progress readout —
+      // no "Scoring… x/y" line, so nothing disappears (and reflows) on completion.
+    } else if (reviewErr[sdIdx] && !reviewing.has(sdIdx)) {
+      // Scoring starts automatically when the panel opens — the only interactive
+      // state left is a failed run, which stays tappable to retry.
+      const btn = document.createElement('div');
+      btn.className = 'act';
+      btn.style.cssText = 'text-align:center;padding:10px;border-radius:9px;'
+        + 'background:rgba(95,208,214,.10);border:1px solid rgba(95,208,214,.35);margin-bottom:12px';
+      btn.textContent = `Scoring failed — tap to retry (${reviewErr[sdIdx]})`;
+      btn.onclick = () => runReview(sdIdx);
+      list.appendChild(btn);
+    } else {
+      // first move's search still out — the tier bar takes over as soon as it lands
+      const p = document.createElement('div');
+      p.className = 'spin';
+      p.textContent = 'Scoring…';
+      list.appendChild(p);
     }
   }
+
+  const rv = sdTab === 'you' ? side.review : null;
+  side.moves.forEach((mv, k) => {
+    const sm = rv ? rv.moves[k] : null;
+    const t = (!sm || sm.gap == null || sm.dead) ? { k: 0 } : tierOf(sm.gap);
+    const row = document.createElement('div');
+    row.className = 'mv t' + t.k + (sm && sm.dead ? ' dead' : '') + (k === sdSel ? ' cur' : '');
+    // Labels are recorded at play time (mv.l), so both lists read as pips with no
+    // replay needed; the review's snapshot is an equivalent fallback. A move saved
+    // before labels existed falls back to raw ids — never to a wrong label.
+    const lb = mv.l || (sm && sm.label);
+    const lab = mv.e ? mvLabel('end')
+      : lb ? mvLabel(lb) : `<span class="lbl">${mv.a[0]} → ${mv.a[1]}</span>`;
+    const q = sm ? sm.myQ : mv.q;
+    const gapTxt = !sm ? (rv && rv.partial ? '…' : '') : sm.gap == null ? '—'
+      : sm.dead ? 'decided' : (sm.gap < 0.5 ? 'best' : `−${sm.gap.toFixed(0)}%`);
+    row.innerHTML = `<span class="no">${k + 1}</span>${lab}`
+      + `<span class="qq">${q != null ? Math.round(q * 100) + '%' : ''}</span>`
+      + `<span class="gap">${gapTxt}</span>`;
+    row.onclick = () => select(k);
+    if (canHover) row.onmouseenter = () => hoverPreview(k);
+    list.appendChild(row);
+    if (sm && sm.bestLbl && !sm.dead && sm.gap >= 5) {
+      const hint = document.createElement('div');
+      hint.className = 'mvbest';
+      hint.innerHTML = `best was ${mvLabel(sm.bestLbl)} · ${Math.round(sm.bestQ * 100)}%`;
+      list.appendChild(hint);
+    }
+  });
+  if (canHover) list.onmouseleave = hoverEnd;
 }
 
-// hamburger dropdown: New Game + animation speed
-const menupop = document.getElementById('menupop');
-function updateSpeedMenu() {
+// ---- move inspector: replay the seed to move k and show that exact board ----
+let inspectSeq = 0;
+// Paint the board as it stood going into move k (bit-exact replay from the seed).
+// Shared by tap-to-select and hover preview — only select() moves the selection.
+async function showMove(k) {
+  const r = M.rounds[sdIdx];
+  const side = sdTab === 'you' ? r.you : r.ai;
+  if (k < 0 || k >= side.moves.length) return;
+  const my = ++inspectSeq;
+  $('ibinfo').textContent = 'Replaying…';
+  // Replay on YOUR worker (idle while you're in a menu). Bit-exact from the seed.
+  let s = await api('/api/game', 'POST', { seed: r.seed });
+  for (let j = 0; j < k; j++) {
+    const mv = side.moves[j];
+    s = mv.e ? await api(`/api/game/${s.id}/end-turn`, 'POST')
+             : await api(`/api/game/${s.id}/attack`, 'POST', { from: mv.a[0], to: mv.a[1] });
+  }
+  if (my !== inspectSeq) return;                 // a newer selection superseded this
+  const mv = side.moves[k];
+  ib.setView(s);
+  // highlight the move about to be played
+  ib.hoverMove = mv.e ? null : { from: mv.a[0], to: mv.a[1] };
+  ib.resize();
+  // "You:"/"AI:" rather than a conjugated verb — "You ends the turn" read badly.
+  const who = sdTab === 'you' ? 'You' : 'AI';
+  $('ibinfo').innerHTML = `<b>Move ${k + 1}</b> · turn ${s.turn} · ${s.counts.red} red nodes`
+    + ` · ${who}: ${mv.e ? 'end turn' : `attack ${mv.a[0]} → ${mv.a[1]}`}`;
+}
+function select(k) {
+  const r = M.rounds[sdIdx];
+  const side = sdTab === 'you' ? r.you : r.ai;
+  if (k < 0 || k >= side.moves.length) return;
+  sdSel = k;
+  renderList();
+  showMove(k);
+}
+const step = (d) => select(sdSel < 0 ? 0 : sdSel + d);
+
+// Hovering a move row previews it on the board without moving the selection;
+// leaving the list snaps back to the selected move. Pointer devices only —
+// on touch the tap already selects. Debounced so sweeping the cursor down the
+// list doesn't fire a replay per row; inspectSeq makes stale replays no-ops.
+const canHover = matchMedia('(hover: hover)').matches;
+let hoverTimer = 0, hoverK = -1;
+function hoverPreview(k) {
+  if (k === hoverK) return;
+  hoverK = k;
+  clearTimeout(hoverTimer);
+  hoverTimer = setTimeout(() => showMove(k), 60);
+}
+function hoverEnd() {
+  clearTimeout(hoverTimer);
+  if (hoverK < 0) return;
+  hoverK = -1;
+  if (sdSel >= 0) showMove(sdSel);
+}
+
+const reviewing = new Set();   // round indices being scored (transient — never saved)
+const reviewErr = {};          // last scoring error per round index (transient)
+async function runReview(i) {
+  if (reviewing.has(i)) return;
+  reviewing.add(i);
+  delete reviewErr[i];
+  const r = M.rounds[i];
+  if (sdIdx === i && sdTab === 'you') renderList();  // swap a retry line to 'Scoring…'
+  try {
+    // Rolling readout: every scored move lands in r.you.review immediately
+    // (marked .partial, so renderList shows '…' pending rows) — the early
+    // rows are readable while the rest are still searching.
+    // Only the COMPLETE review is persisted; an interrupted scoring saves nothing.
+    r.you.review = await computeReview(i, (partial) => {
+      r.you.review = partial;
+      if (sdIdx === i && sdTab === 'you') renderList();
+    });
+    save();
+  } catch (e) {
+    r.you.review = null;
+    reviewErr[i] = String(e && e.message || e);
+  } finally {
+    reviewing.delete(i);
+  }
+  if (sdIdx === i && sdTab === 'you') renderList();
+}
+
+// Replay YOUR game from its seed and, at every decision you made, run a search and
+// score your choice against the search's best. This is the blunder-alert metric
+// applied retroactively to a whole game: it uses only PRE-move Qs, so it
+// grades the decision, never the dice that followed.
+async function computeReview(i, onPartial) {
+  const r = M.rounds[i];
+  const out = { moves: [], curve: [] };
+  let s = await api('/api/game', 'POST', { seed: r.seed });
+  for (let k = 0; k < r.you.moves.length; k++) {
+    const mv = r.you.moves[k];
+    const isEnd = !!mv.e;
+    const from = isEnd ? null : mv.a[0], to = isEnd ? null : mv.a[1];
+    // grade:true = the engine's grading mode — root min-visit floor + full budget on
+    // live positions + burn-in-free Qs, so YOUR move's Q is comparable to the best
+    // move's instead of a starved child's pessimistic estimate (which inflated gaps).
+    const res = await api(`/api/game/${s.id}/search`, 'POST',
+      { sims: REVIEW_SIMS, maxSims: REVIEW_MAX, grade: true });
+    const all = res.all || res.top || [];
+    const best = all[0] || null;
+    const mine = all.find(m => isEnd ? m.action === -1 : (m.from === from && m.to === to));
+    // Unvisited tail moves have no reliable Q — record the move but leave it unscored
+    // rather than inventing a number (same guard the live blunder alert uses).
+    const scored = !!(best && mine && mine.visits > 0);
+    const gap = scored ? Math.max(0, (best.q - mine.q) * 100) : null;
+    const label = isEnd ? null : { f: { ...s.nodes[from] }, t: { ...s.nodes[to] } };
+    const bestDiffers = scored && best !== mine;
+    const bestLbl = !bestDiffers ? null
+      : (best.action === -1 ? 'end' : { f: { ...s.nodes[best.from] }, t: { ...s.nodes[best.to] } });
+    // A position whose best move is already ~lost or ~won carries no decision signal:
+    // EVERY legal move scores gap 0 there, so counting those would flatter you (a
+    // thrown game reads as a long tail of "best" moves).
+    const dead = scored && (best.q <= DEAD_LO || best.q >= DEAD_HI);
+    out.moves.push({ n: k + 1, turn: s.turn, isEnd, label, bestLbl, dead,
+      myQ: scored ? mine.q : null, bestQ: best ? best.q : null, gap });
+    if (best && best.q != null) out.curve.push(+best.q.toFixed(4));
+    // Rolling: hand the caller a scored-so-far review after every move (marked
+    // .partial), aggregates included, so the list can render as scoring runs.
+    out.partial = { done: k + 1, total: r.you.moves.length };
+    onPartial(reviewAggregates(out));
+    s = isEnd
+      ? await api(`/api/game/${s.id}/end-turn`, 'POST')
+      : await api(`/api/game/${s.id}/attack`, 'POST', { from, to });
+  }
+  delete out.partial;
+  return reviewAggregates(out);
+}
+
+// Aggregates over LIVE decisions only (a decided position ties every move, so
+// counting those flatters the player). `counts` drives the tier bar; n/nLive/meanLoss
+// are recorded in the saved review but no longer shown — the per-move rows say it
+// better than a headline number did.
+function reviewAggregates(out) {
+  const sc = out.moves.filter(m => m.gap != null);
+  const live = sc.filter(m => !m.dead);
+  out.n = sc.length;
+  out.nLive = live.length;
+  out.meanLoss = live.length ? live.reduce((a, m) => a + m.gap, 0) / live.length : 0;
+  out.counts = [0, 0, 0, 0];
+  for (const m of live) out.counts[tierOf(m.gap).k]++;
+  return out;
+}
+
+// ============================ menu (hamburger) ============================
+// Seed sharing, the sweep-up toggle, and the animation-speed picker (moved here
+// from the footer).
+let speedName = 'medium';
+try { const v = localStorage.getItem('nwSpeed'); if (v && v in SPEEDS) speedName = v; } catch (_) {}
+board.speed = SPEEDS[speedName];
+const menupop = $('menupop');
+function renderSpeedMenu() {
   document.querySelectorAll('#menupop .sp').forEach(el =>
-    el.classList.toggle('sel', el.dataset.speed === animSpeed));
+    el.classList.toggle('sel', el.dataset.speed === speedName));
 }
-function setSpeed(s) {
-  animSpeed = s; board.speed = SPEEDS[s];
-  try { localStorage.setItem('nwSpeed', s); } catch (_) {}
-  updateSpeedMenu();
-}
-(function loadSpeed() {
-  let s; try { s = localStorage.getItem('nwSpeed'); } catch (_) {}
-  setSpeed(s && s in SPEEDS ? s : animSpeed);
-})();
-document.getElementById('menu').onclick = () => menupop.classList.toggle('show');
-document.getElementById('mi-new').onclick = () => {
-  menupop.classList.remove('show');
-  if (autoplay) setAutoplay(false);              // a manual new game stops autoplay
-  if (inputLocked) return;
-  if (state && !state.over && !confirm('Start a new game?')) return;
-  newGame();
-};
-document.getElementById('mi-auto').onclick = () => {
-  setAutoplay(!autoplay);                         // leave menu open so the check shows
-};
-// ---- seed sharing: the seed pins the whole deal (and dice stream), so copying
-// it is copying the game's start. Paste one to replay that exact deal — e.g. a
-// seed copied from head-to-head or from a friend. ----
-async function copySeed(seed) {
-  if (seed == null) { setStatus('This board has no seed (loaded from a capture).'); return; }
-  try { await navigator.clipboard.writeText(String(seed)); setStatus(`Seed ${seed} copied.`); }
-  catch (_) { prompt('Copy the seed:', String(seed)); }   // clipboard blocked — show it instead
-}
-const parseSeed = (v) => {
-  const s = parseInt(String(v).trim(), 10);
-  return Number.isInteger(s) && s >= 1 && s <= 0x7fffffff ? s : null;
-};
-document.getElementById('mi-copy').onclick = () => {
-  menupop.classList.remove('show');
-  copySeed(state && state.seed);
-};
-document.getElementById('mi-paste').onclick = () => {
-  menupop.classList.remove('show');
-  if (autoplay) setAutoplay(false);               // same rules as New Game
-  if (inputLocked) return;
-  const v = prompt('Paste a seed to replay its exact deal:');
-  if (v == null) return;
-  const seed = parseSeed(v);
-  if (!seed) { setStatus('Not a valid seed.'); return; }
-  if (state && !state.over && !confirm('Start a new game?')) return;
-  newGame(seed);
-};
-// Duplicate-format match vs the agent. The filename works under both server.py
-// (which also serves the extensionless /head-to-head) and plain static hosting.
-document.getElementById('mi-h2h').onclick = () => { location.href = 'head-to-head.html'; };
-// Hide AI features: drops the whole suggestions panel (board grows to fill) and
-// stops spending searches during manual play. Persisted across sessions.
-function setAI(on) {
-  aiOn = on;
-  document.body.classList.toggle('ai-off', !on);
-  document.getElementById('mi-ai').classList.toggle('sel', on);
-  try { localStorage.setItem('nwAI', on ? '1' : '0'); } catch (_) {}
-  resize();                                        // board reclaims/yields the panel's height
-  if (on && !autoplay && state && !state.over) requestSearch();
-}
-(function loadAI() {
-  let v; try { v = localStorage.getItem('nwAI'); } catch (_) {}
-  setAI(v == null ? true : v === '1');
-})();
-document.getElementById('mi-ai').onclick = () => setAI(!aiOn);
+renderSpeedMenu();
+$('menu').onclick = () => menupop.classList.toggle('show');
 document.querySelectorAll('#menupop .sp').forEach(el => {
-  el.onclick = () => setSpeed(el.dataset.speed);   // leave menu open so the check is visible
+  el.onclick = () => {
+    speedName = el.dataset.speed;
+    board.speed = SPEEDS[speedName];
+    try { localStorage.setItem('nwSpeed', speedName); } catch (_) {}
+    renderSpeedMenu();                   // leave the menu open so the check is visible
+  };
 });
-// Dismiss the menu on any tap outside it. pointerdown (not click) so it closes on
-// the first touch — on mobile a trailing synthetic click was unreliable, which made
-// the popup feel stuck open.
-document.addEventListener('pointerdown', (e) => {
-  if (menupop.classList.contains('show') && !document.getElementById('menuwrap').contains(e.target))
+document.addEventListener('click', (e) => {
+  if (menupop.classList.contains('show') && !$('menuwrap').contains(e.target))
     menupop.classList.remove('show');
 });
 
-function showModal() {
-  const t = document.getElementById('m-title');
-  t.textContent = state.youWon ? 'You Won!' : (state.redResigned ? 'You Surrendered' : 'You Lost');
-  document.getElementById('m-sub').textContent = state.youWon ? 'Nicely played.' : 'Play again?';
-  document.getElementById('modal').classList.add('show');
-}
-function hideModal() { document.getElementById('modal').classList.remove('show'); }
-document.getElementById('m-yes').onclick = () => { hideModal(); newGame(); };
-document.getElementById('m-no').onclick = () => { hideModal(); };
-
-// ---- game history overlay ----
-const RES_LABEL = { won: 'Won', lost: 'Lost', surrendered: 'Surrendered', live: 'In progress' };
-function timeAgo(ts) {
-  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
-  if (s < 60) return 'just now';
-  const m = Math.round(s / 60); if (m < 60) return m + 'm ago';
-  const h = Math.round(m / 60); if (h < 24) return h + 'h ago';
-  return Math.round(h / 24) + 'd ago';
-}
-function renderHistory() {
-  const list = document.getElementById('hist-list');
-  list.innerHTML = '';
-  if (!history.length) { list.innerHTML = '<div class="muted">No games yet.</div>'; return; }
-  history.forEach((h, i) => {
-    const row = document.createElement('div');
-    row.className = 'hrow';
-    const cv = document.createElement('canvas'); cv.width = 54; cv.height = 54;
-    const meta = document.createElement('div'); meta.className = 'meta';
-    const score = h.result === 'live'
-      ? `${h.startCounts ? h.startCounts.red : '?'} nodes at start`
-      : `Final: ${h.finalCounts ? h.finalCounts.red : 0} red · ${h.turns || 0} turns`;
-    meta.innerHTML = `<span class="res ${h.result}">${RES_LABEL[h.result] || h.result}</span>`
-      + `<span class="sub">${score}</span>`;
-    const when = document.createElement('div'); when.className = 'when'; when.textContent = timeAgo(h.ts);
-    row.appendChild(cv); row.appendChild(meta); row.appendChild(when);
-    row.onclick = () => reloadGame(h);
-    list.appendChild(row);
-    if (h.startNodes) drawThumb(cv, h.startNodes);
-  });
-}
-function openHistory() { renderHistory(); document.getElementById('histwrap').classList.add('show'); }
-function hideHistory() { document.getElementById('histwrap').classList.remove('show'); }
-document.getElementById('record').onclick = openHistory;
-document.getElementById('hist-close').onclick = hideHistory;
-document.getElementById('histwrap').onclick = (e) => {
-  if (e.target.id === 'histwrap') hideHistory();    // tap the backdrop to dismiss
+// ---- seed sharing: copy the seed being played, or paste one (yours or a
+// friend's) to play it as THIS round — the current round is re-dealt on the
+// pasted seed, and the AI pump picks it up like any other. If it was mid-game
+// on the old seed it finishes into the detached round object, harmlessly. ----
+$('mi-copy').onclick = async () => {
+  menupop.classList.remove('show');
+  const seed = cur().seed;
+  try { await navigator.clipboard.writeText(String(seed)); setStatus(`Seed ${seed} copied.`); }
+  catch (_) { prompt('Copy the seed:', String(seed)); }   // clipboard blocked — show it instead
+};
+$('mi-paste').onclick = async () => {
+  menupop.classList.remove('show');
+  if (inputLocked || sweeping) return;
+  const v = prompt('Paste a seed to play it as this round:');
+  if (v == null) return;
+  const seed = parseInt(String(v).trim(), 10);
+  if (!Number.isInteger(seed) || seed < 1 || seed > 0x7fffffff) { setStatus('Not a valid seed.'); return; }
+  const r = cur();
+  if (r.you.moves.length && !r.you.result && !confirm('Abandon the seed in progress?')) return;
+  M.rounds[M.idx] = blankRound(seed);
+  save();
+  renderStrip();
+  await startSeed();
 };
 
-// Replay a past game from its exact starting board (seed regenerates it identically;
-// iOS-loaded boards have no seed, so re-home the saved nodes instead).
-async function reloadGame(h) {
-  hideHistory();
-  if (autoplay) setAutoplay(false);
-  if (inputLocked) return;
-  const res = h.seed != null
-    ? await api('/api/game', 'POST', { seed: h.seed })
-    : await api('/load-board', 'POST', { nodes: h.startNodes });
-  if (res.error) { setStatus('Reload failed: ' + res.error); return; }
-  setState(res);
-  resize();
-  setStatus('Reloaded a past game. Select a red node to attack.');
-}
-
-async function newGame(seed) {
-  const load = new URLSearchParams(location.search).get('load');
-  let res;
-  if (load && !seed) {
-    // Fetch the saved board from the optional server, then re-home it into the WASM
-    // worker so the in-browser engine owns the game for every subsequent move.
-    const board = await api('/load?file=' + encodeURIComponent(load), 'GET');
-    res = board.error ? board : await api('/load-board', 'POST', { nodes: board.nodes });
-  } else {
-    res = await api('/api/game', 'POST', seed ? { seed } : {});
+// ============================ boot ============================
+// Resume: your recorded moves replay back into a fresh game for the seed in progress
+// (bit-exact from the seed), so a reload mid-game doesn't cost you the game. The AI
+// pump independently re-plays any seed it hadn't finished.
+async function resume() {
+  const r = cur();
+  if (r.you.result) {                            // you'd finished; move on to a new seed
+    M.rounds.push(blankRound(randSeed()));
+    M.idx = M.rounds.length - 1;
+    save();
+    await startSeed();
+    return;
   }
-  if (res.error) { setStatus('Load failed: ' + res.error); return; }
-  setState(res);
-  resize();
-  setStatus(seed ? `Dealt seed ${seed}. Select a red node to attack.`
-    : load ? `Loaded board "${load}". Your move.` : 'New game. Select a red node to attack.');
+  const moves = r.you.moves.slice();
+  await startSeed();                             // deals the seed + kicks the AI pump
+  if (!moves.length) return;
+  const sp = board.speed; board.speed = 0;       // replay instantly
+  let s = state;
+  for (const mv of moves) {
+    s = mv.e ? await api(`/api/game/${s.id}/end-turn`, 'POST')
+             : await api(`/api/game/${s.id}/attack`, 'POST', { from: mv.a[0], to: mv.a[1] });
+    sampleHist(r.you, s);
+  }
+  board.speed = sp;
+  r.you.moves = moves;                           // startSeed cleared the log
+  save();
+  adopt(s); resize(); renderStrip();
+  if (recordEnd(r.you, s)) { await afterYourGame(); return; }
+  setStatus('Resumed. Your move.');
 }
 
-window.addEventListener('resize', resize);
-// #board is flex:1 above the variable-height AI panel, so its height changes
-// whenever suggestions load/clear — re-fit the canvas buffer to avoid a squashed
-// (aspect-distorted) board, not just on window resize.
-if (window.ResizeObserver) new ResizeObserver(resize).observe(document.getElementById('board'));
-newGame();
+paintBadge(null, true);
+// Straight into a game: no intro gate. A stored tally resumes where you left off,
+// otherwise the first seed is dealt immediately.
+const prev = load();
+if (prev) { M = prev; renderStrip(); resume(); }
+else {
+  M = { rounds: [blankRound(randSeed())], idx: 0 };
+  save();
+  startSeed();
+}
 </script>
 </body>
 </html>

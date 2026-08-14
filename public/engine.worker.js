@@ -1,7 +1,7 @@
 // In-browser game server — the SAME C engine the solver uses, compiled to WASM and
 // run in a Web Worker so the 6000-sim C-UCT search never blocks the UI. Direct port
 // of solver/server.py: it holds game state and sequences C-engine calls, building
-// the exact same view/log/events/search JSON that index.html already speaks. No game
+// the exact same view/log/events/search JSON the page already speaks. No game
 // logic lives here — board-gen, the four bots, the fair-coin-attrition battle, reinforcement
 // and the search are all in fast_engine.c (via fastnw.js). The frontend is now fully
 // self-contained: no HTTP API, no Python.
@@ -296,8 +296,10 @@ function route(path, method, body) {
     if (action === 'undo') return doUndo(g);
   }
 
-  // Loading a saved board from the iOS workflow: index.html fetches the file text
+  // Loading a saved board from the iOS workflow: the caller fetches the file text
   // (server-only) and hands us its nodes here so the WASM engine builds the game.
+  // (No shipped page drives this since the free-play page was removed 2026-08-14;
+  // kept for the /grab-/load tooling path.)
   if (path === '/load-board' && method === 'POST') return view(gameFromBoard(body.nodes, body.mb));
 
   return { error: 'not found', _status: 404 };

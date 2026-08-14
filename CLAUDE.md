@@ -19,8 +19,8 @@
   (`uct_set_grade`, default off = bit-identical): root min-visit floor + dominance
   early-stops disabled + second-half Q readout, for accurate comparison ACROSS root
   moves rather than fastest best-move pick — used by every flow that grades human
-  play (blunder alert, h2h score-my-decisions via the search request's `grade`
-  flag), never by play/autoplay (verified helpful by `solver/grade_eval.py`;
+  play (h2h score-my-decisions via the search request's `grade` flag; formerly also
+  the free-play blunder alert), never by play/autoplay (verified helpful by `solver/grade_eval.py`;
   regression-gated in `validate_fast.py`). Everything else is a thin client over it:
   - `solver/fastnw.py` — ctypes client (marshals int32 arrays; implements no rules).
   - `solver/network_wars.py` — a readable State/Node shim that delegates every rule
@@ -40,16 +40,16 @@
     (fixed 2026-07-17; regression-checked by driving the worker over 40 seeds and
     asserting no state has `counts.red===0 && !over` — ~3/40 games end by wipe, and the
     check catches 2 violations if the rule is removed).
-    `public/board.js` is the **shared** board renderer + battle/bot-turn animation
+    `public/board.js` is the board renderer + battle/bot-turn animation
     (octagon nodes, coin-flip replay, reinforce flashes) — the one place the game's
-    look lives; both pages import it and neither draws its own board.
-    Two pages, both pure-static (`server.py` also routes the extensionless
-    `/head-to-head`):
-      - `index.html` — free play + AI assist/suggestions/blunder alert/autoplay.
-      - `head-to-head.html` — **duplicate-format** play vs the engine, continuous: you
-        play a seed blind (your worker issues ZERO searches) while the AI plays THE SAME
-        seed **concurrently in a SECOND worker**; finish and the next seed is dealt, with
-        a running W-L tally. **The two workers are load-bearing, not a nicety**:
+    look lives; the page imports it and never draws its own board.
+    One page, pure-static (`server.py` also still routes the old extensionless
+    `/head-to-head` paths to it; the free-play page was removed 2026-08-14 and lives
+    in git history):
+      - `index.html` — **duplicate-format** head-to-head play vs the engine, continuous:
+        you play a seed blind (your worker issues ZERO searches) while the AI plays THE
+        SAME seed **concurrently in a SECOND worker**; finish and the next seed is dealt,
+        with a running W-L tally. **The two workers are load-bearing, not a nicety**:
         `engine.worker.js` serves its inbox in order and aborts an in-flight search as
         soon as a request queues behind it, so a shared worker would let every tap you
         make truncate the AI's search and silently handicap it — corrupting the very
@@ -81,7 +81,7 @@
         are consumed serially, so once your moves diverge from the AI's you pull
         different coins. Duplicate bridge, not dice-for-dice (which isn't coherent once
         actions differ).
-    Both pages share one opt-in assist, the **sweep-up offer** (`nwSweep`): auto-play
+    The page has one opt-in assist, the **sweep-up offer** (`nwSweep`): auto-play
     the rest of a won game with the mop-up rule in `fast_engine.c`
     (`sweep_best_move` — strongest attacker, hit any strictly weaker neighbor, else
     end turn). Its gate is a **Monte-Carlo certificate of that policy**
