@@ -135,6 +135,19 @@ export class Board {
     return null;
   }
 
+  // forgiving drag target: the nearest node in `ids` within `slop` node-radii of
+  // the pointer (drags end sloppily; the exact hit test is too strict a release)
+  nearestOf(mx, my, ids, slop = 2.2) {
+    if (!this.state || !ids) return null;
+    let best = null, bd = this.layout.r * slop;
+    for (const id of ids) {
+      const n = this.state.nodes[id]; if (!n) continue;
+      const p = this.nodePos(n), d = Math.hypot(mx - p.x, my - p.y);
+      if (d <= bd) { bd = d; best = n; }
+    }
+    return best;
+  }
+
   // vertex-up octagon — matches the real game's node shape (verified by fitting
   // n-gon outlines to iOS screenshots: n=8, vertex at 12 o'clock)
   _octagon(x, y, r) {

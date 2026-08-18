@@ -626,20 +626,23 @@ $('cv').addEventListener('pointerdown', (ev) => {
 $('cv').addEventListener('pointermove', (ev) => {
   if (!drag || ev.pointerId !== drag.pid) return;
   const p = cvPt(ev), n = board.hitNode(p.x, p.y);
-  const onTarget = n && board.targetsFor.get(drag.from)?.has(n.id);
+  // forgiving: snap to the nearest highlighted neighbor within a generous radius,
+  // unless the pointer is still literally on the origin
+  const tgt = (n && n.id === drag.from) ? null : board.nearestOf(p.x, p.y, board.targetsFor.get(drag.from));
   const moved = !n || n.id !== drag.from;
   if (moved) drag.retap = false;                   // it's a drag now, not a tap
-  board.hoverMove = onTarget ? { from: drag.from, to: n.id } : null;
-  board.dragTo = onTarget ? null : p;              // free line to the finger until it snaps to a target
+  board.hoverMove = tgt ? { from: drag.from, to: tgt.id } : null;
+  board.dragTo = tgt ? null : p;                   // free line to the finger until it snaps to a target
   board.draw();
 });
 function dragUp(ev) {
   if (!drag || ev.pointerId !== drag.pid) return;
   const { from, retap } = drag;
   const p = cvPt(ev), n = board.hitNode(p.x, p.y);
+  const tgt = (n && n.id === from) ? null : board.nearestOf(p.x, p.y, board.targetsFor.get(from));
   endDrag();
-  if (n && n.id !== from && board.targetsFor.get(from)?.has(n.id) && !inputLocked && !sweeping) {
-    yourAttack(from, n.id); return;
+  if (tgt && !inputLocked && !sweeping) {          // released on/near a highlighted target
+    yourAttack(from, tgt.id); return;
   }
   if (retap && n && n.id === from) { board.selected = null; setStatus('Select a red node to attack.'); }
   board.draw();
@@ -687,6 +690,10 @@ $('mi-sweep').onclick = () => setSweep(!sweepOn);
 async function maybeOfferSweep() {
   if (!sweepOn || sweeping || !state || state.over) return;
   if (sweepDismissed === M.idx) return;                // dismissed for this seed
+  // only offer once RED strictly leads the node count — a certified-but-trailing
+  // position is still a game worth playing by hand
+  const c = state.counts;
+  if (!Object.keys(c).every(f => f === 'red' || c.red > c[f])) return;
   const my = ++sweepSeq, gid = state.id;
   const res = await api(`/api/game/${gid}/sweep-check`, 'POST', { trials: SWEEP_TRIALS });
   if (my !== sweepSeq || sweeping || !state || state.id !== gid || state.over) return;
