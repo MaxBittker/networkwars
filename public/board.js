@@ -69,7 +69,8 @@ export class Board {
     this.selected = null;           // selected red node id
     this.targetsFor = new Map();    // from -> Set(to), indexed from view.legalMoves
     this.hoverMove = null;          // {from,to} previewed on the grid
-    this.topInset = 0;              // px at the top the layout must keep clear
+    this.dragTo = null;             // {x,y} canvas pt: a drag-to-attack in progress from `selected`
+    this.topInset = 0;             // px at the top the layout must keep clear
                                     // (e.g. the AI-progress badge overlays the canvas)
 
     // ---- transient state owned by the animations ----
@@ -91,6 +92,7 @@ export class Board {
     this.state = v;
     this.selected = null;
     this.hoverMove = null;
+    this.dragTo = null;
     this.indexMoves();
   }
 
@@ -248,6 +250,17 @@ export class Board {
     if (hoverMove && hoverMove.from != null && hoverMove.to != null) {
       const pf = pos[hoverMove.from], pt = pos[hoverMove.to];
       if (pf && pt) this._drawArrow(pf, pt, '#ffd36b');
+    }
+    // drag-to-attack in progress: a free line from the selected node to the pointer
+    // (once the pointer is over a legal target the page swaps this for hoverMove)
+    if (this.dragTo && selected !== null && pos[selected]) {
+      const pf = pos[selected], pt = this.dragTo;
+      ctx.save();
+      ctx.beginPath(); ctx.moveTo(pf.x, pf.y); ctx.lineTo(pt.x, pt.y);
+      ctx.strokeStyle = 'rgba(255,77,94,.75)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+      ctx.shadowColor = COLORS.red; ctx.shadowBlur = 8;
+      ctx.stroke();
+      ctx.restore();
     }
   }
 

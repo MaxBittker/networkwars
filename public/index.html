@@ -591,25 +591,61 @@ async function afterYourGame() {
   if (lost) openSeed(i);
 }
 
+// Input: tap-select-then-tap-target, OR press on a red node and DRAG onto a
+// highlighted neighbor (release = attack). A drag that ends on nothing / the
+// origin just leaves the node selected, so the tap flow keeps working.
+let drag = null;                                   // {from, pid} while a pointer is held on a red node
+const cvPt = (ev) => { const b = $('cv').getBoundingClientRect(); return { x: ev.clientX - b.left, y: ev.clientY - b.top }; };
+function endDrag() {
+  drag = null; board.dragTo = null; board.hoverMove = null;
+}
 $('cv').addEventListener('pointerdown', (ev) => {
   if (!M || !state || state.over || inputLocked || sweeping) return;
-  const b = $('cv').getBoundingClientRect();
-  const n = board.hitNode(ev.clientX - b.left, ev.clientY - b.top);
+  const p = cvPt(ev), n = board.hitNode(p.x, p.y);
   if (!n) { board.selected = null; board.draw(); return; }
   if (board.selected !== null && board.targetsFor.get(board.selected)?.has(n.id)) {
     yourAttack(board.selected, n.id); return;
   }
   if (n.id === board.selected) {
-    board.selected = null; setStatus('Select a red node to attack.'); board.draw(); return;
+    // second press on the selected node: could be a deselect-tap or the start of a
+    // drag — decide on pointerup (moved onto a target = attack, else deselect)
+    drag = { from: n.id, pid: ev.pointerId, retap: true };
+    $('cv').setPointerCapture(ev.pointerId);
+    return;
   }
   if (n.owner === 'red' && n.strength > 1 && board.targetsFor.has(n.id)) {
-    board.selected = n.id; setStatus('Tap a highlighted node to attack.');
+    board.selected = n.id; setStatus('Tap or drag to a highlighted node to attack.');
+    drag = { from: n.id, pid: ev.pointerId };
+    $('cv').setPointerCapture(ev.pointerId);
   } else {
     board.selected = null;
     if (n.owner === 'red') setStatus('No attackable neighbors.');
   }
   board.draw();
 });
+$('cv').addEventListener('pointermove', (ev) => {
+  if (!drag || ev.pointerId !== drag.pid) return;
+  const p = cvPt(ev), n = board.hitNode(p.x, p.y);
+  const onTarget = n && board.targetsFor.get(drag.from)?.has(n.id);
+  const moved = !n || n.id !== drag.from;
+  if (moved) drag.retap = false;                   // it's a drag now, not a tap
+  board.hoverMove = onTarget ? { from: drag.from, to: n.id } : null;
+  board.dragTo = onTarget ? null : p;              // free line to the finger until it snaps to a target
+  board.draw();
+});
+function dragUp(ev) {
+  if (!drag || ev.pointerId !== drag.pid) return;
+  const { from, retap } = drag;
+  const p = cvPt(ev), n = board.hitNode(p.x, p.y);
+  endDrag();
+  if (n && n.id !== from && board.targetsFor.get(from)?.has(n.id) && !inputLocked && !sweeping) {
+    yourAttack(from, n.id); return;
+  }
+  if (retap && n && n.id === from) { board.selected = null; setStatus('Select a red node to attack.'); }
+  board.draw();
+}
+$('cv').addEventListener('pointerup', dragUp);
+$('cv').addEventListener('pointercancel', (ev) => { if (drag && ev.pointerId === drag.pid) { endDrag(); board.draw(); } });
 $('endturn').onclick = () => { if (!sweeping) yourEndTurn(); };
 $('aibadge').onclick = () => showResults();
 
