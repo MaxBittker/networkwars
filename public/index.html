@@ -104,17 +104,22 @@
   #sweep .act { padding:6px 8px; flex:0 0 auto; }
   #sw-x { color:#7fb6a6; font-weight:800; }
 
-  /* ---- overlays ---- */
-  .ov { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
-    background:rgba(0,0,0,.62); backdrop-filter:blur(3px); z-index:6; padding:12px; }
+  /* ---- overlays: full-bleed — on mobile every pixel goes to the content.
+     The panel fills the viewport height and the app's column width, so on
+     desktop it stays a full-height 440px column over the app rather than a
+     floating card. ---- */
+  .ov { position:absolute; inset:0; display:none; justify-content:center;
+    background:rgba(0,0,0,.62); backdrop-filter:blur(3px); z-index:6; }
   .ov.show { display:flex; }
-  .panel { background:#020b08; border:1px solid #1c5; border-radius:14px;
-    width:min(430px,96vw); max-height:92vh; display:flex; flex-direction:column;
+  .panel { background:#020b08; width:min(440px,100vw); height:100%;
+    display:flex; flex-direction:column;
     box-shadow:0 0 40px -8px rgba(54,211,154,.5); overflow:hidden; }
   .p-head { display:flex; align-items:center; justify-content:space-between; gap:8px;
-    padding:14px 18px; border-bottom:1px solid rgba(255,255,255,.08);
+    padding:calc(14px + env(safe-area-inset-top)) 18px 14px;
+    border-bottom:1px solid rgba(255,255,255,.08);
     font-size:15px; font-weight:700; color:#cfe; letter-spacing:.03em; flex:0 0 auto; }
-  .p-body { overflow-y:auto; padding:16px 18px; overscroll-behavior:contain;
+  .p-body { overflow-y:auto; padding:16px 18px calc(16px + env(safe-area-inset-bottom));
+    overscroll-behavior:contain;
     scrollbar-width:thin; scrollbar-color:rgba(95,208,214,.45) transparent; }
   /* slim glowing teal scrollbar instead of the OS default slab */
   .p-body::-webkit-scrollbar { width:7px; }
@@ -1059,7 +1064,6 @@ const sdTitle = (i, r) => `Seed ${i + 1} · You ${resTag(r.you.result)} AI ${res
 const sdLegend = (r) => `
   <span><i style="background:${YOU_COL}"></i>You — ${sdFin(r.you)}</span>
   <span><i style="background:${AI_COL}"></i>AI — ${sdFin(r.ai)}</span>
-  <span><i class="dash"></i>${WIN_NODES} to win</span>
   <span><i class="dashq"></i>dotted: win%</span>`;
 
 // The AI plays concurrently, so an analysis auto-opened after your loss usually shows
