@@ -63,7 +63,7 @@
         readout was cut as clutter 2026-07-17; per-move scoring is the skill readout,
         and the graph is that metric over time: every scored seed's LIVE decisions
         concatenated in play order, tier-colored dots + a trailing rolling mean of
-        win%-lost-vs-best over the last 25 decisions, dashed tier thresholds + faint
+        win%-lost-vs-best over the last 100 decisions, dashed tier thresholds + faint
         seed boundaries; zoom chips cut it to the last 10/100/all seeds — the mean
         is computed over the FULL history and only then windowed, so the left edge
         keeps its trailing context). Coverage comes from the **background scorer**:

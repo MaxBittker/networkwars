@@ -752,9 +752,9 @@ async function runSweep() {
 // order. The teal line is the trailing mean of the last SKILL_WIN of them; the
 // dots are the individual decisions, tier-colored, with the tier thresholds
 // drawn as dashed bands so the dots read by position alone. Lower = better.
-// SKILL_WIN ≈ a few games' worth of live decisions (~6-15 per game): long enough
-// to steady the line, short enough that real improvement shows within a session.
-const SKILL_WIN = 25;
+// SKILL_WIN ≈ a dozen games' worth of live decisions (~6-15 per game) — 25 read
+// as noise, not trend; 100 smooths per-game swings into an actual skill line.
+const SKILL_WIN = 100;
 const TIER_COLS = ['#36d39a', '#f5c542', '#ff9f45', '#ff4d5e'];   // by tier k
 
 // Live scored decisions in play order, grouped per seed; a partial review (a
