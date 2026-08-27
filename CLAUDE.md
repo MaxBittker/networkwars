@@ -64,10 +64,20 @@
         and the graph is that metric over time: every scored seed's LIVE decisions
         concatenated in play order, tier-colored dots + a trailing rolling mean of
         win%-lost-vs-best over the last 25 decisions, dashed tier thresholds + faint
-        seed boundaries; its legend states the coverage caveat — losses auto-score,
-        wins only when opened, so unscored seeds are counted out loud). Per-seed detail: **one red-nodes-vs-turn graph with both players' lines**
+        seed boundaries; zoom chips cut it to the last 10/100/all seeds — the mean
+        is computed over the FULL history and only then windowed, so the left edge
+        keeps its trailing context). Coverage comes from the **background scorer**:
+        a third worker that reviews every finished seed oldest-first for as long as
+        the page is open (its own worker because engine.worker.js aborts an
+        in-flight search when a request queues behind it — sharing yours or the
+        AI's would silently truncate grading searches below their 16k floor), so
+        the graph fills itself in and no longer skews toward auto-scored losses. Per-seed detail: **one red-nodes-vs-turn graph with both players' lines**
         (you teal / AI yellow, + the 24-to-win line; legend doubles as each side's final
-        score) + **both move lists**, steppable — tapping a move replays the seed to that
+        score), with dotted **win% overlays** on the same graph on their own implicit
+        0-100% scale (AI line = the winexp its search reported per move at play time;
+        your line = the review's per-decision bestQ, so it fills in as scoring runs;
+        dotted/thinner under the solid node lines) + **both
+        move lists**, steppable — tapping a move replays the seed to that
         point (bit-exact) and shows the exact board with the move highlighted. AI moves
         carry the search's own win% per move; labels are snapshotted at play time (`mv.l`)
         so lists render without a replay. Decision scoring re-searches every position

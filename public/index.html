@@ -166,6 +166,16 @@
   #glegend i, .glegend i { width:12px; height:3px; border-radius:2px; flex:0 0 auto; }
   #glegend i.dash { background:repeating-linear-gradient(90deg,
     rgba(54,211,154,.7) 0 3px, transparent 3px 6px); }
+  #glegend i.dashq { background:repeating-linear-gradient(90deg,
+    #8fcfb8 0 2px, transparent 2px 5px); }
+  /* skill-graph header row: title left, zoom chips (last 10 / 100 / all seeds) right */
+  .h3row { display:flex; align-items:center; justify-content:space-between; margin:0 0 6px; }
+  .h3row h3 { margin:0; }
+  .zchips { display:flex; gap:4px; }
+  .zchips span { padding:2px 9px; border-radius:6px; font-size:11px; font-weight:700;
+    color:#7fb6a6; background:rgba(255,255,255,.05); cursor:pointer; }
+  .zchips span:active { background:rgba(255,255,255,.14); }
+  .zchips span.sel { color:#04100c; background:var(--teal); }
 
   /* inspector: the board at the selected move. Square-ish and as wide as the panel —
      the board is the point of this view, so it gets the room. */
@@ -262,7 +272,7 @@
 
 <!-- tally -->
 <div class="ov" id="ov-res"><div class="panel">
-  <div class="p-head"><span id="res-title">Tally</span><div class="act" id="res-close">Close</div></div>
+  <div class="p-head"><span id="res-title">Tally</span></div>
   <div class="p-body" id="res-body"></div>
   <div class="p-foot">
     <div class="act danger" id="res-reset">Reset tally</div>
@@ -324,7 +334,7 @@ const board = new Board($('cv'), $('board'));
 let state = null;            // authoritative view of YOUR game
 let inputLocked = false;
 
-// ---- two independent engines: yours, and the AI's background one ----
+// ---- independent engines: yours, the AI's, and (lazily) the background scorer's ----
 function makeEngine() {
   const w = new Worker('engine.worker.js', { type: 'module' });
   const pending = new Map();
@@ -577,6 +587,7 @@ async function afterYourGame() {
   const i = M.idx, r = M.rounds[i];
   const lost = r.you.result === 'lost';
   renderStrip();
+  scorePump();               // the just-finished seed joins the scoring queue
   setStatus(lost ? 'You lost this seed.' : 'You WON this seed.');
   await sleep(1000);
   if (r.ai.result) revealPair(i);
@@ -615,7 +626,7 @@ $('cv').addEventListener('pointerdown', (ev) => {
     return;
   }
   if (n.owner === 'red' && n.strength > 1 && board.targetsFor.has(n.id)) {
-    board.selected = n.id; setStatus('Tap or drag to a highlighted node to attack.');
+    board.selected = n.id; setStatus('Tap or drag to a target.');
     drag = { from: n.id, pid: ev.pointerId };
     $('cv').setPointerCapture(ev.pointerId);
   } else {
@@ -742,20 +753,60 @@ async function runSweep() {
 const SKILL_WIN = 25;
 const TIER_COLS = ['#36d39a', '#f5c542', '#ff9f45', '#ff4d5e'];   // by tier k
 
-// Live scored decisions in play order, plus where each scored seed starts and
-// how many finished seeds have no review yet (wins are only scored when their
-// analysis is opened, so coverage is the caveat the legend must state).
-function skillData() {
-  const pts = [], starts = [];
-  let seeds = 0, unscored = 0;
-  for (const r of M.rounds) {
+// Live scored decisions in play order, grouped per seed; a partial review (a
+// seed mid-scoring) contributes its scored-so-far moves, so the graph fills in
+// live as the background scorer works. The rolling mean is computed over the
+// FULL history first and only then cut to the zoom window — the line's left
+// edge keeps its true trailing context.
+function skillData(zoom = Infinity) {
+  const groups = [];
+  let seeds = 0, unscored = 0, scoring = -1;
+  M.rounds.forEach((r, i) => {
     const rv = r.you.review;
-    if (!rv || rv.partial) { if (r.you.result) unscored++; continue; }
-    seeds++;
-    starts.push(pts.length);
+    if (!rv) { if (r.you.result) unscored++; return; }
+    if (rv.partial) scoring = i; else seeds++;
+    const pts = [];
     for (const m of rv.moves) if (m.gap != null && !m.dead) pts.push(m.gap);
-  }
-  return { pts, starts, seeds, unscored };
+    if (pts.length || !rv.partial) groups.push(pts);
+  });
+  const all = groups.flat();
+  const roll = rollingMean(all, SKILL_WIN);
+  const shown = zoom < groups.length ? groups.slice(-zoom) : groups;
+  const skip = all.length - shown.reduce((a, g) => a + g.length, 0);
+  const starts = []; let acc = 0;
+  for (const g of shown) { starts.push(acc); acc += g.length; }
+  return { pts: all.slice(skip), roll: roll.slice(skip), starts,
+           seeds, shownSeeds: shown.length, unscored, scoring };
+}
+
+// Zoom: how many of the most recent scored seeds the graph shows. Sticky.
+const SKILL_ZOOMS = { 10: 10, 100: 100, all: Infinity };
+let skillZoom = 'all';
+try { const z = localStorage.getItem('nwSkillZoom'); if (z in SKILL_ZOOMS) skillZoom = z; } catch (_) {}
+function setSkillZoom(z) {
+  skillZoom = z;
+  try { localStorage.setItem('nwSkillZoom', z); } catch (_) {}
+  refreshSkill();
+}
+
+// Redraw the tally's skill graph + legend in place — cheap enough to run on
+// every zoom tap and every move the background scorer lands. No-op unless the
+// tally is actually up.
+function refreshSkill() {
+  if (!$('sk') || !$('ov-res').classList.contains('show')) return;
+  document.querySelectorAll('#skzoom span').forEach(el =>
+    el.classList.toggle('sel', el.dataset.z === skillZoom));
+  const d = skillData(SKILL_ZOOMS[skillZoom]);
+  drawSkill($('sk'), d);
+  const now = d.roll.length ? d.roll[d.roll.length - 1] : null;
+  const status = d.scoring >= 0 ? `<span>scoring seed #${d.scoring + 1}…</span>`
+    : d.unscored ? `<span>${d.unscored} seed${d.unscored === 1 ? '' : 's'} queued</span>` : '';
+  $('sklegend').innerHTML =
+    `<span><i style="background:${YOU_COL}"></i>avg loss/decision`
+      + `${now != null ? ` — now −${now.toFixed(1)}%` : ''} (rolling ${SKILL_WIN})</span>`
+    + `<span>${d.pts.length} decision${d.pts.length === 1 ? '' : 's'} · `
+      + `${skillZoom === 'all' ? '' : 'last '}${d.shownSeeds} seed${d.shownSeeds === 1 ? '' : 's'}</span>`
+    + status;
 }
 
 // Trailing mean over the last w points (expanding until w have accrued).
@@ -784,7 +835,7 @@ function drawSkill(cv, d) {
     g.fillText('no live decisions scored yet', W / 2, H / 2);
     return;
   }
-  const roll = rollingMean(d.pts, SKILL_WIN);
+  const roll = d.roll;
   const padL = 5, padR = 8, padT = 6, padB = 5;
   // Scale to the rolling line (the readout), not the raw dots — one 60% blunder
   // must not flatten the line. Dots above the top are pinned to the edge.
@@ -834,26 +885,18 @@ function showResults() {
   $('res-title').textContent = `Tally · ${paired} pair${paired === 1 ? '' : 's'} complete`;
 
   // Skill over time: the per-move gap metric, concatenated across scored seeds.
-  // Rendered only once something is scored — the legend owns the coverage caveat
-  // (unscored wins would otherwise silently bias the line toward lost games).
-  const sk = skillData();
-  const roll = sk.pts.length ? rollingMean(sk.pts, SKILL_WIN) : [];
-  const now = roll.length ? roll[roll.length - 1] : null;
-  const unscoredNote = sk.unscored
-    ? `<span>${sk.unscored} finished seed${sk.unscored === 1 ? '' : 's'} unscored — open below to score</span>`
-    : '';
-  const skillHtml = !sk.seeds
-    ? (sk.unscored ? `<div class="glegend" style="margin:0 0 14px">`
-        + `<span>Skill graph appears once a seed is scored — open one below.</span></div>` : '')
-    : `<h3>Skill over time</h3>
-       <canvas class="pg" id="sk"></canvas>
-       <div class="glegend">
-         <span><i style="background:${YOU_COL}"></i>avg loss/decision`
-           + `${now != null ? ` — now −${now.toFixed(1)}%` : ''} (rolling ${SKILL_WIN})</span>
-         <span>${sk.pts.length} decision${sk.pts.length === 1 ? '' : 's'}`
-           + ` · ${sk.seeds} seed${sk.seeds === 1 ? '' : 's'} scored</span>
-         ${unscoredNote}
-       </div>`;
+  // The background scorer works through every finished seed on its own, so the
+  // graph fills itself in while the page is open; the zoom chips cut it to the
+  // most recent seeds. Content is drawn by refreshSkill (also called on every
+  // scored move and every zoom tap).
+  const anySkill = M.rounds.some(r => r.you.review || r.you.result);
+  const skillHtml = !anySkill ? '' : `
+    <div class="h3row"><h3>Skill over time</h3>
+      <div class="zchips" id="skzoom">
+        <span data-z="10">10</span><span data-z="100">100</span><span data-z="all">all</span>
+      </div></div>
+    <canvas class="pg" id="sk"></canvas>
+    <div class="glegend" id="sklegend"></div>`;
 
   $('res-body').innerHTML = `
     <div id="score">
@@ -875,9 +918,8 @@ function showResults() {
     row.className = 'srow';
     const c = document.createElement('canvas'); c.width = 46; c.height = 46;
     const meta = document.createElement('div'); meta.className = 'meta';
-    const scored = r.you.review && !r.you.review.partial ? `<div class="loss">scored ✓</div>` : '';
     meta.innerHTML = `<div class="sd">#${i + 1} · seed ${r.seed}</div>`
-      + `<div class="vs">You ${resTag(r.you.result)} &nbsp;·&nbsp; AI ${resTag(r.ai.result)}</div>${scored}`;
+      + `<div class="vs">You ${resTag(r.you.result)} &nbsp;·&nbsp; AI ${resTag(r.ai.result)}</div>`;
     const go = document.createElement('div'); go.className = 'go'; go.textContent = '›';
     row.appendChild(c); row.appendChild(meta); row.appendChild(go);
     row.onclick = () => { closeRes(); openSeed(i, { fromResults: true }); };
@@ -885,14 +927,17 @@ function showResults() {
     if (r.startNodes) drawThumb(c, r.startNodes);
   }
   $('ov-res').classList.add('show');
+  document.querySelectorAll('#skzoom span').forEach(el => {
+    el.onclick = () => setSkillZoom(el.dataset.z);
+  });
   // paint AFTER show — the canvas sizes itself from getBoundingClientRect,
   // which is 0x0 while the overlay is still display:none
-  if (sk.seeds) drawSkill($('sk'), sk);
+  refreshSkill();
+  scorePump();                       // anything still unscored gets picked up now
 }
 
 $('tally').onclick = showResults;
 const closeRes = () => $('ov-res').classList.remove('show');
-$('res-close').onclick = closeRes;
 $('res-close2').onclick = closeRes;
 $('res-reset').onclick = () => {
   if (!confirm('Reset the whole tally? Every seed, result and review is discarded.')) return;
@@ -905,7 +950,8 @@ $('res-reset').onclick = () => {
 // the whole point is the comparison, and two separate panels made you eyeball it.
 // Node count (not total strength) is the plotted power: it's the win condition (24).
 const YOU_COL = '#5fd0d6', AI_COL = '#f5c542';
-function drawPower(cv, you, ai) {
+function drawPower(cv, r) {
+  const you = r.you.hist, ai = r.ai.hist;
   const dpr = window.devicePixelRatio || 1;
   const rect = cv.getBoundingClientRect();
   const W = Math.max(1, Math.round(rect.width)), H = Math.max(1, Math.round(rect.height));
@@ -940,8 +986,48 @@ function drawPower(cv, you, ai) {
     g.beginPath(); g.arc(xOf(last.t), yOf(last.n), 3, 0, Math.PI * 2); g.fill();
     g.strokeStyle = '#02100b'; g.lineWidth = 1; g.stroke();
   };
+  // Expected win% overlays: the SAME two entities, dotted, on their own implicit
+  // scale — 0-100% over the full plot height (so 50% is mid-plot; the dashed
+  // 24-line belongs to the node scale). Dotted drawn under solid, thinner and
+  // without glow, so node count stays the dominant read.
+  const yQ = (q) => padT + (1 - q) * (H - padT - padB);
+  const qseries = (h, col) => {
+    if (!h.length) return;
+    g.beginPath();
+    h.forEach((p, i) => i ? g.lineTo(xOf(p.t), yQ(p.q)) : g.moveTo(xOf(p.t), yQ(p.q)));
+    g.setLineDash([2, 3.5]); g.strokeStyle = col; g.lineWidth = 1.5;
+    g.lineJoin = 'round'; g.stroke(); g.setLineDash([]);
+    const last = h[h.length - 1];
+    g.fillStyle = col;
+    g.beginPath(); g.arc(xOf(last.t), yQ(last.q), 2, 0, Math.PI * 2); g.fill();
+  };
+  qseries(aiWinCurve(r.ai.moves), AI_COL);
+  qseries(youWinCurve(r.you.review), YOU_COL);
   series(ai, AI_COL);          // AI first so your line reads on top
   series(you, YOU_COL);
+}
+
+// ---- expected win% curves, one point per turn ----
+// The AI's is the winexp its search reported for each move it chose; yours is
+// the review's per-decision position value (bestQ — what the position was worth
+// under best play), so it fills in as scoring runs.
+function aiWinCurve(moves) {
+  const out = []; let t = 1;                 // end-turn moves advance the turn
+  for (const mv of moves) {
+    if (mv.q != null && (!out.length || out[out.length - 1].t !== t)) out.push({ t, q: mv.q });
+    if (mv.e) t++;
+  }
+  return out;
+}
+function youWinCurve(rv) {
+  const out = [];
+  if (rv) for (const m of rv.moves)
+    if (m.bestQ != null && (!out.length || out[out.length - 1].t !== m.turn))
+      out.push({ t: m.turn, q: m.bestQ });
+  return out;
+}
+function redrawSeedGraphs(r) {
+  if ($('pg')) drawPower($('pg'), r);
 }
 
 // ============================ per-seed detail ============================
@@ -973,7 +1059,8 @@ const sdTitle = (i, r) => `Seed ${i + 1} · You ${resTag(r.you.result)} AI ${res
 const sdLegend = (r) => `
   <span><i style="background:${YOU_COL}"></i>You — ${sdFin(r.you)}</span>
   <span><i style="background:${AI_COL}"></i>AI — ${sdFin(r.ai)}</span>
-  <span><i class="dash"></i>${WIN_NODES} to win</span>`;
+  <span><i class="dash"></i>${WIN_NODES} to win</span>
+  <span><i class="dashq"></i>dotted: win%</span>`;
 
 // The AI plays concurrently, so an analysis auto-opened after your loss usually shows
 // its half unfinished. Fill it in the moment it lands rather than leaving a stale
@@ -984,7 +1071,7 @@ function refreshSeedPanel(i) {
   const r = M.rounds[i];
   $('sd-title').innerHTML = sdTitle(i, r);
   $('glegend').innerHTML = sdLegend(r);
-  drawPower($('pg'), r.you.hist, r.ai.hist);
+  redrawSeedGraphs(r);
   const tab = document.querySelector('#sd-tabs > div[data-tab="ai"]');
   if (tab) tab.textContent = `AI moves (${r.ai.moves.length})`;
   if (sdTab === 'ai') { renderList(); select(0); }     // its list was empty before
@@ -996,13 +1083,13 @@ function openSeed(i, opts = {}) {
   const r = M.rounds[i];
   $('sd-title').innerHTML = sdTitle(i, r);
   $('sd-body').innerHTML = `
-    <h3>Red nodes over the game</h3>
+    <h3>Red nodes &amp; win% over the game</h3>
     <canvas class="pg" id="pg"></canvas>
     <div id="glegend">${sdLegend(r)}</div>
     <h3>Step through the moves</h3>
     <div id="ibwrap"><canvas id="ib"></canvas></div>
     <div id="ibcap">
-      <span id="ibinfo">Tap a move below to see the board it was played into.</span>
+      <span id="ibinfo"></span>
       <span class="nav"><span class="act" id="ib-prev">‹</span><span class="act" id="ib-next">›</span></span>
     </div>
     <div class="tabs" id="sd-tabs">
@@ -1014,7 +1101,7 @@ function openSeed(i, opts = {}) {
   // which is 0x0 while the overlay is still display:none.
   $('ov-seed').classList.add('show');
   ib = new Board($('ib'), $('ibwrap'));
-  drawPower($('pg'), r.you.hist, r.ai.hist);
+  redrawSeedGraphs(r);
   document.querySelectorAll('#sd-tabs > div').forEach(el => {
     el.onclick = () => {
       sdTab = el.dataset.tab; sdSel = -1;
@@ -1048,7 +1135,7 @@ function renderList() {
       ? 'The AI hasn\'t finished this seed yet.' : 'No moves recorded.'}</div>`;
     return;
   }
-  // Your list gets a Score button; the AI's moves already carry its own win%.
+  // Your list gets the review's tier bar; the AI's moves already carry its own win%.
   if (sdTab === 'you') {
     const rv = side.review;
     if (rv) {
@@ -1140,10 +1227,10 @@ async function showMove(k) {
   // highlight the move about to be played
   ib.hoverMove = mv.e ? null : { from: mv.a[0], to: mv.a[1] };
   ib.resize();
-  // "You:"/"AI:" rather than a conjugated verb — "You ends the turn" read badly.
-  const who = sdTab === 'you' ? 'You' : 'AI';
+  // The board already highlights the attack — no raw node ids here (the board
+  // never labels them, so "3 → 7" identified nothing).
   $('ibinfo').innerHTML = `<b>Move ${k + 1}</b> · turn ${s.turn} · ${s.counts.red} red nodes`
-    + ` · ${who}: ${mv.e ? 'end turn' : `attack ${mv.a[0]} → ${mv.a[1]}`}`;
+    + `${mv.e ? ' · end turn' : ''}`;
 }
 function select(k) {
   const r = M.rounds[sdIdx];
@@ -1176,21 +1263,27 @@ function hoverEnd() {
 
 const reviewing = new Set();   // round indices being scored (transient — never saved)
 const reviewErr = {};          // last scoring error per round index (transient)
-async function runReview(i) {
+const seedPanelOn = (i) => sdIdx === i && $('ov-seed').classList.contains('show');
+async function runReview(i, eng = api) {
   if (reviewing.has(i)) return;
   reviewing.add(i);
   delete reviewErr[i];
   const r = M.rounds[i];
-  if (sdIdx === i && sdTab === 'you') renderList();  // swap a retry line to 'Scoring…'
+  if (seedPanelOn(i) && sdTab === 'you') renderList();  // swap a retry line to 'Scoring…'
   try {
     // Rolling readout: every scored move lands in r.you.review immediately
     // (marked .partial, so renderList shows '…' pending rows) — the early
-    // rows are readable while the rest are still searching.
+    // rows are readable while the rest are still searching, and both the
+    // tally's skill graph and this seed's win% panel fill in as they land.
     // Only the COMPLETE review is persisted; an interrupted scoring saves nothing.
     r.you.review = await computeReview(i, (partial) => {
       r.you.review = partial;
-      if (sdIdx === i && sdTab === 'you') renderList();
-    });
+      if (seedPanelOn(i)) {
+        if (sdTab === 'you') renderList();
+        redrawSeedGraphs(r);
+      }
+      refreshSkill();
+    }, eng);
     save();
   } catch (e) {
     r.you.review = null;
@@ -1198,17 +1291,52 @@ async function runReview(i) {
   } finally {
     reviewing.delete(i);
   }
-  if (sdIdx === i && sdTab === 'you') renderList();
+  if (seedPanelOn(i)) {
+    if (sdTab === 'you') renderList();
+    redrawSeedGraphs(r);
+  }
+  refreshSkill();
+}
+
+// ============================ background scorer ============================
+// Reviews used to exist only for seeds whose analysis you opened — and since a
+// loss auto-opens its analysis and a win doesn't, the skill graph skewed toward
+// your bad games. This pump scores EVERY finished seed, oldest first, for as
+// long as the page is open. It runs on its OWN third worker: engine.worker.js
+// aborts an in-flight search the moment another request queues behind it, so
+// sharing your worker (taps, inspector replays) or the AI's would silently
+// truncate grading searches below their 16k floor. A seed already being scored
+// from an open panel (`reviewing`) is skipped, as is one that failed this
+// session (reviewErr — the panel's retry button still owns that); a completed
+// review persists, so progress survives reloads.
+let scoreApi = null, scoreBusy = false;
+async function scorePump() {
+  if (scoreBusy) return;
+  scoreBusy = true;
+  try {
+    for (;;) {
+      const i = M.rounds.findIndex((r, k) => r.you.result && r.you.moves.length
+        && !(r.you.review && !r.you.review.partial)
+        && !reviewing.has(k) && !reviewErr[k]);
+      if (i < 0) break;
+      if (!scoreApi) scoreApi = makeEngine();
+      await runReview(i, scoreApi);
+      const rv = M.rounds[i].you.review;
+      if (!(rv && !rv.partial)) break;   // scoring failed — wait for the next trigger
+    }
+  } finally {
+    scoreBusy = false;
+  }
 }
 
 // Replay YOUR game from its seed and, at every decision you made, run a search and
 // score your choice against the search's best. This is the blunder-alert metric
 // applied retroactively to a whole game: it uses only PRE-move Qs, so it
 // grades the decision, never the dice that followed.
-async function computeReview(i, onPartial) {
+async function computeReview(i, onPartial, eng = api) {
   const r = M.rounds[i];
   const out = { moves: [], curve: [] };
-  let s = await api('/api/game', 'POST', { seed: r.seed });
+  let s = await eng('/api/game', 'POST', { seed: r.seed });
   for (let k = 0; k < r.you.moves.length; k++) {
     const mv = r.you.moves[k];
     const isEnd = !!mv.e;
@@ -1216,7 +1344,7 @@ async function computeReview(i, onPartial) {
     // grade:true = the engine's grading mode — root min-visit floor + full budget on
     // live positions + burn-in-free Qs, so YOUR move's Q is comparable to the best
     // move's instead of a starved child's pessimistic estimate (which inflated gaps).
-    const res = await api(`/api/game/${s.id}/search`, 'POST',
+    const res = await eng(`/api/game/${s.id}/search`, 'POST',
       { sims: REVIEW_SIMS, maxSims: REVIEW_MAX, grade: true });
     const all = res.all || res.top || [];
     const best = all[0] || null;
@@ -1241,8 +1369,8 @@ async function computeReview(i, onPartial) {
     out.partial = { done: k + 1, total: r.you.moves.length };
     onPartial(reviewAggregates(out));
     s = isEnd
-      ? await api(`/api/game/${s.id}/end-turn`, 'POST')
-      : await api(`/api/game/${s.id}/attack`, 'POST', { from, to });
+      ? await eng(`/api/game/${s.id}/end-turn`, 'POST')
+      : await eng(`/api/game/${s.id}/attack`, 'POST', { from, to });
   }
   delete out.partial;
   return reviewAggregates(out);
@@ -1349,7 +1477,7 @@ paintBadge(null, true);
 // Straight into a game: no intro gate. A stored tally resumes where you left off,
 // otherwise the first seed is dealt immediately.
 const prev = load();
-if (prev) { M = prev; renderStrip(); resume(); }
+if (prev) { M = prev; renderStrip(); resume(); scorePump(); }
 else {
   M = { rounds: [blankRound(randSeed())], idx: 0 };
   save();
