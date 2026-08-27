@@ -277,11 +277,10 @@
 
 <!-- tally -->
 <div class="ov" id="ov-res"><div class="panel">
-  <div class="p-head"><span id="res-title">Tally</span></div>
+  <div class="p-head"><span id="res-title">Tally</span><div class="act" id="res-close">&#10005;</div></div>
   <div class="p-body" id="res-body"></div>
   <div class="p-foot">
     <div class="act danger" id="res-reset">Reset tally</div>
-    <div class="act" id="res-close2">Keep playing</div>
   </div>
 </div></div>
 
@@ -943,7 +942,7 @@ function showResults() {
 
 $('tally').onclick = showResults;
 const closeRes = () => $('ov-res').classList.remove('show');
-$('res-close2').onclick = closeRes;
+$('res-close').onclick = closeRes;
 $('res-reset').onclick = () => {
   if (!confirm('Reset the whole tally? Every seed, result and review is discarded.')) return;
   try { localStorage.removeItem(KEY); } catch (_) {}
