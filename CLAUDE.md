@@ -58,9 +58,14 @@
         the seed you're still on) — you never wait for it.
         Because the seed pins board+dice, this removes the deal variance that dominates
         unpaired winrates (`sim-vs-real-deal-imbalance`, `hard-set-2026-07-02`). The
-        tally panel is deliberately minimal — the two W-L score cards + the seed-list
-        browser, nothing else (the McNemar/sign-test readout was cut as clutter
-        2026-07-17; per-move scoring is the skill readout). Per-seed detail: **one red-nodes-vs-turn graph with both players' lines**
+        tally panel is deliberately minimal — the two W-L score cards, the
+        **skill-over-time graph**, + the seed-list browser (the McNemar/sign-test
+        readout was cut as clutter 2026-07-17; per-move scoring is the skill readout,
+        and the graph is that metric over time: every scored seed's LIVE decisions
+        concatenated in play order, tier-colored dots + a trailing rolling mean of
+        win%-lost-vs-best over the last 25 decisions, dashed tier thresholds + faint
+        seed boundaries; its legend states the coverage caveat — losses auto-score,
+        wins only when opened, so unscored seeds are counted out loud). Per-seed detail: **one red-nodes-vs-turn graph with both players' lines**
         (you teal / AI yellow, + the 24-to-win line; legend doubles as each side's final
         score) + **both move lists**, steppable — tapping a move replays the seed to that
         point (bit-exact) and shows the exact board with the move highlighted. AI moves

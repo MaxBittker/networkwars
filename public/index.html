@@ -158,11 +158,12 @@
   /* ---- per-seed detail: one shared power graph + inspectable move lists ---- */
   canvas.pg { display:block; width:100%; height:112px; background:rgba(255,255,255,.02);
     border-radius:8px; }
-  /* legend doubles as each side's final score, so the graph needs no axis labels */
-  #glegend { display:flex; flex-wrap:wrap; gap:6px 14px; justify-content:center;
+  /* legend doubles as each side's final score, so the graph needs no axis labels
+     (.glegend = same treatment for the tally's skill graph) */
+  #glegend, .glegend { display:flex; flex-wrap:wrap; gap:6px 14px; justify-content:center;
     font-size:11px; color:#8fcfb8; margin:8px 0 14px; }
-  #glegend span { display:flex; align-items:center; gap:5px; }
-  #glegend i { width:12px; height:3px; border-radius:2px; flex:0 0 auto; }
+  #glegend span, .glegend span { display:flex; align-items:center; gap:5px; }
+  #glegend i, .glegend i { width:12px; height:3px; border-radius:2px; flex:0 0 auto; }
   #glegend i.dash { background:repeating-linear-gradient(90deg,
     rgba(54,211,154,.7) 0 3px, transparent 3px 6px); }
 
@@ -729,6 +730,101 @@ async function runSweep() {
   }
 }
 
+// ============================ skill over time ============================
+// Move-by-move readout of how well you've been playing ACROSS seeds: every seed
+// with a complete review contributes its LIVE decisions (gap = win% your choice
+// gave up vs the search's best — the same number the move lists show), in play
+// order. The teal line is the trailing mean of the last SKILL_WIN of them; the
+// dots are the individual decisions, tier-colored, with the tier thresholds
+// drawn as dashed bands so the dots read by position alone. Lower = better.
+// SKILL_WIN ≈ a few games' worth of live decisions (~6-15 per game): long enough
+// to steady the line, short enough that real improvement shows within a session.
+const SKILL_WIN = 25;
+const TIER_COLS = ['#36d39a', '#f5c542', '#ff9f45', '#ff4d5e'];   // by tier k
+
+// Live scored decisions in play order, plus where each scored seed starts and
+// how many finished seeds have no review yet (wins are only scored when their
+// analysis is opened, so coverage is the caveat the legend must state).
+function skillData() {
+  const pts = [], starts = [];
+  let seeds = 0, unscored = 0;
+  for (const r of M.rounds) {
+    const rv = r.you.review;
+    if (!rv || rv.partial) { if (r.you.result) unscored++; continue; }
+    seeds++;
+    starts.push(pts.length);
+    for (const m of rv.moves) if (m.gap != null && !m.dead) pts.push(m.gap);
+  }
+  return { pts, starts, seeds, unscored };
+}
+
+// Trailing mean over the last w points (expanding until w have accrued).
+function rollingMean(pts, w) {
+  const out = []; let sum = 0;
+  for (let i = 0; i < pts.length; i++) {
+    sum += pts[i];
+    if (i >= w) sum -= pts[i - w];
+    out.push(sum / Math.min(i + 1, w));
+  }
+  return out;
+}
+
+function drawSkill(cv, d) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = cv.getBoundingClientRect();
+  const W = Math.max(1, Math.round(rect.width)), H = Math.max(1, Math.round(rect.height));
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const n = d.pts.length;
+  if (!n) {
+    g.fillStyle = '#5f9e8e'; g.font = '11px -apple-system, sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('no live decisions scored yet', W / 2, H / 2);
+    return;
+  }
+  const roll = rollingMean(d.pts, SKILL_WIN);
+  const padL = 5, padR = 8, padT = 6, padB = 5;
+  // Scale to the rolling line (the readout), not the raw dots — one 60% blunder
+  // must not flatten the line. Dots above the top are pinned to the edge.
+  const yMax = Math.max(12, Math.ceil(Math.max(...roll) * 1.3));
+  const xOf = (i) => n < 2 ? W / 2 : padL + i / (n - 1) * (W - padL - padR);
+  const yOf = (v) => padT + (1 - Math.min(v, yMax) / yMax) * (H - padT - padB);
+  // seed boundaries — faint, so runs of dots group by game without labels
+  g.strokeStyle = 'rgba(255,255,255,.055)'; g.lineWidth = 1;
+  for (const s of d.starts) {
+    if (!s) continue;
+    const x = Math.round(xOf(s - 0.5)) + .5;
+    g.beginPath(); g.moveTo(x, padT); g.lineTo(x, H - padB); g.stroke();
+  }
+  // the tier thresholds (same bands the move lists use), dashed
+  g.setLineDash([3, 4]);
+  for (const t of TIERS) {
+    if (t.min > yMax) continue;
+    g.strokeStyle = TIER_COLS[t.k] + '38';
+    g.beginPath(); g.moveTo(0, yOf(t.min) + .5); g.lineTo(W, yOf(t.min) + .5); g.stroke();
+  }
+  g.setLineDash([]);
+  // individual decisions: OK moves recede, mistakes pop
+  for (let i = 0; i < n; i++) {
+    const t = tierOf(d.pts[i]);
+    g.globalAlpha = t.k ? .85 : .3;
+    g.fillStyle = TIER_COLS[t.k];
+    g.beginPath(); g.arc(xOf(i), yOf(d.pts[i]), 2, 0, Math.PI * 2); g.fill();
+  }
+  g.globalAlpha = 1;
+  if (n < 2) return;
+  // the rolling mean — the actual skill line
+  g.beginPath();
+  roll.forEach((v, i) => i ? g.lineTo(xOf(i), yOf(v)) : g.moveTo(xOf(i), yOf(v)));
+  g.strokeStyle = YOU_COL; g.lineWidth = 2.1; g.lineJoin = 'round';
+  g.shadowColor = YOU_COL; g.shadowBlur = 5; g.stroke(); g.shadowBlur = 0;
+  g.fillStyle = YOU_COL;
+  g.beginPath(); g.arc(xOf(n - 1), yOf(roll[n - 1]), 3, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = '#02100b'; g.lineWidth = 1; g.stroke();
+}
+
 // ============================ tally ============================
 function showResults() {
   const s = stats();
@@ -736,6 +832,29 @@ function showResults() {
   const paired = s.both + s.onlyYou + s.onlyAI + s.neither;
 
   $('res-title').textContent = `Tally · ${paired} pair${paired === 1 ? '' : 's'} complete`;
+
+  // Skill over time: the per-move gap metric, concatenated across scored seeds.
+  // Rendered only once something is scored — the legend owns the coverage caveat
+  // (unscored wins would otherwise silently bias the line toward lost games).
+  const sk = skillData();
+  const roll = sk.pts.length ? rollingMean(sk.pts, SKILL_WIN) : [];
+  const now = roll.length ? roll[roll.length - 1] : null;
+  const unscoredNote = sk.unscored
+    ? `<span>${sk.unscored} finished seed${sk.unscored === 1 ? '' : 's'} unscored — open below to score</span>`
+    : '';
+  const skillHtml = !sk.seeds
+    ? (sk.unscored ? `<div class="glegend" style="margin:0 0 14px">`
+        + `<span>Skill graph appears once a seed is scored — open one below.</span></div>` : '')
+    : `<h3>Skill over time</h3>
+       <canvas class="pg" id="sk"></canvas>
+       <div class="glegend">
+         <span><i style="background:${YOU_COL}"></i>avg loss/decision`
+           + `${now != null ? ` — now −${now.toFixed(1)}%` : ''} (rolling ${SKILL_WIN})</span>
+         <span>${sk.pts.length} decision${sk.pts.length === 1 ? '' : 's'}`
+           + ` · ${sk.seeds} seed${sk.seeds === 1 ? '' : 's'} scored</span>
+         ${unscoredNote}
+       </div>`;
+
   $('res-body').innerHTML = `
     <div id="score">
       <div class="sc ${s.yw > s.aw ? 'lead' : ''}"><div class="who">You</div>
@@ -745,6 +864,7 @@ function showResults() {
         <div class="n">${s.aw}–${s.al}</div>
         <div class="pct">${an ? Math.round(100 * s.aw / an) : 0}% win</div></div>
     </div>
+    ${skillHtml}
     <div id="rows"></div>`;
 
   const rows = $('rows');
@@ -765,6 +885,9 @@ function showResults() {
     if (r.startNodes) drawThumb(c, r.startNodes);
   }
   $('ov-res').classList.add('show');
+  // paint AFTER show — the canvas sizes itself from getBoundingClientRect,
+  // which is 0x0 while the overlay is still display:none
+  if (sk.seeds) drawSkill($('sk'), sk);
 }
 
 $('tally').onclick = showResults;
