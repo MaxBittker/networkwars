@@ -162,7 +162,7 @@
 
   /* ---- per-seed detail: one shared power graph + inspectable move lists ---- */
   canvas.pg { display:block; width:100%; height:112px; background:rgba(255,255,255,.02);
-    border-radius:8px; }
+    border-radius:8px; cursor:pointer; }
   /* legend doubles as each side's final score, so the graph needs no axis labels
      (.glegend = same treatment for the tally's skill graph) */
   #glegend, .glegend { display:flex; flex-wrap:wrap; gap:6px 14px; justify-content:center;
@@ -770,16 +770,19 @@ function skillData(zoom = Infinity) {
     if (!rv) { if (r.you.result) unscored++; return; }
     if (rv.partial) scoring = i; else seeds++;
     const pts = [];
-    for (const m of rv.moves) if (m.gap != null && !m.dead) pts.push(m.gap);
+    // carry provenance (round + move index) so a tap on the graph can jump
+    // straight to that decision in the seed's analysis
+    rv.moves.forEach((m, k) => { if (m.gap != null && !m.dead) pts.push({ gap: m.gap, ri: i, k }); });
     if (pts.length || !rv.partial) groups.push(pts);
   });
   const all = groups.flat();
-  const roll = rollingMean(all, SKILL_WIN);
+  const roll = rollingMean(all.map(p => p.gap), SKILL_WIN);
   const shown = zoom < groups.length ? groups.slice(-zoom) : groups;
   const skip = all.length - shown.reduce((a, g) => a + g.length, 0);
   const starts = []; let acc = 0;
   for (const g of shown) { starts.push(acc); acc += g.length; }
-  return { pts: all.slice(skip), roll: roll.slice(skip), starts,
+  const meta = all.slice(skip);
+  return { pts: meta.map(p => p.gap), meta, roll: roll.slice(skip), starts,
            seeds, shownSeeds: shown.length, unscored, scoring };
 }
 
@@ -813,6 +816,18 @@ function refreshSkill() {
     + status;
 }
 
+// Tap the skill graph → jump into that decision: nearest x is a scored move of
+// some seed; open that seed's analysis with the move selected.
+function skTap(ev) {
+  if (!skHit) return;
+  const frac = (ev.offsetX - skHit.padL) / (skHit.W - skHit.padL - skHit.padR);
+  const i = Math.round(Math.min(1, Math.max(0, frac)) * (skHit.n - 1));
+  const m = skHit.meta[i];
+  if (!m) return;
+  closeRes();
+  openSeed(m.ri, { fromResults: true, sel: m.k });
+}
+
 // Trailing mean over the last w points (expanding until w have accrued).
 function rollingMean(pts, w) {
   const out = []; let sum = 0;
@@ -824,6 +839,7 @@ function rollingMean(pts, w) {
   return out;
 }
 
+let skHit = null;   // x-mapping of the last skill-graph draw, for tap-to-jump
 function drawSkill(cv, d) {
   const dpr = window.devicePixelRatio || 1;
   const rect = cv.getBoundingClientRect();
@@ -833,6 +849,7 @@ function drawSkill(cv, d) {
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, W, H);
   const n = d.pts.length;
+  skHit = null;
   if (!n) {
     g.fillStyle = '#5f9e8e'; g.font = '11px -apple-system, sans-serif';
     g.textAlign = 'center'; g.textBaseline = 'middle';
@@ -841,6 +858,7 @@ function drawSkill(cv, d) {
   }
   const roll = d.roll;
   const padL = 5, padR = 8, padT = 6, padB = 5;
+  skHit = { n, W, padL, padR, meta: d.meta };
   // Scale to the rolling line (the readout), not the raw dots — one 60% blunder
   // must not flatten the line. Dots above the top are pinned to the edge.
   const yMax = Math.max(12, Math.ceil(Math.max(...roll) * 1.3));
@@ -934,6 +952,7 @@ function showResults() {
   document.querySelectorAll('#skzoom span').forEach(el => {
     el.onclick = () => setSkillZoom(el.dataset.z);
   });
+  if ($('sk')) $('sk').onclick = skTap;
   // paint AFTER show — the canvas sizes itself from getBoundingClientRect,
   // which is 0x0 while the overlay is still display:none
   refreshSkill();
@@ -954,6 +973,7 @@ $('res-reset').onclick = () => {
 // the whole point is the comparison, and two separate panels made you eyeball it.
 // Node count (not total strength) is the plotted power: it's the win condition (24).
 const YOU_COL = '#5fd0d6', AI_COL = '#f5c542';
+let pgHit = null;   // x-mapping of the last seed-graph draw, for tap-to-scrub
 function drawPower(cv, r) {
   const you = r.you.hist, ai = r.ai.hist;
   const dpr = window.devicePixelRatio || 1;
@@ -966,6 +986,7 @@ function drawPower(cv, r) {
   const all = [...you, ...ai];
   const padL = 5, padR = 5, padT = 6, padB = 5;
   const maxT = Math.max(2, ...all.map(p => p.t));
+  pgHit = all.length ? { W, padL, padR, maxT } : null;
   const maxN = Math.max(WIN_NODES, ...all.map(p => p.n));
   const xOf = (t) => padL + (t - 1) / (maxT - 1) * (W - padL - padR);
   const yOf = (v) => padT + (1 - v / maxN) * (H - padT - padB);
@@ -1032,6 +1053,25 @@ function youWinCurve(rv) {
 }
 function redrawSeedGraphs(r) {
   if ($('pg')) drawPower($('pg'), r);
+}
+
+// Tap the seed graph → scrub the inspector to that turn: x maps back to a turn,
+// and the first of the active side's moves on (or after) it gets selected.
+function moveTurns(moves) {
+  const ts = []; let t = 1;                  // end-turn moves advance the turn
+  for (const mv of moves) { ts.push(t); if (mv.e) t++; }
+  return ts;
+}
+function pgTap(ev) {
+  if (!pgHit) return;
+  const frac = (ev.offsetX - pgHit.padL) / (pgHit.W - pgHit.padL - pgHit.padR);
+  const t = Math.round(1 + Math.min(1, Math.max(0, frac)) * (pgHit.maxT - 1));
+  const side = sdTab === 'you' ? M.rounds[sdIdx].you : M.rounds[sdIdx].ai;
+  const ts = moveTurns(side.moves);
+  if (!ts.length) return;
+  let k = ts.findIndex(x => x >= t);
+  if (k < 0) k = ts.length - 1;
+  select(k);
 }
 
 // ============================ per-seed detail ============================
@@ -1105,6 +1145,7 @@ function openSeed(i, opts = {}) {
   $('ov-seed').classList.add('show');
   ib = new Board($('ib'), $('ibwrap'));
   redrawSeedGraphs(r);
+  $('pg').onclick = pgTap;
   document.querySelectorAll('#sd-tabs > div').forEach(el => {
     el.onclick = () => {
       sdTab = el.dataset.tab; sdSel = -1;
@@ -1117,7 +1158,7 @@ function openSeed(i, opts = {}) {
   $('ib-next').onclick = () => step(1);
   sdTab = 'you';
   renderList();
-  select(0);
+  select(opts.sel ?? 0);       // a graph tap lands directly on its decision
   // Scoring IS the analysis — start it the moment the panel opens, no button.
   if (!r.you.review && r.you.moves.length) runReview(i);
 }
