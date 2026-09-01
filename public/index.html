@@ -320,16 +320,11 @@
 // presentation only.
 // ============================================================================
 import { Board, ORDER, SPEEDS, sleep, dirArrow, drawThumb } from './board.js';
+import { createReviewer, reviewAggregates, tierOf, TIERS, DEAD_LO, DEAD_HI } from './review.js';
 
 // The AI plays at the strength the app's autoplay/live driver uses: 6000-sim floor,
 // adaptive up to the worker's 150k ceiling with the visit/value-margin early stop.
 const AI_SIMS = 6000;
-// Review budget: one grading-mode search per decision you made. Grading mode
-// disables the dominance early-stops, so live positions run to the 24k ceiling
-// (per `hard-set-2026-07-02` quality saturates ~32k) and the 16k floor only
-// bounds how early the decisive "position is decided" stop may fire — every
-// scored decision gets at least 16k sims.
-const REVIEW_SIMS = 16000, REVIEW_MAX = 24000;
 const WIN_NODES = 24;                     // faction node count that ends the game
 
 const $ = (id) => document.getElementById(id);
@@ -338,7 +333,7 @@ const board = new Board($('cv'), $('board'));
 let state = null;            // authoritative view of YOUR game
 let inputLocked = false;
 
-// ---- independent engines: yours, the AI's, and (lazily) the background scorer's ----
+// ---- independent engines: yours, the AI's, and (lazily, in review.js) the review pool's ----
 function makeEngine() {
   const w = new Worker('engine.worker.js', { type: 'module' });
   const pending = new Map();
@@ -356,6 +351,8 @@ function makeEngine() {
 }
 const api = makeEngine();      // your game — never issues a search while you play
 const aiApi = makeEngine();    // the AI's background game
+// Decision scoring (review.js): its own worker pool, created on the first review.
+const reviewer = createReviewer(makeEngine);
 
 // ============================ model ============================
 // One entry per seed. `moves` on each side is the full ordered list of RED decisions
@@ -772,7 +769,7 @@ function skillData(zoom = Infinity) {
     const pts = [];
     // carry provenance (round + move index) so a tap on the graph can jump
     // straight to that decision in the seed's analysis
-    rv.moves.forEach((m, k) => { if (m.gap != null && !m.dead) pts.push({ gap: m.gap, ri: i, k }); });
+    rv.moves.forEach((m, k) => { if (m && m.gap != null && !m.dead) pts.push({ gap: m.gap, ri: i, k }); });
     if (pts.length || !rv.partial) groups.push(pts);
   });
   const all = groups.flat();
@@ -1046,8 +1043,8 @@ function aiWinCurve(moves) {
 }
 function youWinCurve(rv) {
   const out = [];
-  if (rv) for (const m of rv.moves)
-    if (m.bestQ != null && (!out.length || out[out.length - 1].t !== m.turn))
+  if (rv) for (const m of rv.moves)          // a partial review has null holes
+    if (m && m.bestQ != null && (!out.length || out[out.length - 1].t !== m.turn))
       out.push({ t: m.turn, q: m.bestQ });
   return out;
 }
@@ -1075,15 +1072,6 @@ function pgTap(ev) {
 }
 
 // ============================ per-seed detail ============================
-const TIERS = [
-  { min: 20, k: 3, label: 'Blunder' },
-  { min: 10, k: 2, label: 'Mistake' },
-  { min: 5,  k: 1, label: 'Inaccuracy' },
-];
-// Outside this win% band the game is already decided and no choice can change it.
-const DEAD_LO = 0.02, DEAD_HI = 0.98;
-const tierOf = (gap) => (TIERS.find(t => gap >= t.min) || { k: 0, label: 'OK' });
-
 let sdIdx = 0, sdTab = 'you', sdSel = -1, ib = null, sdFromResults = false;
 
 function mvLabel(l) {
@@ -1308,7 +1296,7 @@ function hoverEnd() {
 const reviewing = new Set();   // round indices being scored (transient — never saved)
 const reviewErr = {};          // last scoring error per round index (transient)
 const seedPanelOn = (i) => sdIdx === i && $('ov-seed').classList.contains('show');
-async function runReview(i, eng = api) {
+async function runReview(i) {
   if (reviewing.has(i)) return;
   reviewing.add(i);
   delete reviewErr[i];
@@ -1320,14 +1308,14 @@ async function runReview(i, eng = api) {
     // rows are readable while the rest are still searching, and both the
     // tally's skill graph and this seed's win% panel fill in as they land.
     // Only the COMPLETE review is persisted; an interrupted scoring saves nothing.
-    r.you.review = await computeReview(i, (partial) => {
+    r.you.review = await reviewer.grade(r, (partial) => {
       r.you.review = partial;
       if (seedPanelOn(i)) {
         if (sdTab === 'you') renderList();
         redrawSeedGraphs(r);
       }
       refreshSkill();
-    }, eng);
+    });
     save();
   } catch (e) {
     r.you.review = null;
@@ -1345,94 +1333,32 @@ async function runReview(i, eng = api) {
 // ============================ background scorer ============================
 // Reviews used to exist only for seeds whose analysis you opened — and since a
 // loss auto-opens its analysis and a win doesn't, the skill graph skewed toward
-// your bad games. This pump scores EVERY finished seed, oldest first, for as
-// long as the page is open. It runs on its OWN third worker: engine.worker.js
-// aborts an in-flight search the moment another request queues behind it, so
-// sharing your worker (taps, inspector replays) or the AI's would silently
-// truncate grading searches below their 16k floor. A seed already being scored
-// from an open panel (`reviewing`) is skipped, as is one that failed this
-// session (reviewErr — the panel's retry button still owns that); a completed
-// review persists, so progress survives reloads.
-let scoreApi = null, scoreBusy = false;
+// your bad games. This pump scores EVERY finished seed for as long as the page
+// is open, NEWEST first: the seed you just finished is the one you're waiting
+// on, and the backlog fills in behind it. A seed already being scored from an
+// open panel (`reviewing`) is skipped, as is one that failed this session
+// (reviewErr — the panel's retry button still owns that); a completed review
+// persists, so progress survives reloads.
+let scoreBusy = false;
 async function scorePump() {
   if (scoreBusy) return;
   scoreBusy = true;
   try {
     for (;;) {
-      const i = M.rounds.findIndex((r, k) => r.you.result && r.you.moves.length
-        && !(r.you.review && !r.you.review.partial)
-        && !reviewing.has(k) && !reviewErr[k]);
+      let i = -1;
+      for (let k = M.rounds.length - 1; k >= 0; k--) {
+        const r = M.rounds[k];
+        if (r.you.result && r.you.moves.length && !(r.you.review && !r.you.review.partial)
+            && !reviewing.has(k) && !reviewErr[k]) { i = k; break; }
+      }
       if (i < 0) break;
-      if (!scoreApi) scoreApi = makeEngine();
-      await runReview(i, scoreApi);
+      await runReview(i);
       const rv = M.rounds[i].you.review;
       if (!(rv && !rv.partial)) break;   // scoring failed — wait for the next trigger
     }
   } finally {
     scoreBusy = false;
   }
-}
-
-// Replay YOUR game from its seed and, at every decision you made, run a search and
-// score your choice against the search's best. This is the blunder-alert metric
-// applied retroactively to a whole game: it uses only PRE-move Qs, so it
-// grades the decision, never the dice that followed.
-async function computeReview(i, onPartial, eng = api) {
-  const r = M.rounds[i];
-  const out = { moves: [], curve: [] };
-  let s = await eng('/api/game', 'POST', { seed: r.seed });
-  for (let k = 0; k < r.you.moves.length; k++) {
-    const mv = r.you.moves[k];
-    const isEnd = !!mv.e;
-    const from = isEnd ? null : mv.a[0], to = isEnd ? null : mv.a[1];
-    // grade:true = the engine's grading mode — root min-visit floor + full budget on
-    // live positions + burn-in-free Qs, so YOUR move's Q is comparable to the best
-    // move's instead of a starved child's pessimistic estimate (which inflated gaps).
-    const res = await eng(`/api/game/${s.id}/search`, 'POST',
-      { sims: REVIEW_SIMS, maxSims: REVIEW_MAX, grade: true });
-    const all = res.all || res.top || [];
-    const best = all[0] || null;
-    const mine = all.find(m => isEnd ? m.action === -1 : (m.from === from && m.to === to));
-    // Unvisited tail moves have no reliable Q — record the move but leave it unscored
-    // rather than inventing a number (same guard the live blunder alert uses).
-    const scored = !!(best && mine && mine.visits > 0);
-    const gap = scored ? Math.max(0, (best.q - mine.q) * 100) : null;
-    const label = isEnd ? null : { f: { ...s.nodes[from] }, t: { ...s.nodes[to] } };
-    const bestDiffers = scored && best !== mine;
-    const bestLbl = !bestDiffers ? null
-      : (best.action === -1 ? 'end' : { f: { ...s.nodes[best.from] }, t: { ...s.nodes[best.to] } });
-    // A position whose best move is already ~lost or ~won carries no decision signal:
-    // EVERY legal move scores gap 0 there, so counting those would flatter you (a
-    // thrown game reads as a long tail of "best" moves).
-    const dead = scored && (best.q <= DEAD_LO || best.q >= DEAD_HI);
-    out.moves.push({ n: k + 1, turn: s.turn, isEnd, label, bestLbl, dead,
-      myQ: scored ? mine.q : null, bestQ: best ? best.q : null, gap });
-    if (best && best.q != null) out.curve.push(+best.q.toFixed(4));
-    // Rolling: hand the caller a scored-so-far review after every move (marked
-    // .partial), aggregates included, so the list can render as scoring runs.
-    out.partial = { done: k + 1, total: r.you.moves.length };
-    onPartial(reviewAggregates(out));
-    s = isEnd
-      ? await eng(`/api/game/${s.id}/end-turn`, 'POST')
-      : await eng(`/api/game/${s.id}/attack`, 'POST', { from, to });
-  }
-  delete out.partial;
-  return reviewAggregates(out);
-}
-
-// Aggregates over LIVE decisions only (a decided position ties every move, so
-// counting those flatters the player). `counts` drives the tier bar; n/nLive/meanLoss
-// are recorded in the saved review but no longer shown — the per-move rows say it
-// better than a headline number did.
-function reviewAggregates(out) {
-  const sc = out.moves.filter(m => m.gap != null);
-  const live = sc.filter(m => !m.dead);
-  out.n = sc.length;
-  out.nLive = live.length;
-  out.meanLoss = live.length ? live.reduce((a, m) => a + m.gap, 0) / live.length : 0;
-  out.counts = [0, 0, 0, 0];
-  for (const m of live) out.counts[tierOf(m.gap).k]++;
-  return out;
 }
 
 // ============================ menu (hamburger) ============================

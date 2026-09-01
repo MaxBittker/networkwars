@@ -67,11 +67,22 @@
         seed boundaries; zoom chips cut it to the last 10/100/all seeds — the mean
         is computed over the FULL history and only then windowed, so the left edge
         keeps its trailing context). Coverage comes from the **background scorer**:
-        a third worker that reviews every finished seed oldest-first for as long as
-        the page is open (its own worker because engine.worker.js aborts an
-        in-flight search when a request queues behind it — sharing yours or the
-        AI's would silently truncate grading searches below their 16k floor), so
-        the graph fills itself in and no longer skews toward auto-scored losses. Per-seed detail: **one red-nodes-vs-turn graph with both players' lines**
+        a pump that reviews every finished seed, NEWEST first, for as long as the
+        page is open, so the graph fills itself in and no longer skews toward
+        auto-scored losses. The scorer itself is **`public/review.js`**
+        (`createReviewer(makeEngine).grade(round, onPartial)` + the tier/dead-band
+        constants and `reviewAggregates`; the page keeps only the model, the pump and
+        rendering): all grading (pump + an open panel's review) runs on a **review
+        worker pool** (`REVIEW_WORKERS` = hardwareConcurrency − 2, capped at 6,
+        lazily created). Positions of a game are independent bit-exact replays, so
+        each pool worker keeps its own replay and pulls the next unscored move in
+        play order (2026-09-01: 44-decision game 10.4s → 2.2s on a 10-core, results
+        bit-identical; the partial review has null holes where a search is still
+        out, and its consumers skip them). Dedicated workers because
+        engine.worker.js aborts an in-flight search when a request queues behind it
+        — sharing yours or the AI's would silently truncate grading searches below
+        their 16k floor. Gate: `node solver/review_gate.mjs [seed] [workers]` hosts
+        the worker in real threads and asserts parallel ≡ serial. Per-seed detail: **one red-nodes-vs-turn graph with both players' lines**
         (you teal / AI yellow, + the 24-to-win line; legend doubles as each side's final
         score), with dotted **win% overlays** on the same graph on their own implicit
         0-100% scale (AI line = the winexp its search reported per move at play time;
