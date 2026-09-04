@@ -68,7 +68,7 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
 
   async function grade(r, onPartial) {
     const moves = r.you.moves;
-    const out = { moves: new Array(moves.length).fill(null), curve: [] };
+    const out = { moves: new Array(moves.length).fill(null) };
     let next = 0, done = 0, failed = false;
 
     const gradeOne = async (w, k) => {
@@ -89,16 +89,21 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
       // rather than inventing a number (same guard the live blunder alert uses).
       const scored = !!(best && mine && mine.visits > 0);
       const gap = scored ? Math.max(0, (best.q - mine.q) * 100) : null;
-      const label = isEnd ? null : { f: { ...s.nodes[from] }, t: { ...s.nodes[to] } };
+      // Labels carry only what the move lists render (pip owner/strength + the arrow's
+      // x/y); Qs are kept to 4 dp. The review is persisted per seed, so its footprint
+      // is what bounds how many seeds fit in localStorage.
+      const pip = (n) => ({ owner: n.owner, strength: n.strength, x: n.x, y: n.y });
+      const r4 = (v) => v == null ? null : Math.round(v * 1e4) / 1e4;
+      const label = isEnd ? null : { f: pip(s.nodes[from]), t: pip(s.nodes[to]) };
       const bestDiffers = scored && best !== mine;
       const bestLbl = !bestDiffers ? null
-        : (best.action === -1 ? 'end' : { f: { ...s.nodes[best.from] }, t: { ...s.nodes[best.to] } });
+        : (best.action === -1 ? 'end' : { f: pip(s.nodes[best.from]), t: pip(s.nodes[best.to]) });
       // A position whose best move is already ~lost or ~won carries no decision signal:
       // EVERY legal move scores gap 0 there, so counting those would flatter you (a
       // thrown game reads as a long tail of "best" moves).
       const dead = scored && (best.q <= DEAD_LO || best.q >= DEAD_HI);
       return { n: k + 1, turn: s.turn, isEnd, label, bestLbl, dead,
-        myQ: scored ? mine.q : null, bestQ: best ? best.q : null, gap };
+        myQ: scored ? r4(mine.q) : null, bestQ: best ? r4(best.q) : null, gap: r4(gap) };
     };
 
     // One lane per pool worker: hold the worker for the whole run so its replay
@@ -130,7 +135,6 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
     await Promise.all(lanes);
 
     delete out.partial;
-    out.curve = out.moves.filter(m => m.bestQ != null).map(m => +m.bestQ.toFixed(4));
     return reviewAggregates(out);
   }
 

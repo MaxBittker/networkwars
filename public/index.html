@@ -367,7 +367,52 @@ const blankRound = (seed) => ({ seed, startNodes: null, you: blankSide(), ai: bl
 // new_game() seeds mulberry32 with this; keep it in 1..2^31-1 like the app does.
 const randSeed = () => Math.floor(Math.random() * 0x7ffffffe) + 1;
 
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(M)); } catch (_) {} };
+// localStorage is the only store and Safari caps it near 5 MB per origin (counted in
+// UTF-16, so ~2.5M chars). A finished seed with its review weighs ~15-20 KB, so a
+// long-running tally WILL reach the cap — and a setItem that threw used to be
+// swallowed here, silently freezing the saved state at whatever last fit: every
+// reload then resumed that same stale seed (the "same seeds over and over" bug,
+// 2026-09-04). Now the write is kept under a soft cap (and retried on a hard
+// quota error) by stripping REPLAY DETAIL from the oldest finished pairs: moves,
+// labels, per-turn history and the start board go; the W-L result and the review's
+// per-decision gaps (what the tally cards and the skill graph read) stay. A
+// trimmed seed just can't be opened in the analysis panel any more.
+const SAVE_CAP = 2.0e6;       // chars (~100 seeds of full detail) — headroom under Safari's quota
+let trimNoted = false;
+function save() {
+  for (;;) {
+    const js = JSON.stringify(M);
+    if (js.length > SAVE_CAP && trimOldest()) continue;
+    try { localStorage.setItem(KEY, js); return true; }
+    catch (e) {
+      if (!trimOldest()) { console.warn('tally save failed:', e); return false; }
+    }
+  }
+}
+// Oldest untrimmed pair that is fully finished, not the seed in play, and not being
+// scored right now (its reviewer still walks r.you.moves). false when nothing's left.
+function trimOldest() {
+  const i = M.rounds.findIndex((r, k) => !r.trim && r.you.result && r.ai.result
+    && k !== M.idx && !reviewing.has(k));
+  if (i < 0) return false;
+  trimRound(M.rounds[i]);
+  if (!trimNoted) {
+    trimNoted = true;
+    console.warn(`tally near the storage cap — trimming replay detail from the oldest seeds`);
+  }
+  return true;
+}
+function trimRound(r) {
+  r.trim = 1;
+  r.startNodes = null;
+  for (const side of [r.you, r.ai]) { side.moves = []; side.hist = []; }
+  const rv = r.you.review;
+  // keep exactly what the skill graph + tier bar read; drop labels/Qs/turns
+  r.you.review = (rv && !rv.partial)
+    ? { n: rv.n, nLive: rv.nLive, meanLoss: rv.meanLoss, counts: rv.counts,
+        moves: rv.moves.map(m => m && { gap: m.gap, dead: m.dead }) }
+    : null;
+}
 function load() {
   try {
     const m = JSON.parse(localStorage.getItem(KEY) || 'null');
@@ -493,7 +538,7 @@ async function aiPlaySeed(i) {
   for (let guard = 0; guard < 4000 && !s.over; guard++) {
     const res = await aiApi(`/api/game/${s.id}/search`, 'POST', { sims: AI_SIMS });
     const b = res.best;
-    const q = res.winexp;
+    const q = res.winexp == null ? null : Math.round(res.winexp * 1e4) / 1e4;   // 4 dp: storage
     if (!b || b.action === -1) {
       g.moves.push({ e: 1, q });
       s = await aiApi(`/api/game/${s.id}/end-turn`, 'POST');
@@ -820,7 +865,7 @@ function skTap(ev) {
   const frac = (ev.offsetX - skHit.padL) / (skHit.W - skHit.padL - skHit.padR);
   const i = Math.round(Math.min(1, Math.max(0, frac)) * (skHit.n - 1));
   const m = skHit.meta[i];
-  if (!m) return;
+  if (!m || M.rounds[m.ri].trim) return;    // a trimmed seed has no replay to jump into
   closeRes();
   openSeed(m.ri, { fromResults: true, sel: m.k });
 }
@@ -939,9 +984,14 @@ function showResults() {
     const meta = document.createElement('div'); meta.className = 'meta';
     meta.innerHTML = `<div class="sd">#${i + 1} · seed ${r.seed}</div>`
       + `<div class="vs">You ${resTag(r.you.result)} &nbsp;·&nbsp; AI ${resTag(r.ai.result)}</div>`;
-    const go = document.createElement('div'); go.className = 'go'; go.textContent = '›';
+    const go = document.createElement('div'); go.className = 'go'; go.textContent = r.trim ? '' : '›';
     row.appendChild(c); row.appendChild(meta); row.appendChild(go);
-    row.onclick = () => { closeRes(); openSeed(i, { fromResults: true }); };
+    if (r.trim) {                 // replay detail was trimmed to fit storage — result only
+      row.style.opacity = '.55';
+      meta.querySelector('.sd').textContent += ' · detail trimmed';
+    } else {
+      row.onclick = () => { closeRes(); openSeed(i, { fromResults: true }); };
+    }
     rows.appendChild(row);
     if (r.startNodes) drawThumb(c, r.startNodes);
   }
@@ -1109,9 +1159,10 @@ function refreshSeedPanel(i) {
 }
 
 function openSeed(i, opts = {}) {
+  const r = M.rounds[i];
+  if (r.trim) { if (opts.fromResults) showResults(); return; }   // nothing to replay
   sdIdx = i; sdSel = -1;
   sdFromResults = !!opts.fromResults;
-  const r = M.rounds[i];
   $('sd-title').innerHTML = sdTitle(i, r);
   $('sd-body').innerHTML = `
     <h3>Red nodes &amp; win% over the game</h3>

@@ -102,7 +102,14 @@
         move scores gap 0, so including them flatters the player (measured: a
         pass-every-turn game reads −7.7%/move unfiltered vs −27.6% over its 6 real
         decisions). No intro/setup gate — loading the page deals a seed immediately (a
-        stored tally resumes). Caveat (documented in the page's header comment, no
+        stored tally resumes). **Persistence is localStorage under a soft cap**
+        (`SAVE_CAP`, 2.0M chars; Safari's ~5 MB quota is UTF-16): a finished seed with
+        its review weighs ~20 KB, so `save()` strips replay detail (moves/labels/hist/
+        start board) from the OLDEST finished pairs when the blob outgrows the cap or
+        setItem throws — the result and the review's per-decision gaps (tally + skill
+        graph) stay, the seed just can't be opened for analysis (`r.trim`). Before
+        this (fixed 2026-09-04) a quota error was swallowed, the saved state froze at
+        whatever last fit, and every reload resumed that same stale seed. Caveat (documented in the page's header comment, no
         longer surfaced in the UI): same seed = same deal + same dice STREAM, but draws
         are consumed serially, so once your moves diverge from the AI's you pull
         different coins. Duplicate bridge, not dice-for-dice (which isn't coherent once
