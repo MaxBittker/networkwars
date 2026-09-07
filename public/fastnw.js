@@ -13,6 +13,7 @@ import Module from './fast_engine.js';
 export const FACTIONS = ['red', 'green', 'yellow', 'blue', 'purple'];
 export const FIDX = Object.fromEntries(FACTIONS.map((f, i) => [f, i]));
 export const MAXN = 64;
+export const RULES_VERSION = 2;
 
 // Resolve `./fast_engine.js` against THIS module's URL so the worker (served from
 // /public) and node (filesystem) both find it without a hard-coded path.
@@ -81,8 +82,10 @@ class Engine {
   }
 
   // ---- board generation ----
-  newGame(seed) {
-    const n = this.M._new_game(seed >>> 0, this._owner, this._strength, this._x, this._y);
+  newGame(seed, rules = RULES_VERSION) {
+    if (rules !== 1 && rules !== RULES_VERSION) throw new Error('unsupported rules version');
+    const generate = rules === 1 ? this.M._new_game_legacy : this.M._new_game;
+    const n = generate(seed >>> 0, this._owner, this._strength, this._x, this._y);
     return {
       n,
       owner: this._get(this._owner, n),
@@ -149,6 +152,7 @@ class Engine {
   botTurnEnd(st) { this.M._free(st); }
 
   attackLogged(owner, strength, frm, to) {
+    if (!this.isLegalAttack(owner, strength, frm, to)) throw new Error('illegal attack');
     this._put(this._owner, owner);
     this._put(this._strength, strength);
     this.M._resolve_battle_logged(this._owner, this._strength, frm, to,
@@ -176,12 +180,23 @@ class Engine {
 
   // Replay without animation logs: the same C primitives and real game dice.
   replayMove(owner, strength, move) {
+    if (!move.e && (!Array.isArray(move.a) || owner[move.a[0]] !== 0 ||
+        !this.isLegalAttack(owner, strength, move.a[0], move.a[1])))
+      throw new Error('illegal replay attack');
     this._put(this._owner, owner);
     this._put(this._strength, strength);
     if (move.e) this.M._end_turn(this._owner, this._strength);
     else this.M._ext_resolve_battle(this._owner, this._strength, move.a[0], move.a[1]);
     this._getBack(this._owner, owner);
     this._getBack(this._strength, strength);
+  }
+
+  isLegalAttack(owner, strength, frm, to) {
+    if (!Number.isInteger(frm) || !Number.isInteger(to) ||
+        frm < 0 || to < 0 || frm >= owner.length || to >= owner.length) return false;
+    this._put(this._owner, owner);
+    this._put(this._strength, strength);
+    return !!this.M._ext_attack_legal(this._owner, this._strength, frm, to);
   }
 
   // ---- sweep-up (mop-up policy + its certificate; see fast_engine.c) ----
@@ -231,7 +246,9 @@ class Engine {
     this._put(this._owner, owner);
     this._put(this._strength, strength);
     this.M._use_sim_rng();
-    return this.M._uct_begin(this._owner, this._strength, turns, sims, maxSims, cPuct, nroll);
+    const result = this.M._uct_begin(this._owner, this._strength, turns, sims, maxSims, cPuct, nroll);
+    if (result < 0) throw new Error('uct_begin pool alloc failed');
+    return result;
   }
   // Optional value-based early stop (off until set): settle once the leading move
   // has >= minVis visits AND its win-prob is decisive (<=lo or >=hi) or beats the

@@ -8,7 +8,7 @@ export function skillHistory(rounds, reviewing = new Set(), errors = {}) {
   return rounds.flatMap((r, ri) => {
     if (!r.you.result) return [];
     const rv = r.you.review;
-    const complete = !!rv && !rv.partial;
+    const complete = !!rv && !rv.partial && !rv.stale;
     const live = (rv?.moves || []).flatMap((m, k) =>
       m && Number.isFinite(m.gap) && !m.dead ? [{ gap: m.gap, k }] : []);
     const status = complete ? 'complete' : reviewing.has(ri) ? 'active'

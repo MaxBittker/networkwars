@@ -5,7 +5,7 @@
 // logic lives here — board-gen, the four bots, the fair-coin-attrition battle, reinforcement
 // and the search are all in fast_engine.c (via fastnw.js). The frontend is now fully
 // self-contained: no HTTP API, no Python.
-import { loadEngine, FACTIONS, FIDX } from './fastnw.js';
+import { loadEngine, FACTIONS, FIDX, MAXN, RULES_VERSION } from './fastnw.js';
 
 let E = null;                 // the WASM engine (loaded once)
 const GAMES = {};
@@ -17,11 +17,7 @@ function select(g) { E.setTopologyCsr(g.owner.length, g.adj); }
 
 function updateWinner(g) {
   const c = E.counts(g.owner);
-  let w = -1;
-  for (let f = 0; f < 5; f++) if (c[f] >= 24) w = f;
-  const alive = [];
-  for (let f = 0; f < 5; f++) if (c[f] > 0) alive.push(f);
-  if (alive.length === 1) w = alive[0];
+  const w = E.checkWinner(g.owner);
   if (w >= 0) { g.over = true; g.winner = FACTIONS[w]; g.youWon = (w === 0); return; }
   // RED wiped out: attacks can only launch FROM an owned node, so at 0 nodes red can
   // never move again and the game is already lost — no bot needs to reach 24 to prove
@@ -41,17 +37,17 @@ function view(g) {
   const c = E.counts(g.owner);
   const counts = {};
   for (let f = 0; f < 5; f++) counts[FACTIONS[f]] = c[f];
-  const legal = E.legalMoves(g.owner, g.strength, g.adj).map(([a, b]) => ({ from: a, to: b }));
+  const legal = g.over ? [] : E.legalMoves(g.owner, g.strength, g.adj).map(([a, b]) => ({ from: a, to: b }));
   return { id: g.id, seed: g.seed, nodes, links: g.links, counts, turn: g.turn, legalMoves: legal,
-    over: g.over, youWon: g.youWon, winner: g.winner };
+    over: g.over, youWon: g.youWon, winner: g.winner, rules: g.rules };
 }
 
-function newGame(seed, persist = true) {
+function newGame(seed, persist = true, rules = RULES_VERSION) {
   if (seed == null) seed = (Math.floor(Math.random() * 0x7fffffff) + 1);
-  const d = E.newGame(seed);
+  const d = E.newGame(seed, rules);
   const g = { id: newId(), owner: d.owner, strength: d.strength, x: d.x, y: d.y,
     adj: d.adj, links: d.links, mb: d.mb, turn: 1, over: false, youWon: false,
-    winner: null, seed };
+    winner: null, seed, rules };
   if (persist) GAMES[g.id] = g;
   return g;
 }
@@ -59,10 +55,20 @@ function newGame(seed, persist = true) {
 // Start a game from an externally-parsed board (list of {id,x,y,owner,strength}).
 // Adjacency = 8-connectivity over (x,y), matching the iOS-parse path in server.py.
 function gameFromBoard(boardNodes, mbSeed) {
+  if (!Array.isArray(boardNodes) || !boardNodes.length || boardNodes.length > MAXN)
+    throw new Error('invalid board size');
   const n = boardNodes.length;
   const owner = new Int32Array(n), strength = new Int32Array(n);
   const x = new Int32Array(n), y = new Int32Array(n);
+  const ids = new Set(), cells = new Set();
   for (const nd of boardNodes) {
+    if (!nd || !Number.isInteger(nd.id) || nd.id < 0 || nd.id >= n || ids.has(nd.id) ||
+        !Number.isInteger(nd.x) || !Number.isInteger(nd.y) ||
+        nd.x < -2147483648 || nd.x > 2147483647 || nd.y < -2147483648 || nd.y > 2147483647 ||
+        !Object.hasOwn(FIDX, nd.owner) || !Number.isInteger(nd.strength) ||
+        nd.strength < 0 || nd.strength > 2147483647 || cells.has(`${nd.x},${nd.y}`))
+      throw new Error('invalid board node');
+    ids.add(nd.id); cells.add(`${nd.x},${nd.y}`);
     owner[nd.id] = FIDX[nd.owner];
     strength[nd.id] = nd.strength;
     x[nd.id] = nd.x; y[nd.id] = nd.y;
@@ -75,13 +81,17 @@ function gameFromBoard(boardNodes, mbSeed) {
   const links = E.getLinks();
   const g = { id: newId(), owner, strength, x, y, adj, links,
     mb: (mbSeed != null ? mbSeed : (Math.floor(Math.random() * 0x7fffffff) + 1)),
-    turn: 1, over: false, youWon: false, winner: null, seed: null };
+    turn: 1, over: false, youWon: false, winner: null, seed: null, rules: RULES_VERSION };
+  updateWinner(g);
   GAMES[g.id] = g;
   return g;
 }
 
 function doAttack(g, frm, to) {
+  if (g.over) return { error: 'game is over', _status: 409 };
   select(g);
+  if (g.owner[frm] !== 0 || !E.isLegalAttack(g.owner, g.strength, frm, to))
+    return { error: 'illegal attack', _status: 400 };
   E.useMb32(g.mb);
   const { flips, meta } = E.attackLogged(g.owner, g.strength, frm, to);
   g.mb = E.getMb32();
@@ -99,6 +109,7 @@ function doAttack(g, frm, to) {
 // final board + g.mb are bit-identical to end_turn — just observable. Port of
 // server.do_end_turn.
 function doEndTurn(g) {
+  if (g.over) return { error: 'game is over', _status: 409 };
   select(g);
   E.useMb32(g.mb);
   const owner = g.owner, strength = g.strength;
@@ -243,7 +254,7 @@ function route(path, method, body) {
   // One pass supplies every historical position. No battle logs, per-move
   // messages, or retained game in GAMES; the caller caches this one trajectory.
   if (path === '/api/replay' && method === 'POST') {
-    const g = newGame(body.seed, false);
+    const g = newGame(body.seed, false, body.rules);
     const frames = [view(g)];
     E.useMb32(g.mb);
     for (const mv of body.moves) {
@@ -256,7 +267,7 @@ function route(path, method, body) {
     return { frames };
   }
 
-  if (path === '/api/game' && method === 'POST') return view(newGame(body.seed));
+  if (path === '/api/game' && method === 'POST') return view(newGame(body.seed, true, body.rules));
 
   if (path.startsWith('/api/game/')) {
     const rest = path.slice('/api/game/'.length);
@@ -267,7 +278,7 @@ function route(path, method, body) {
     if (!g) return { error: 'no such game', _status: 404 };
     if (method === 'DELETE' && action === '') { delete GAMES[gid]; return { ok: true }; }
     if (method === 'GET' && action === '') return view(g);
-    if (action === 'attack') return doAttack(g, body.from | 0, body.to | 0);
+    if (action === 'attack') return doAttack(g, body.from, body.to);
     if (action === 'end-turn') return doEndTurn(g);
     if (action === 'search') return doSearch(g,
       body.sims != null ? body.sims | 0 : 2000, 2.5, 1, 0x12345678,

@@ -5,23 +5,23 @@
 // persistence and rendering; this module only turns a round into a review.
 
 // Review budget: one grading-mode search per decision you made. Grading mode
-// disables the dominance early-stops, so live positions run to the 24k ceiling
-// (per `hard-set-2026-07-02` quality saturates ~32k) and the 16k floor only
-// bounds how early the decisive "position is decided" stop may fire — every
-// scored decision gets at least 16k sims.
+// evaluates every alternative to the 24k ceiling. Only a position with one
+// legal action can stop at the 16k floor. A winning best move does not imply
+// that the player's alternative preserves the win.
 export const REVIEW_SIMS = 16000, REVIEW_MAX = 24000;
 // Bump when grading semantics/search results change. Checkpoints additionally
 // identify the exact seed + action sequence, so they cannot grade another game.
-export const REVIEW_VERSION = 1;
+export const REVIEW_VERSION = 2;
 const reviewSource = r => JSON.stringify([r.seed,
-  r.you.moves.map(m => m.e ? -1 : m.a)]);
+  r.you.moves.map(m => m.e ? -1 : m.a), r.rules ?? 1]);
 
 export const TIERS = [
   { min: 20, k: 3, label: 'Blunder' },
   { min: 10, k: 2, label: 'Mistake' },
   { min: 5,  k: 1, label: 'Inaccuracy' },
 ];
-// Outside this win% band the game is already decided and no choice can change it.
+// Skip a decision only when both the recommended and played move stay in the
+// same extreme band. A move that throws away a winning position must be scored.
 export const DEAD_LO = 0.02, DEAD_HI = 0.98;
 export const tierOf = (gap) => (TIERS.find(t => gap >= t.min) || { k: 0, label: 'OK' });
 
@@ -71,7 +71,7 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
         await w.api(`/api/game/${old.s.id}`, 'DELETE');
         w.replays.delete(key);
       }
-      const s = await w.api('/api/game', 'POST', { seed: r.seed });
+      const s = await w.api('/api/game', 'POST', { seed: r.seed, rules: r.rules ?? 1 });
       if (s.error) throw new Error(s.error);
       replay = { s, pos: 0 };
     }
@@ -116,7 +116,8 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
       const mine = all.find(m => isEnd ? m.action === -1 : (m.from === from && m.to === to));
       // Unvisited tail moves have no reliable Q — record the move but leave it unscored
       // rather than inventing a number (same guard the live blunder alert uses).
-      const scored = !!(best && mine && mine.visits > 0);
+      const scored = !!(best && best.visits > 0 && mine && mine.visits > 0
+        && Number.isFinite(best.q) && Number.isFinite(mine.q));
       const gap = scored ? Math.max(0, (best.q - mine.q) * 100) : null;
       // Labels carry only what the move lists render (pip owner/strength + the arrow's
       // x/y); Qs are kept to 4 dp. The review is persisted per seed, so its footprint
@@ -127,10 +128,9 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
       const bestDiffers = scored && best !== mine;
       const bestLbl = !bestDiffers ? null
         : (best.action === -1 ? 'end' : { f: pip(s.nodes[best.from]), t: pip(s.nodes[best.to]) });
-      // A position whose best move is already ~lost or ~won carries no decision signal:
-      // EVERY legal move scores gap 0 there, so counting those would flatter you (a
-      // thrown game reads as a long tail of "best" moves).
-      const dead = scored && (best.q <= DEAD_LO || best.q >= DEAD_HI);
+      // Exclude low-signal decisions, not blunders made from winning positions.
+      const dead = scored && ((best.q <= DEAD_LO && mine.q <= DEAD_LO)
+        || (best.q >= DEAD_HI && mine.q >= DEAD_HI));
       return { n: k + 1, turn: s.turn, isEnd, label, bestLbl, dead,
         myQ: scored ? r4(mine.q) : null, bestQ: best ? r4(best.q) : null, gap: r4(gap) };
     };
@@ -173,8 +173,8 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
   return { grade, workers };
 }
 
-// Aggregates over LIVE decisions only (a decided position ties every move, so
-// counting those flatters the player). `counts` drives the tier bar; n/nLive/meanLoss
+// Aggregates exclude decisions whose recommended and played values both stay
+// in the same extreme band. `counts` drives the tier bar; n/nLive/meanLoss
 // are recorded in the saved review but no longer shown — the per-move rows say it
 // better than a headline number did.
 export function reviewAggregates(out) {

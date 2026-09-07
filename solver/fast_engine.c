@@ -39,7 +39,7 @@
  * survivor distribution (no beta-binomial). resolve_battle() below is the exact
  * loop; the search's CAPP/CAPES tables are the exact DP of that loop. */
 #define A_END (-1)          /* action sentinel: distinct from any frm<<8|to (>=0) */
-#define MAXCHILD 512        /* max legal RED actions at one node */
+#define MAXCHILD (MAXN * 8 + 1)        /* max legal RED actions at one node */
 #define UCT_CHECK_EVERY 256 /* adaptive-stop: re-check root visit margin this often */
 
 /* ---- topology (fixed per game) ---- */
@@ -86,12 +86,12 @@ static double (*RNG)(void) = sm_rand;
 void use_mb32_rng(void) { RNG = mb32; }
 void use_sim_rng(void) { RNG = sm_rand; }
 
-/* ---- board generation (mulberry32; bit-identical to the old Python/JS) ----
+/* ---- board generation (mulberry32; versioned for saved-game replays) ----
  * 6x7 king-adjacency lattice -> connectivity-preserving vertex removal to 30
- * nodes -> clustered ownership growth -> the iOS deal (every faction totals 20,
- * one of 4 fixed templates). Consumes the mb32 stream in the exact same order as
- * network_wars.build_board, so new_game(seed) reproduces that board bit-for-bit
- * and leaves MB advanced for the real-game battle stream that follows. */
+ * nodes -> recovered connected army groups -> single-army fillers. Each faction
+ * totals 20, using one of 4 fixed templates. Template probabilities and topology
+ * sampling remain approximations. Version 1 keeps the former ownership growth
+ * and shuffled deal, preserving old boards and their subsequent battle dice. */
 #define GRID_ROWS 7
 #define GRID_COLS 6
 #define CELLS (GRID_ROWS * GRID_COLS)   /* 42 */
@@ -137,7 +137,10 @@ static int bg_still_connected(const int *al, const int gadj[][8], const int *gde
 /* Build a fresh game from `seed`. Fills owner[N], strength[N], x[N], y[N] and sets
  * the engine topology (ADJ/ADJ_OFF). Switches the active RNG to mb32 (seeded) so
  * the caller can play out the real seeded game. Returns N (= 30). */
-int new_game(uint32_t seed, int *owner, int *strength, int *x, int *y) {
+static int bg_deal_clusters(int *owner, int *strength);
+
+static int new_game_version(uint32_t seed, int *owner, int *strength, int *x, int *y,
+                            int clustered) {
     MB = seed;            /* seed the real mulberry32 stream */
     RNG = mb32;
 
@@ -158,6 +161,7 @@ int new_game(uint32_t seed, int *owner, int *strength, int *x, int *y) {
     }
     #undef GLINK
 
+new_map: ;
     /* remove random vertices, keeping the rest connected, down to TARGET_NODES */
     int al[CELLS]; for (int i = 0; i < CELLS; i++) al[i] = 1;
     int nalive = CELLS;
@@ -209,6 +213,11 @@ int new_game(uint32_t seed, int *owner, int *strength, int *x, int *y) {
     }
     ADJ_OFF[N] = off;
     build_cap_tables();
+
+    if (clustered) {
+        if (!bg_deal_clusters(owner, strength)) goto new_map;
+        return N;
+    }
 
     /* ownership: clustered territorial growth (OWNER_SEEDS=1, OWNER_SCATTER) */
     int own[MAXN]; for (int i = 0; i < N; i++) own[i] = -1;
@@ -262,6 +271,88 @@ int new_game(uint32_t seed, int *owner, int *strength, int *x, int *y) {
 
     for (int i = 0; i < N; i++) owner[i] = own[i];
     return N;
+}
+
+/* MapMaker.findBuildCluster/getBuildCluster: shuffled free starts, then a
+ * connected single, pair, or triple. A triple may be a fork OR a path. */
+static int bg_place_group(int *owner, int *strength, int faction,
+                           const int *armies, int size) {
+    int starts[MAXN], ns = 0;
+    for (int i = 0; i < N; i++) if (owner[i] < 0) starts[ns++] = i;
+    bg_shuffle(starts, ns);
+    for (int i = 0; i < ns; i++) {
+        int group[3] = {starts[i], -1, -1}, neighbors[MAXN], nn = 0;
+        if (size > 1) {
+            for (int k = ADJ_OFF[group[0]]; k < ADJ_OFF[group[0]+1]; k++)
+                if (owner[ADJ[k]] < 0) neighbors[nn++] = ADJ[k];
+            if (!nn) continue;
+            bg_shuffle(neighbors, nn);
+            group[1] = neighbors[0];
+            if (size == 3) {
+                if (nn >= 2) group[2] = neighbors[1];
+                else {
+                    nn = 0;
+                    for (int k = ADJ_OFF[group[1]]; k < ADJ_OFF[group[1]+1]; k++)
+                        if (ADJ[k] != group[0] && owner[ADJ[k]] < 0)
+                            neighbors[nn++] = ADJ[k];
+                    if (!nn) continue;
+                    bg_shuffle(neighbors, nn);
+                    group[2] = neighbors[0];
+                }
+            }
+        }
+        for (int k = 0; k < size; k++) {
+            owner[group[k]] = faction;
+            strength[group[k]] = armies[k];
+        }
+        return 1;
+    }
+    return 0;  /* never silently split an unplaceable group */
+}
+
+/* Recovered placement rules (MAP_DEAL_DECOMPILED.md). Keep the existing
+ * template probabilities/RNG; the rule being corrected is army adjacency.
+ * Larger stacks are placed first, in faction order; shuffled one-army fillers
+ * occupy the remaining cells (MapMaker.buildSingleArmies). */
+static int bg_deal_clusters(int *owner, int *strength) {
+    int big[NF][5], bins[NF], singles[MAXN], sn = 0;
+    for (int i = 0; i < N; i++) { owner[i] = -1; strength[i] = 1; }
+    for (int f = 0; f < NF; f++) {
+        double r = mb32();
+        int ti = 3;
+        for (int t = 0; t < 4; t++) if (r < DEAL_CUM[t]) { ti = t; break; }
+        bins[f] = 0;
+        /* splitArmies puts the larger parts first. */
+        for (int j = 5; j >= 0; j--)
+            if (DEAL_TMPL[ti][j] > 1) big[f][bins[f]++] = DEAL_TMPL[ti][j];
+            else singles[sn++] = f;
+    }
+    for (int f = 0; f < NF; f++) {
+        int n = bins[f], pos = 0;
+        if (n == 2 && mb32() < 0.5) {
+            if (!bg_place_group(owner, strength, f, big[f], 1) ||
+                !bg_place_group(owner, strength, f, big[f] + 1, 1)) return 0;
+            continue;
+        }
+        if (n % 2) {
+            if (!bg_place_group(owner, strength, f, big[f], 3)) return 0;
+            pos = 3;
+        }
+        for (; pos < n; pos += 2)
+            if (!bg_place_group(owner, strength, f, big[f] + pos, 2)) return 0;
+    }
+    bg_shuffle(singles, sn);
+    int k = 0;
+    for (int i = 0; i < N; i++) if (owner[i] < 0) owner[i] = singles[k++];
+    return k == sn;
+}
+
+/* Version 1 remains available ONLY to reproduce saved games. */
+int new_game_legacy(uint32_t seed, int *owner, int *strength, int *x, int *y) {
+    return new_game_version(seed, owner, strength, x, y, 0);
+}
+int new_game(uint32_t seed, int *owner, int *strength, int *x, int *y) {
+    return new_game_version(seed, owner, strength, x, y, 1);
 }
 
 /* dump the current adjacency (CSR) for clients/parity tests; returns N. */
@@ -353,17 +444,54 @@ static void build_cap_tables(void) {
     CAP_READY = 1;
 }
 
+/* Large stacks must not be clamped independently: 400 vs 160 is nothing like
+ * 159 vs 159. Keep the fast table for ordinary fights, and compute exact moments
+ * with two DP rows on rare overflow pairs. A small cache shares the calculation
+ * between probability/survivor queries and repeated rollout positions. */
+typedef struct { int a, d; double p, strength; } CapEstimate;
+static CapEstimate CAP_LARGE[256];
+static CapEstimate large_cap_estimate(int a, int d) {
+    unsigned key = ((unsigned)a * 131u + (unsigned)d) % 256u;
+    CapEstimate *cached = &CAP_LARGE[key];
+    if (cached->a == a && cached->d == d) return *cached;
+    size_t width = (size_t)d + 1;
+    double *rows = calloc(4 * width, sizeof(double));
+    if (!rows) { /* bounded approximation only if the exact workspace cannot fit */
+        CapEstimate fallback = {a, d, CAPP[a < MAXS ? a : MAXS-1][d < MAXS ? d : MAXS-1],
+            CAPES[a < MAXS ? a : MAXS-1][d < MAXS ? d : MAXS-1]};
+        return fallback;
+    }
+    double *prev_p = rows, *next_p = rows + width;
+    double *prev_s = rows + 2 * width, *next_s = rows + 3 * width;
+    for (int aa = 2; aa <= a; aa++) {
+        next_p[0] = 1.0; next_s[0] = aa - 1;
+        for (int dd = 1; dd <= d; dd++) {
+            next_p[dd] = (prev_p[dd-1] + next_p[dd-1] + prev_p[dd]) / 3.0;
+            next_s[dd] = (prev_s[dd-1] + next_s[dd-1] + prev_s[dd]) / 3.0;
+        }
+        double *tmp = prev_p; prev_p = next_p; next_p = tmp;
+        tmp = prev_s; prev_s = next_s; next_s = tmp;
+    }
+    double pp = 0.0, ps = 0.0;
+    for (int c1 = 0; c1 < 2; c1++) for (int c2 = 0; c2 < 2; c2++) {
+        int dd = d - c1 - c2; if (dd < 0) dd = 0;
+        pp += 0.25 * prev_p[dd]; ps += 0.25 * prev_s[dd];
+    }
+    free(rows);
+    *cached = (CapEstimate){a, d, pp, pp > 0 ? ps / pp : 0.0};
+    return *cached;
+}
+
 static inline double capture_prob(int a, int d) {
-    if (a < 1) return 0.0;
+    if (a <= 1) return 0.0;
     if (d < 1) return 1.0;
-    if (a >= MAXS) a = MAXS - 1;
-    if (d >= MAXS) d = MAXS - 1;
+    if (a >= MAXS || d >= MAXS) return large_cap_estimate(a, d).p;
     return CAPP[a][d];
 }
 static inline double exp_cap_strength(int a, int d) {
-    if (a >= MAXS) a = MAXS - 1;
-    if (d < 1) return (a >= 1) ? (double)(a - 1) : 0.0;
-    if (d >= MAXS) d = MAXS - 1;
+    if (a <= 1) return 0.0;
+    if (d < 1) return (double)(a - 1);
+    if (a >= MAXS || d >= MAXS) return large_cap_estimate(a, d).strength;
     return CAPES[a][d];
 }
 
@@ -487,6 +615,15 @@ static int ranked_best_move(const int *owner, const int *strength) {
 /* dice battle, frm attacks to — the REAL decompiled iOS mechanic (fair coins).
  * Bit-exact to Utils.doAttack/doAttackConsole (see REAL_BATTLE_DECOMPILED.md):
  * two guarded attacker pre-fires, then a symmetric fair-coin exchange, keep-1. */
+int ext_attack_legal(const int *owner, const int *strength, int frm, int to) {
+    if (frm < 0 || frm >= N || to < 0 || to >= N || frm == to) return 0;
+    if (owner[frm] == owner[to] || strength[frm] < 2) return 0;
+    if (check_winner(owner) != -1) return 0;
+    for (int k = ADJ_OFF[frm]; k < ADJ_OFF[frm+1]; k++)
+        if (ADJ[k] == to) return 1;
+    return 0;
+}
+
 static void resolve_battle(int *owner, int *strength, int frm, int to) {
     int a = strength[frm], d = strength[to];
     if (d > 0 && a > 1 && RNG() < 0.5) d--;             /* attacker pre-fire 1 */
@@ -511,6 +648,12 @@ static void resolve_battle(int *owner, int *strength, int frm, int to) {
  * fromStart, toStart, fromStrength, toStrength}. Uses the active RNG. */
 void resolve_battle_logged(int *owner, int *strength, int frm, int to,
                            int *out_flips, int *out_len, int *out_meta) {
+    if (!ext_attack_legal(owner, strength, frm, to)) {
+        *out_len = 0;
+        memset(out_meta, 0, 5 * sizeof(int));
+        out_meta[0] = -1;  /* rejected; board and RNG are untouched */
+        return;
+    }
     int a0 = strength[frm], d0 = strength[to];
     int a = a0, d = d0, nf = 0;
     /* the TRUE per-round loss sequence (each real coin that lands a hit):
@@ -604,21 +747,20 @@ int bot_turn_next(const int *owner, const int *strength, int faction, int *st) {
     return 0;
 }
 
-/* reinforce faction's largest component (border round-robin). */
+/* Largest-component budget, spent round-robin on the largest available border. */
 static int seen_buf[MAXN];
 static int comp_buf[2 * MAXN];   /* [0..top) = DFS stack; [MAXN..) = collected nodes */
 static int largest_buf[MAXN];
 static int border_buf[MAXN];
 
 static void reinforce(int *owner, int *strength, int faction) {
-    /* Walk components in ascending start-id order; keep the first one whose size
-     * is strictly greater than the best so far (matches Python's
-     * `largest=comps[0]; if len>len(largest)` => first-encountered on ties). */
+    /* Keep the largest component with a border; budget is the largest size
+     * even when that component has no border. Ties retain ascending start id. */
     for (int i = 0; i < N; i++) seen_buf[i] = 0;
-    int chosen_n = 0;
+    int chosen_n = 0, budget = 0;
     for (int s = 0; s < N; s++) {
         if (owner[s] != faction || seen_buf[s]) continue;
-        int top = 0, csz = 0;
+        int top = 0, csz = 0, has_border = 0;
         comp_buf[top++] = s; seen_buf[s] = 1;
         while (top > 0) {
             int nid = comp_buf[--top];
@@ -626,10 +768,12 @@ static void reinforce(int *owner, int *strength, int faction) {
             csz++;
             for (int k = ADJ_OFF[nid]; k < ADJ_OFF[nid+1]; k++) {
                 int j = ADJ[k];
-                if (!seen_buf[j] && owner[j] == faction) { seen_buf[j]=1; comp_buf[top++]=j; }
+                if (owner[j] != faction) has_border = 1;
+                else if (!seen_buf[j]) { seen_buf[j]=1; comp_buf[top++]=j; }
             }
         }
-        if (csz > chosen_n) {
+        if (csz > budget) budget = csz;
+        if (has_border && csz > chosen_n) {
             for (int t = 0; t < csz; t++) largest_buf[t] = comp_buf[MAXN + t];
             chosen_n = csz;
         }
@@ -653,11 +797,15 @@ static void reinforce(int *owner, int *strength, int faction) {
         while (b >= 0 && border_buf[b] > v) { border_buf[b+1] = border_buf[b]; b--; }
         border_buf[b+1] = v;
     }
-    int n_total = chosen_n;
+    /* Utils.reinforce carries the largest component's budget to the next
+     * component if its border is empty. Only relevant on disconnected imports;
+     * every component on a connected, unfinished board has an enemy border. */
+    int n_total = budget;
     for (int i = 0; i < n_total; i++) strength[border_buf[i % bn]] += 1;
 }
 
 static void run_bot_turn(int *owner, int *strength, int faction) {
+    if (check_winner(owner) != -1) return;
     int c[NF]; counts(owner, c);
     if (c[faction] == 0) return;
     int st[BOT_ST_LEN];
@@ -676,6 +824,7 @@ static void run_bot_turn(int *owner, int *strength, int faction) {
 
 /* RED ends turn: reinforce(red) then all bot turns. Mutates board. */
 void end_turn(int *owner, int *strength) {
+    if (check_winner(owner) != -1) return;
     reinforce(owner, strength, 0);
     if (check_winner(owner) != -1) return;
     for (int b = 1; b <= 4; b++) {
@@ -746,7 +895,7 @@ static int sweep_playout(const int *owner_in, const int *strength_in, int turns)
          * mop-up that can't finish the game must not be certified, or the live
          * sweep will end-turn forever (only the player can break a stalemate,
          * by attacking at even odds). */
-        if (turns > MAX_TURNS) return 0;
+        if (turns > MAX_TURNS) return check_winner(owner) == 0;
     }
 }
 
@@ -803,12 +952,9 @@ int rollout(const int *owner_in, const int *strength_in, int turns) {
         }
         w = check_winner(owner); if (w != -1) return w == 0;
         turns++;
-        if (turns > MAX_TURNS) {
-            counts(owner, c);
-            int mx = c[1];
-            for (int f = 2; f < NF; f++) if (c[f] > mx) mx = c[f];
-            return c[0] > mx;
-        }
+        /* A plurality at the horizon is not a win. Match apply_red and the
+         * sweep certificate: only an actual terminal RED victory earns 1. */
+        if (turns > MAX_TURNS) return 0;
     }
 }
 
@@ -820,11 +966,11 @@ int rollout(const int *owner_in, const int *strength_in, int turns) {
 typedef struct {
     int n_children;
     int child_off;     /* index into edge pools */
+    int child_cap;     /* capacity of this node's growable action union */
     int expanded;
     int terminal;
     long total_n;      /* cached sum of child visits (== times selected through) */
     double v;
-    double prior;      /* uniform across this node; store once, not on every edge */
 } MNode;
 
 static MNode  *NODES = NULL;
@@ -883,8 +1029,54 @@ static int new_node(void) {
     if (next_node >= NODE_CAP) return -1;
     MNode *m = &NODES[next_node];
     m->n_children = 0; m->child_off = -1; m->expanded = 0; m->terminal = 0;
-    m->total_n = 0; m->v = 0.5;
+    m->child_cap = 0; m->total_n = 0; m->v = 0.5;
     return (int)next_node++;
+}
+
+/* Open-loop nodes share many sampled boards. Keep the UNION of observed legal
+ * actions, but select only actions legal on this simulation's board. Relocating
+ * an edge block is safe: children store node ids, and no ancestor is grown after
+ * its edge has been put on the current simulation's backup path. */
+static int sync_actions(MNode *node, const int *legal, int nc, int *available) {
+    int missing[MAXCHILD], nm = 0;
+    for (int k = 0; k < nc; k++) {
+        int j = k;
+        if (j >= node->n_children || E_ACT[node->child_off + j] != legal[k]) {
+            for (j = 0; j < node->n_children; j++)
+                if (E_ACT[node->child_off + j] == legal[k]) break;
+        }
+        if (j == node->n_children) {
+            missing[nm] = legal[k];
+            j += nm++;
+        }
+        available[k] = j;
+    }
+    int need = node->n_children + nm;
+    if (need > node->child_cap) {
+        int cap = node->child_cap ? node->child_cap * 2 : need;
+        if (cap < need) cap = need;
+        if (cap > MAXCHILD) cap = MAXCHILD;
+        if (next_edge + cap > EDGE_CAP) return 0;
+        int off = (int)next_edge;
+        next_edge += cap;
+        if (node->n_children) {
+            size_t ni = node->n_children * sizeof(int);
+            memcpy(E_ACT + off, E_ACT + node->child_off, ni);
+            memcpy(E_CHILD + off, E_CHILD + node->child_off, ni);
+            memcpy(E_CHILD2 + off, E_CHILD2 + node->child_off, ni);
+            memcpy(E_N + off, E_N + node->child_off, ni);
+            memcpy(E_W + off, E_W + node->child_off,
+                   node->n_children * sizeof(double));
+        }
+        node->child_off = off; node->child_cap = cap;
+    }
+    for (int k = 0; k < nm; k++) {
+        int off = node->child_off + node->n_children++;
+        E_ACT[off] = missing[k];
+        E_CHILD[off] = E_CHILD2[off] = -1;
+        E_N[off] = 0; E_W[off] = 0.0;
+    }
+    return 1;
 }
 
 /* apply one RED action to (owner,strength); returns: 0 continue, 1 terminal.
@@ -916,6 +1108,7 @@ static int    S_root_turns;
 static double S_cpuct;
 static int    S_nroll;
 static int    S_min_sims, S_max_sims;
+static int    S_finished;
 static int    S_sims;                          /* sims completed so far */
 static int    S_owner0[MAXN], S_strength0[MAXN];
 
@@ -930,10 +1123,9 @@ static int    S_owner0[MAXN], S_strength0[MAXN];
  *   1. min-visit floor: any root child below GRADE_FLOOR_FRAC of the uniform
  *      share is selected before PUCT gets to choose (deterministic — no extra
  *      RNG draws), so every move's subtree gets real tree-correction.
- *   2. early stops: visit-margin / deep-think / value-GAP stops are disabled
- *      (they fire exactly on the contested positions grading cares about); only
- *      the decisive value stop (leader <= lo or >= hi => position is decided,
- *      every move ties, the review's dead-filter drops it anyway) still fires.
+ *   2. early stops: all dominance/value stops are disabled for choices. A high
+ *      leader value cannot establish that other moves also preserve the win.
+ *      Only forced moves may finish at the minimum budget.
  *   3. second-half Q (mode 1): root Qs are reported from sims AFTER the halfway
  *      snapshot only, discarding the burn-in contamination. Mode 2 keeps the
  *      floor+stops but reports cumulative Q (A/B probe for grade_eval.py). */
@@ -947,7 +1139,7 @@ void uct_set_grade(int mode) { GRADE = mode; }
 
 /* run exactly one simulation against the persistent tree; increments S_sims. */
 static void uct_sim_once(void) {
-    int legal[MAXCHILD];
+    int legal[MAXCHILD], available[MAXCHILD];
     int owner[MAXN], strength[MAXN];
     static int path_eidx[16384];
     memcpy(owner, S_owner0, N * sizeof(int));
@@ -960,23 +1152,14 @@ static void uct_sim_once(void) {
     for (;;) {
         if (plen >= 16384) { leaf_value = NODES[cur].v; leaf_value_set = 1; break; }
         MNode *node = &NODES[cur];
-        /* terminal node cached by a prior sim: treat as leaf (never select). */
+        /* Only an already-terminal root is cached; chance outcomes never are. */
         if (node->terminal) { leaf_value = node->v; leaf_value_set = 1; break; }
+        int nc = legal_red(owner, strength, legal);
+        if (!sync_actions(node, legal, nc, available)) {
+            leaf_value = rollout(owner, strength, turns);
+            leaf_value_set = 1; break;
+        }
         if (!node->expanded) {
-            int nc = legal_red(owner, strength, legal);
-            if (next_edge + nc > EDGE_CAP) { leaf_value = node->v; leaf_value_set = 1; break; }
-            node->child_off = (int)next_edge;
-            node->n_children = nc;
-            next_edge += nc;
-            for (int k = 0; k < nc; k++) {
-                int off = node->child_off + k;
-                E_ACT[off] = legal[k];
-                E_CHILD[off] = -1;
-                E_CHILD2[off] = -1;
-                E_N[off] = 0;
-                E_W[off] = 0.0;
-            }
-            node->prior = 1.0 / nc;
             /* leaf eval = rollout average */
             double v = 0.0;
             for (int r = 0; r < S_nroll; r++) v += rollout(owner, strength, turns);
@@ -988,7 +1171,6 @@ static void uct_sim_once(void) {
         }
         /* select best child (PUCT). total == sum of child visits from prior
          * sims; cached on the node (each pass-through adds exactly one). */
-        int nc = node->n_children;
         long total = node->total_n;
         int best_k = -1;
         /* grading mode: root min-visit floor — top up the most-starved root child
@@ -1004,15 +1186,15 @@ static void uct_sim_once(void) {
         }
         if (best_k < 0) {
             double sqrt_total = sqrt((double)total) + 1e-8;
-            const double explore = S_cpuct * node->prior * sqrt_total;
+            const double explore = S_cpuct / nc * sqrt_total;
             double best_u = -1e30;
-            best_k = 0;
+            best_k = available[0];
             for (int k = 0; k < nc; k++) {
-                int off = node->child_off + k;
+                int off = node->child_off + available[k];
                 int n = E_N[off];
                 double q = (n > 0) ? (E_W[off] / n) : node->v;
                 double u = q + explore / (1 + n);
-                if (u > best_u) { best_u = u; best_k = k; }
+                if (u > best_u) { best_u = u; best_k = available[k]; }
             }
         }
         int off = node->child_off + best_k;
@@ -1020,6 +1202,14 @@ static void uct_sim_once(void) {
         path_eidx[plen] = off; plen++;
         int act = E_ACT[off];
         int winner = 0;
+#ifdef NW_VALIDATE_SEARCH
+        if (act != A_END) {
+            int frm = act >> 8, to = act & 0xFF, adjacent = 0;
+            for (int k = ADJ_OFF[frm]; k < ADJ_OFF[frm+1]; k++)
+                if (ADJ[k] == to) adjacent = 1;
+            assert(owner[frm] == 0 && owner[to] != 0 && strength[frm] > 1 && adjacent);
+        }
+#endif
         int term = apply_red(owner, strength, act, &turns, &winner);
         /* chance-split: an attack's child is keyed on the sampled outcome so the
          * subtree below is outcome-coherent. Repel leaves `to` enemy-owned. */
@@ -1028,10 +1218,8 @@ static void uct_sim_once(void) {
             slot = &E_CHILD2[off];
         if (term) {
             leaf_value = winner ? 1.0 : 0.0; leaf_value_set = 1;
-            if (*slot < 0) {
-                int cn = new_node();
-                if (cn >= 0) { NODES[cn].expanded = 1; NODES[cn].terminal = 1; NODES[cn].v = leaf_value; *slot = cn; }
-            }
+            /* A sampled terminal outcome is not a proof about an open-loop
+             * child. In particular END can win, lose, or continue on fresh dice. */
             break;
         }
         if (turns > MAX_TURNS) { leaf_value = 0.0; leaf_value_set = 1; break; }
@@ -1094,17 +1282,10 @@ static int uct_should_stop(void) {
         if (n > b1) { b2 = b1; b2k = b1k; b1 = n; b1k = k; }
         else if (n > b2) { b2 = n; b2k = k; }
     }
-    /* grading mode: never stop on move dominance (that fires exactly on the
-     * contested positions grading needs full budget for); stop only when the
-     * position itself is decided (leader's win-prob past the decisive band). */
-    if (GRADE) {
-        if (rnc0 <= 1) return 1;
-        if (b1 >= VS_MINVIS && b1k >= 0) {
-            double q1 = E_W[off0 + b1k] / (double)b1;
-            if (q1 <= VS_LO || q1 >= VS_HI) return 1;
-        }
-        return 0;
-    }
+    /* A winning leader says nothing about how costly another move is.
+     * Grade every alternative through the full budget; only a forced move can
+     * stop at the floor. This also preserves the second-half sample size. */
+    if (GRADE) return rnc0 <= 1;
     long remaining = (long)S_max_sims - S_sims;
     if (rnc0 <= 1 || b1 - b2 > remaining) return 1;     /* visit-margin (move-identical) */
     if (DT_RATIO > 0.0 && b1 >= DT_MINVIS) {             /* deep-think gating */
@@ -1127,7 +1308,8 @@ static int uct_should_stop(void) {
 /* set up pools + root for a fresh search; returns 0 ok, -1 on pool alloc fail.
  * NOTE (2026-07-01 study): never warm-start this search from a previous tree —
  * within-turn subtree reuse measured −12pt without outcome-keying and ≤0 with
- * it (see SEARCH_VARIANTS.md). Cold trees are unbiased. */
+ * it (see SEARCH_VARIANTS.md). Fresh searches avoid that reuse bias; their
+ * values still depend on rollout policy and the open-loop approximation. */
 static int uct_setup(const int *owner_in, const int *strength_in, int root_turns,
                      int min_sims, int max_sims, double c_puct, int nroll) {
     if (min_sims < 1) min_sims = 1;
@@ -1141,12 +1323,18 @@ static int uct_setup(const int *owner_in, const int *strength_in, int root_turns
     next_node = 0; next_edge = 0;
     S_root = new_node();
     S_root_turns = root_turns;
-    S_cpuct = c_puct; S_nroll = nroll;
+    S_cpuct = c_puct; S_nroll = nroll < 1 ? 1 : nroll;
     S_min_sims = min_sims; S_max_sims = max_sims;
-    S_sims = 0;
+    S_sims = 0; S_finished = 0;
     GS_done = 0;
     memcpy(S_owner0,    owner_in,    N * sizeof(int));
     memcpy(S_strength0, strength_in, N * sizeof(int));
+    int c[NF]; counts(owner_in, c);
+    int w = winner_from_counts(c);
+    if (w != -1 || c[0] == 0) {
+        NODES[S_root].expanded = NODES[S_root].terminal = 1;
+        NODES[S_root].v = w == 0;
+    }
     return 0;
 }
 
@@ -1182,6 +1370,7 @@ int uct_begin(const int *owner_in, const int *strength_in, int root_turns,
  * max_sims reached), else 0. Early-stop checked every UCT_CHECK_EVERY sims past
  * min_sims — same cadence as the one-shot, so totals match regardless of chunking. */
 int uct_step(int budget) {
+    if (S_finished) return 1;
     long target = (long)S_sims + budget;
     if (target > S_max_sims) target = S_max_sims;
     while (S_sims < target) {
@@ -1200,10 +1389,13 @@ int uct_step(int budget) {
             }
         }
         if (S_sims >= S_min_sims && S_sims < S_max_sims
-                && S_sims % UCT_CHECK_EVERY == 0 && uct_should_stop())
+                && S_sims % UCT_CHECK_EVERY == 0 && uct_should_stop()) {
+            S_finished = 1;
             return 1;
+        }
     }
-    return S_sims >= S_max_sims ? 1 : 0;
+    S_finished = S_sims >= S_max_sims;
+    return S_finished;
 }
 int uct_report(int *out_acts, int *out_visits, double *out_q) {
     return uct_collect(out_acts, out_visits, out_q);
@@ -1233,6 +1425,7 @@ int uct_search(const int *owner_in, const int *strength_in, int root_turns,
 
 /* expose primitives for the Python client + parity/regression testing */
 void ext_resolve_battle(int *owner, int *strength, int frm, int to) {
+    if (!ext_attack_legal(owner, strength, frm, to)) return;
     resolve_battle(owner, strength, frm, to);
 }
 void ext_reinforce(int *owner, int *strength, int faction) {

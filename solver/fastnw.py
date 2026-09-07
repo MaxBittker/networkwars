@@ -34,6 +34,8 @@ _lib.use_mb32_rng.argtypes = []
 _lib.use_sim_rng.argtypes = []
 _lib.new_game.argtypes = [ctypes.c_uint32, _i32p, _i32p, _i32p, _i32p]
 _lib.new_game.restype = ctypes.c_int
+_lib.new_game_legacy.argtypes = _lib.new_game.argtypes
+_lib.new_game_legacy.restype = ctypes.c_int
 _lib.get_adj.argtypes = [_i32p, _i32p]
 _lib.get_adj.restype = ctypes.c_int
 _lib.get_links.argtypes = [_i32p]
@@ -79,8 +81,8 @@ def set_value_stop(lo=-1.0, hi=2.0, gap=2.0, min_vis=1 << 30):
 
 def set_grade(mode=0):
     """Grading mode: accurate comparison ACROSS root moves instead of fastest
-    best-move pick — root min-visit floor, dominance early-stops disabled (only the
-    decisive value-stop band still fires), Qs reported from the second half of the
+    best-move pick — root min-visit floor, early stops disabled unless the move
+    is forced, Qs reported from the second half of the
     budget (burn-in discarded). mode 0 = off (default, bit-identical search),
     1 = on, 2 = floor/stops only with cumulative Q (A/B probe). Sticky — reset
     to 0 when done. Use for blunder analysis / grading human play, NOT for play."""
@@ -135,7 +137,7 @@ def get_links():
 
 
 # ---- board generation -------------------------------------------------------
-def new_game(seed):
+def new_game(seed, rules=2):
     """Build a fresh seeded board in C (also sets topology + seeds mb32). Returns a
     dict: owner, strength (np int32 len N), x, y (np int32 len N), adj (list-of-lists),
     links (list of [a,b]), n, mb (mulberry32 stream position after the deal)."""
@@ -143,7 +145,10 @@ def new_game(seed):
     strength = np.zeros(MAXN, dtype=np.int32)
     x = np.zeros(MAXN, dtype=np.int32)
     y = np.zeros(MAXN, dtype=np.int32)
-    n = _lib.new_game(seed, _p(owner), _p(strength), _p(x), _p(y))
+    if rules not in (1, 2):
+        raise ValueError('unsupported rules version')
+    generate = _lib.new_game_legacy if rules == 1 else _lib.new_game
+    n = generate(seed, _p(owner), _p(strength), _p(x), _p(y))
     return {
         'n': n, 'owner': owner[:n].copy(), 'strength': strength[:n].copy(),
         'x': x[:n].copy(), 'y': y[:n].copy(),
@@ -240,6 +245,8 @@ def attack_logged(owner, strength, frm, to):
     nflips = int(_len_buf[0])
     flips = ['d' if _flips_buf[i] else 'a' for i in range(nflips)]
     m = _meta_buf
+    if m[0] < 0:
+        raise ValueError('illegal attack')
     meta = {'captured': bool(m[0]), 'fromStart': int(m[1]), 'toStart': int(m[2]),
             'fromStrength': int(m[3]), 'toStrength': int(m[4])}
     return flips, meta

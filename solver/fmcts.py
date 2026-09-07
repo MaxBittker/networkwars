@@ -40,7 +40,7 @@ def play_game(seed, sims, c_puct=2.5, nroll=1, sim_seed=0x12345678,
         owner, strength = fastnw.board_arrays(state)
         acts, visits = fastnw.uct_search(owner, strength, turns, sims, c_puct,
                                          nroll, max_sims=max_sims)
-        total_sims += int(visits.sum())   # sum of root visits == sims this search
+        total_sims += fastnw.sims_done()  # root expansion has no outgoing-edge visit
         n_moves += 1
         action = -1 if len(acts) == 0 else int(acts[int(np.argmax(visits))])
         # apply to REAL state with REAL rng

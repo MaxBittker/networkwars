@@ -1,5 +1,12 @@
 # The REAL map + deal generation — decompiled from the iOS IPA (2026-07-02)
 
+**Update 2026-09-07:** new games now enforce the recovered large-army grouping and
+single-army fill rules. Earlier statements below saying placement is not wired in
+describe the July implementation. Template-count probabilities and topology
+sampling remain approximate; see [RULES_AUDIT.md](RULES_AUDIT.md). Separate placement
+elements may touch: a single-army filler is not required to be isolated from its
+teammates. Historical saved rounds retain the old generator.
+
 Same provenance/tooling as `REAL_BATTLE_DECOMPILED.md`: Xamarin/Mono AOT ARM64 in
 `NetworkWars.iOS`, method bodies located via the `MonoAotFileInfo`
 `method_addresses` bl-table (`ipa_decompile/re/find_table.py`), sliced out of the

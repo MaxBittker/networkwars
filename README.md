@@ -19,6 +19,8 @@ bots, battle, reinforcement, win check, **and the search-based AI** — is one C
 ## Docs
 
 - **[`DESIGN.md`](DESIGN.md)** — the rules in prose; the source of truth for *what the game is*.
+- **[`solver/RULES_AUDIT.md`](solver/RULES_AUDIT.md)** — the September 2026 rules comparison,
+  fixes, remaining approximations, and saved-game compatibility.
 - **[`solver/README.md`](solver/README.md)** — the engine + solver in depth.
 - **[`solver/REAL_BATTLE_DECOMPILED.md`](solver/REAL_BATTLE_DECOMPILED.md)** / **[`solver/MAP_DEAL_DECOMPILED.md`](solver/MAP_DEAL_DECOMPILED.md)** — battle and deal recovered bit-exact from the shipped iOS app.
 - **[`solver/iphone_data/README.md`](solver/iphone_data/README.md)** — driving the real app.
@@ -42,6 +44,10 @@ managed with `uv`; the only runtime dependency is `numpy<2`. `fast_engine.so` is
 gitignored — rebuild with the `cc` line.
 
 ## The AI
+
+The win-rate measurements below predate the September 2026 correction to starting-army
+grouping. New games use the corrected placement; historical saved games retain their
+original boards and dice. Win rate on the new opening distribution has not been remeasured.
 
 A **pure C-UCT MCTS** (open-loop, ranked-C1 rollout baked in, `c_puct=2.5`) — no neural
 net, no seed/RNG exploitation. Offline self-play winrate is **~94%** on the iOS-faithful

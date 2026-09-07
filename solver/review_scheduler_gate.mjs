@@ -79,3 +79,25 @@ r.you.moves.push({ e: 1 });
 await inspect(1, r.you.moves, 6);
 assert.equal(calls, 3, 'appended moves must invalidate replay');
 console.log('PASS: review fairness, checkpoint identity/holes, search completion, failure cleanup, replay cache invalidation/retry');
+
+// A near-certain best move does NOT make a losing alternative a dead decision.
+const gradeValues = async (bestQ, myQ) => {
+  const r = round(9, 1);
+  const create = () => async path => path === '/api/game'
+    ? { id: 1, turn: 1, nodes: [{ owner: 'red', strength: 2, x: 0, y: 0 },
+        { owner: 'green', strength: 1, x: 1, y: 0 }] }
+    : { done: true, sims: REVIEW_SIMS, all: [
+        { action: 1, from: 0, to: 1, visits: 2000, q: bestQ },
+        { action: -1, visits: 1000, q: myQ }] };
+  return createReviewer(create, 1).grade(r);
+};
+const thrown = await gradeValues(.995, .3);
+assert.equal(thrown.nLive, 1);
+assert.equal(thrown.moves[0].dead, false);
+assert.equal(thrown.moves[0].gap, 69.5);
+assert.deepEqual(thrown.counts, [0, 0, 0, 1]);
+assert.equal((await gradeValues(.995, .99)).nLive, 0);
+assert.equal((await gradeValues(.01, .005)).nLive, 0);
+assert.equal((await gradeValues(.5, .3)).nLive, 1);
+assert.equal((await gradeValues(.99, NaN)).n, 0);
+console.log('PASS: winning-position blunders retained; same-band extremes excluded; invalid Q unscored');

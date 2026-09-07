@@ -8,6 +8,17 @@
   post-game (win/loss) modal's New Game / Play Again button.
 
 ## Engine (one C source of truth; pure MCTS — RL/neural-net path was removed)
+- **Rules audit (2026-09-07):** `solver/RULES_AUDIT.md` records the current comparison
+  against original ARM64. New games use recovered large-army single/pair/triple
+  grouping (`rules: 2`), while `new_game_legacy` preserves unversioned/v1 saved
+  rounds for resume, AI completion, review and inspection. Preserve that version
+  through every replay path. Template probabilities, topology sampling and tie
+  ordering remain approximations; earlier win rates predate this placement fix.
+  Attacks must be legal and games unfinished; rejected requests consume no dice.
+  Zero-army defenders remain owned and are valid. Reinforcement carries the
+  largest-component budget past a borderless component on disconnected imports.
+  Gates: `solver/rules_gate.c`, `solver/legacy_rules_gate.py`,
+  `solver/rules_worker_gate.mjs`, plus the standard native/WASM/worker/review gates.
 - `solver/` is the engine + search + analysis subproject. **Pure C-UCT MCTS (no
   neural net) is our best algorithm** — the AlphaZero/PufferLib training path was
   dropped (it plateaued below the search; findings in memory
@@ -110,10 +121,12 @@
         cache two complete trajectories from `/api/replay`, without retaining
         another worker game or rebuilding battle animations per selection.
         `solver/REVIEW_PERFORMANCE.md` documents the performance and accuracy study.
-        Only **live** decisions (best-Q in 2–98%) are scored: in a decided position every
-        move scores gap 0, so including them flatters the player (measured: a
-        pass-every-turn game reads −7.7%/move unfiltered vs −27.6% over its 6 real
-        decisions). No intro/setup gate — loading the page deals a seed immediately (a
+        **Live** decisions exclude a move only when BOTH the recommended and played
+        Q are in the same extreme band (≤2% or ≥98%). A winning recommendation does
+        not excuse a move that throws away the win. Grading choices always use the
+        24k ceiling; only forced moves may stop at the 16k floor. Review version 2
+        rescores saved replays and excludes stale compact scores from comparisons.
+        Search/math regressions and caveats: `solver/MATH_AUDIT.md`. No intro/setup gate — loading the page deals a seed immediately (a
         stored tally resumes). **Persistence is localStorage under a soft cap**
         (`SAVE_CAP`, 2.0M chars; Safari's ~5 MB quota is UTF-16): a finished seed with
         its review weighs ~20 KB, so `save()` strips replay detail (moves/labels/hist/

@@ -6,10 +6,9 @@ as WASM, and a Python ctypes client drives it headlessly. The same game can be d
 human (via the web UI) or by a program (bot / search).
 
 > This doc is the single source of truth for the rules. If any rule below is wrong, tell me
-> and I'll fix it here first, then in the code. The battle and deal are **recovered
-> bit-exact from the shipped iOS app** — decompiled from the IPA (Mono-AOT ARM64), not
-> guessed or fit (see `solver/REAL_BATTLE_DECOMPILED.md` / `solver/MAP_DEAL_DECOMPILED.md`).
-> Remaining guesses (mainly board layout) are marked **[ASSUMPTION]**.
+> and I'll fix it here first, then in the code. Battle mechanics and army grouping
+> were recovered from the shipped iOS app's Mono-AOT ARM64 code. Random map/deal
+> distributions and ordering are still approximations; see `solver/RULES_AUDIT.md`.
 
 ---
 
@@ -22,19 +21,25 @@ human (via the web UI) or by a program (bot / search).
 ## 2. The Network (board)
 
 - A graph of **Nodes** connected by **Links**.
-- Each node has an `owner` (faction) and a `strength` (army size, integer ≥ 1 while owned).
+- Each node has an `owner` (faction) and a `strength` (army size, integer ≥ 0).
+  Simultaneous final casualties can leave an owned defender with zero armies.
 - Links are undirected. Two nodes can attack each other only if a link connects them.
 - Board is **30 nodes, 6 per faction** (confirmed from the real app: a 6×7 grid of 42 cells
   with 12 removed = 30). Win condition is 24 nodes.
 - **The deal** (recovered from the real app, `MAP_DEAL_DECOMPILED.md`): each faction's 6 nodes
   are one of **4 fixed templates** that each sum to **20** total strength, so every faction
   starts perfectly balanced (board total always 100). Templates and frequencies: `[1,1,1,5,6,6]`
-  38.5%, `[1,1,1,1,8,8]` 32.7%, `[1,1,4,4,5,5]` 22.2%, `[1,3,4,4,4,4]` 6.6%. (Strengths reach 8;
+  39.2%, `[1,1,1,1,8,8]` 33.0%, `[1,1,4,4,5,5]` 20.1%, `[1,3,4,4,4,4]` 7.7%. These are our
+  fitted sampling weights, not exact original probabilities. (Strengths reach 8;
   there are no 7s.)
-- **[ASSUMPTION]** Layout: nodes are placed on a diamond/triangular lattice (offset rows,
-  diagonal links) to mimic the look of the screenshots. The generator is procedural and
-  seedable; the precise topology of the original isn't published, so we approximate it with
-  a connected, planar-ish mesh.
+- Large armies are placed as connected groups: the two 8s may be separate or adjacent;
+  `[6,6,5]` is a connected triple; `[5,5,4,4]` forms two pairs; `[4,4,4,4,3]` forms
+  a `[4,4,4]` triple and a `[4,3]` pair. One-army fillers occupy remaining nodes.
+  Groups may touch and merge; fillers are not required to be isolated from teammates.
+- Topology uses horizontal, vertical and diagonal adjacency on a 6×7 grid, with 30 live
+  cells and a connected graph. **[APPROXIMATION]** Our connectivity-preserving removal
+  sampler differs from the original's topology rejection sampler. Army-template counts
+  are sampled independently; the original couples them through a shared singles count.
 
 ## 3. Turn order
 
@@ -75,8 +80,11 @@ Applied to a faction at the end of that faction's turn:
 4. Add `N` total strength, distributed **evenly** across those border nodes; any remainder is
    handed out one-at-a-time, round-robin. **[ASSUMPTION]** Round-robin order is by node id
    (deterministic). Only the single largest component is reinforced; other components get none.
-5. If the largest component has no border nodes (fully surrounded by own/edge), no
-   reinforcement is placed. **[ASSUMPTION]**
+5. If the largest component has no border nodes, pass the same `N`-army budget to the
+   next-largest component with a border. If none has a border, place nothing. This
+   fallback matters only for disconnected imported boards; in a connected unfinished
+   game every owned component has an enemy border. The original shuffles ties and
+   border order; our deterministic ordering is retained.
 
 ## 6. Win / loss
 
@@ -84,10 +92,13 @@ Applied to a faction at the end of that faction's turn:
   every turn). For RED that's "You Won!"; otherwise "You Lost."
 - A faction with 0 nodes is eliminated and skips its turns. RED at 0 nodes ends the
   game immediately as a loss (a wiped red can never move again).
+- Finished games accept no further attacks or turns. Illegal attack requests leave
+  the board and dice untouched, including attacks across missing links or from enemies.
 
 ## 7. Bot AI (decompiled — the real `OpponentAIOriginal` from the shipped app)
 
-Recovered bit-exact from the IPA (see `solver/REAL_BOT_DECOMPILED.md`). On a bot's turn it
+Recovered from the IPA (see `solver/REAL_BOT_DECOMPILED.md`); exact tie ordering remains
+an approximation. On a bot's turn it
 makes **one strongest-first pass** over the nodes it owned at the start of the turn:
 
 - Iterate the bot's own nodes in **descending strength** order (snapshot taken before the
@@ -99,6 +110,10 @@ makes **one strongest-first pass** over the nodes it owned at the start of the t
 - A stack is never revisited, and attacks that open up later in the turn are not taken.
 - **No RNG in move selection** — ties are deterministic (node-id / adjacency order); bot
   turns consume dice only inside battles. Then end turn (reinforcements apply).
+
+Starting with rules version 2, new games use recovered army grouping. Saved rounds
+without a version use the version 1 generator for resume, review, and inspection;
+their boards and dice are preserved. The version is stored with each new round.
 
 ## 8. Architecture
 

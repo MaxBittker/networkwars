@@ -77,5 +77,7 @@ island list + chain head packed in an int32 buffer) so the browser worker can
 replay a bot turn attack-by-attack; `run_bot_turn` drives the same cursor, so
 stepped and atomic turns are bit-identical (validated native + WASM, 200/60
 seeds). Ties are node-id / adjacency order — a deterministic approximation of
-the real island-list order, which is game-history-dependent and not worth
-tracking. Golden seeds re-frozen in validate_fast.py.
+the real island-list order. The September rules audit did not verify the exact
+mapping to that list; the earlier claim that it was necessarily history-dependent
+was not established. Golden seeds were subsequently re-frozen for rules-v2 opening
+placement in validate_fast.py; legacy_rules_gate.py preserves historical outcomes.

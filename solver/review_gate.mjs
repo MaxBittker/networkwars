@@ -44,7 +44,7 @@ if (!isMainThread) {
     else { moves.push({ a: [b.from, b.to] }); s = await play(`/api/game/${s.id}/attack`, 'POST', { from: b.from, to: b.to }); }
     views.push(cleanView(s));
   }
-  const round = { seed, you: { moves } };
+  const round = { seed, rules: s.rules, you: { moves } };
 
   const run = async (n, create = createReviewer) => {
     const rv = create(makeEngine, n);

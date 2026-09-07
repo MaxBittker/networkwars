@@ -16,18 +16,15 @@ import fastnw
 # Frozen full-game outcomes (deterministic policies). Regenerate intentionally if
 # the engine is meant to change; an unexpected diff here means a behavior drift.
 GOLDEN = {
-    # Re-frozen 2026-07-17 for the REAL DECOMPILED bot turn (OpponentAIOriginal,
-    # ipa_decompile/re/ai/): one strongest-first pass over the islands owned at
-    # turn start, and after a capture the bot keeps attacking with the stack it
-    # just moved (chain) until a repel or the target isn't strictly weaker. No
-    # RNG in move selection (ties: node-id / adjacency order), so bot turns
-    # consume dice only in battles; boards shifted vs the 07-02 freeze.
-    (1, 'safe_expand'): ('blue', 7),    (1, 'random_all'): ('red', 7),
-    (2, 'safe_expand'): ('green', 4),   (2, 'random_all'): ('green', 6),
-    (3, 'safe_expand'): ('yellow', 6),  (3, 'random_all'): ('green', 8),
-    (7, 'safe_expand'): ('yellow', 6),  (7, 'random_all'): ('yellow', 6),
-    (42, 'safe_expand'): ('red', 6),    (42, 'random_all'): ('red', 5),
-    (100, 'safe_expand'): ('blue', 9),  (100, 'random_all'): ('blue', 6),
+    # Re-frozen 2026-09-07 for recovered starting-army grouping (rules v2).
+    # rules_gate.c independently verifies the pair/triple constraints; legacy
+    # seed outcomes/dice remain frozen separately in legacy_rules_gate.py.
+    (1, 'safe_expand'): ('purple', 9),  (1, 'random_all'): ('blue', 5),
+    (2, 'safe_expand'): ('blue', 8),    (2, 'random_all'): ('yellow', 10),
+    (3, 'safe_expand'): ('purple', 8),  (3, 'random_all'): ('green', 5),
+    (7, 'safe_expand'): ('purple', 4),  (7, 'random_all'): ('purple', 4),
+    (42, 'safe_expand'): ('blue', 6),   (42, 'random_all'): ('yellow', 12),
+    (100, 'safe_expand'): ('yellow', 8),(100, 'random_all'): ('green', 4),
 }
 
 
@@ -124,13 +121,11 @@ def var_rem(a, d):
     m = mean_rem(a, d);  return max(0.0, _prefire(a, d, lambda A, D: _rs(A, D, 2)) / pr - m * m)
 
 def check_battle_invariants():
-    """Survivors are drawn around the fitted mean (occupier = beta-binomial with
-    overdispersion rho, remnant = binomial). Per (a,d) assert:
+    """Check the exact decompiled attrition distribution. Per (a,d) assert:
       - source node always gutted to 1;
       - capture => occupier in [1, a-1]; repel => defender remnant in [0, d];
       - empirical MEAN matches mean_occ / mean_rem;
-      - empirical VARIANCE matches the (beta-)binomial var (this is what
-        distinguishes the overdispersed occupier from a plain binomial).
+      - empirical VARIANCE matches the exact dynamic-programming moments.
     Determinism (per seed) is covered by the golden games below."""
     import numpy as np
     fastnw.set_topology_csr(2, [[1], [0]])

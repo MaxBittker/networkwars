@@ -56,7 +56,7 @@ if (!isMainThread) {
           : await play(`/api/game/${s.id}/attack`, 'POST', { from: mv.a[0], to: mv.a[1] });
       }
       if (!s.over) throw new Error(`Seed ${seed} did not finish`);
-      rounds.push({ seed, you: { moves } });
+      rounds.push({ seed, rules: s.rules, you: { moves } });
       console.log(`Recorded seed ${seed}: ${moves.length} decisions, ${s.youWon ? 'win' : 'loss'}`);
     }
     const source = await readFile(new URL('../public/review.js', import.meta.url), 'utf8');

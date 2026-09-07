@@ -10,6 +10,11 @@ game's own decompiled fair-coin mechanic, `REAL_BATTLE_DECOMPILED.md`).
 
 ## The engine (single source of truth)
 
+The September 2026 [rules audit](RULES_AUDIT.md) corrected starting-army grouping,
+attack/terminal validation, and a reinforcement edge case. New games use rules v2;
+saved v1 games retain their original boards and dice. Earlier win-rate measurements
+in this document predate the placement correction.
+
 - **`fast_engine.c` → `fast_engine.so`** — the only implementation of board
   generation + the iOS deal, the four bots (the decompiled opponent AI,
   `REAL_BOT_DECOMPILED.md`), the decompiled fair-coin battle
@@ -98,3 +103,11 @@ handling. The default 16k–24k grading budget is retained: a blanket reduction
 made some blunders disappear. `review_gate.mjs` now also checks resume and exact
 historical replay, and accepts an optional pre-change reviewer after the worker
 count for comparison.
+
+## Search math audit
+
+See [MATH_AUDIT.md](MATH_AUDIT.md) for sampled-legality and chance-terminal fixes,
+consistent rollout horizons, exact large-stack battle estimates, corrected grading,
+and projection alignment. The displayed win values remain search estimates.
+Focused gates: `cc -O2 math_gate.c -lm -o /tmp/nw-math-gate && /tmp/nw-math-gate`,
+`node projection_gate.mjs`, and `node review_scheduler_gate.mjs`.
