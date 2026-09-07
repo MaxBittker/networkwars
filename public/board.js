@@ -184,13 +184,14 @@ export class Board {
     cv.width = cv.height = Math.ceil(size * dpr);
     const ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
     const c = size / 2, palette = NODE_PALETTE[owner], idle = mode === 'idle';
-    // Measured falloff outside the rim: idle glow is tight; a battle has a much
-    // stronger saturated halo. A gradient also keeps its size consistent at any DPR.
+    // Keep the halo close to the rim and subdued; combat still reads brighter.
+    // A gradient keeps its size consistent at any DPR.
     const glowColor = idle ? COLORS[glow] : BATTLE_GLOW[glow];
-    const halo = ctx.createRadialGradient(c,c,0,c,c,r*1.75);
-    const falloff = idle ? [[0,.5],[1,.4],[1.22,.19],[1.34,.08],[1.47,.016],[1.6,0],[1.75,0]]
-      : [[0,1],[1,1],[1.22,.8],[1.34,.56],[1.47,.26],[1.7,0],[1.75,0]];
-    for (const [radius, alpha] of falloff) halo.addColorStop(radius/1.75, tint(glowColor,0,alpha));
+    const haloRadius = 1.42;
+    const halo = ctx.createRadialGradient(c,c,0,c,c,r*haloRadius);
+    const falloff = idle ? [[0,.35],[1,.25],[1.1,.12],[1.2,.035],[1.3,0],[haloRadius,0]]
+      : [[0,.7],[1,.65],[1.12,.38],[1.24,.14],[1.34,.035],[haloRadius,0]];
+    for (const [radius, alpha] of falloff) halo.addColorStop(radius/haloRadius, tint(glowColor,0,alpha));
     ctx.fillStyle = halo; ctx.fillRect(0,0,size,size);
     if (mode === 'halo') {
       ctx.globalCompositeOperation = 'destination-out';

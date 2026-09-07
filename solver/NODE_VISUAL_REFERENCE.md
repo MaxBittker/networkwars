@@ -55,5 +55,7 @@ The implementation lives in `public/board.js` (`NODE_PALETTE` and `_skin`).
 
 Preserve the user's subsequent corrections: **normal-width numerals, no scaling
 animations, and arrows traveling along the attack line**. Only brightness pulses.
+The later glow preference supersedes the sampled halo strength: idle glow now
+fades out at 1.3 node radii, combat at 1.42, with lower opacity in both states.
 `node solver/board_gate.mjs` checks fixed bounds, the battle clock, arrow geometry,
 role-specific skins, faction-specific inks, defender glow ownership, and replay.
