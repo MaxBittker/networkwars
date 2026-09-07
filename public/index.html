@@ -179,10 +179,24 @@
   .h3row { display:flex; align-items:center; justify-content:space-between; margin:0 0 6px; }
   .h3row h3 { margin:0; }
   .zchips { display:flex; gap:4px; }
-  .zchips span { padding:2px 9px; border-radius:6px; font-size:11px; font-weight:700;
+  .zchips button { padding:6px 9px; min-height:32px; border:0; font-family:inherit; border-radius:6px; font-size:11px; font-weight:700;
     color:#7fb6a6; background:rgba(255,255,255,.05); cursor:pointer; }
-  .zchips span:active { background:rgba(255,255,255,.14); }
-  .zchips span.sel { color:#04100c; background:var(--teal); }
+  .zchips button:active { background:rgba(255,255,255,.14); }
+  .zchips button.sel { color:#04100c; background:var(--teal); }
+
+  .skill-summary { margin:12px 0; }
+  .skill-summary strong { display:block; font-size:22px; line-height:1.2; color:#e9f7f0; }
+  .skill-summary[data-state="better"] strong { color:var(--green); }
+  .skill-summary[data-state="worse"] strong { color:#ff9f45; }
+  .skill-summary p, .skill-note, #skstatus { font-size:12px; line-height:1.5; color:#8fcfb8; margin:6px 0; }
+  .skill-values { display:flex; gap:10px; margin:12px 0; }
+  .skill-values div { flex:1; padding:10px 12px; background:rgba(255,255,255,.035); border-radius:8px; }
+  .skill-values b { display:block; font-size:24px; color:#e9f7f0; font-variant-numeric:tabular-nums; }
+  .skill-values span, .skill-values small { display:block; font-size:11px; color:#8fcfb8; line-height:1.5; }
+  #sk { height:150px; }
+  #skstatus { margin:10px 0 18px; }
+  #skstatus button { border:0; padding:6px 0; color:var(--teal); background:none; font:inherit; cursor:pointer; }
+  .skill-note { margin:8px 0; }
 
   /* inspector: the board at the selected move. Square-ish and as wide as the panel —
      the board is the point of this view, so it gets the room. */
@@ -323,8 +337,9 @@
 // presentation only.
 // ============================================================================
 import { Board, ORDER, SPEEDS, sleep, dirArrow, drawThumb } from './board.js?v=4';
-import { createReviewer, reviewAggregates, tierOf, TIERS, DEAD_LO, DEAD_HI } from './review.js';
+import { createReviewer, tierOf } from './review.js';
 import { createReplayInspector } from './replay.js';
+import { skillHistory, skillComparison, skillTrend, TREND_GAMES } from './skill.js';
 
 // The AI plays at the strength the app's autoplay/live driver uses: 6000-sim floor,
 // adaptive up to the worker's 150k ceiling with the visit/value-margin early stop.
@@ -398,10 +413,23 @@ function save() {
 // Oldest untrimmed pair that is fully finished, not the seed in play, and not being
 // scored right now (its reviewer still walks r.you.moves). false when nothing's left.
 function trimOldest() {
-  const i = M.rounds.findIndex((r, k) => !r.trim && r.you.result && r.ai.result
-    && k !== M.idx && !reviewing.has(k));
+  const eligible = (r, k) => !r.trim && r.you.result && r.ai.result
+    && k !== M.idx && !reviewing.has(k);
+  let i = M.rounds.findIndex((r, k) => eligible(r, k) && r.you.review && !r.you.review.partial);
+  // Unanalyzed games must retain their actions: deleting them strands the
+  // queue forever. First shed labels/history; fully trim only after grading.
+  if (i < 0) i = M.rounds.findIndex((r, k) => eligible(r, k) && !r.lean);
   if (i < 0) return false;
-  trimRound(M.rounds[i]);
+  const r = M.rounds[i];
+  if (r.you.review && !r.you.review.partial) trimRound(r);
+  else {
+    r.lean = 1;
+    r.startNodes = null;
+    for (const side of [r.you, r.ai]) {
+      side.hist = [];
+      side.moves = side.moves.map(m => m.e ? { e: 1 } : { a: m.a });
+    }
+  }
   if (!trimNoted) {
     trimNoted = true;
     console.warn(`tally near the storage cap — trimming replay detail from the oldest seeds`);
@@ -507,6 +535,7 @@ function resize() {
   board.resize();
 }
 window.addEventListener('resize', resize);
+window.addEventListener('resize', () => refreshSkill());
 if (window.ResizeObserver) new ResizeObserver(resize).observe($('board'));
 
 // ============================ background AI ============================
@@ -806,49 +835,8 @@ async function runSweep() {
 }
 
 // ============================ skill over time ============================
-// Move-by-move readout of how well you've been playing ACROSS seeds: every seed
-// with a complete review contributes its LIVE decisions (gap = win% your choice
-// gave up vs the search's best — the same number the move lists show), in play
-// order. The teal line is the trailing mean of the last SKILL_WIN of them; the
-// dots are the individual decisions, tier-colored, with the tier thresholds
-// drawn as dashed bands so the dots read by position alone. Lower = better.
-// SKILL_WIN ≈ a dozen games' worth of live decisions (~6-15 per game) — 25 read
-// as noise, not trend; 100 smooths per-game swings into an actual skill line.
-const SKILL_WIN = 100;
-const TIER_COLS = ['#36d39a', '#f5c542', '#ff9f45', '#ff4d5e'];   // by tier k
-
-// Live scored decisions in play order, grouped per seed; a partial review (a
-// seed mid-scoring) contributes its scored-so-far moves, so the graph fills in
-// live as the background scorer works. The rolling mean is computed over the
-// FULL history first and only then cut to the zoom window — the line's left
-// edge keeps its true trailing context.
-function skillData(zoom = Infinity) {
-  const groups = [];
-  let seeds = 0, unscored = 0, scoring = -1;
-  M.rounds.forEach((r, i) => {
-    const rv = r.you.review;
-    if (!rv) { if (r.you.result) unscored++; return; }
-    if (rv.partial) scoring = i; else seeds++;
-    const pts = [];
-    // carry provenance (round + move index) so a tap on the graph can jump
-    // straight to that decision in the seed's analysis
-    rv.moves.forEach((m, k) => { if (m && m.gap != null && !m.dead) pts.push({ gap: m.gap, ri: i, k }); });
-    if (pts.length || !rv.partial) groups.push(pts);
-  });
-  const all = groups.flat();
-  const roll = rollingMean(all.map(p => p.gap), SKILL_WIN);
-  const shown = zoom < groups.length ? groups.slice(-zoom) : groups;
-  const skip = all.length - shown.reduce((a, g) => a + g.length, 0);
-  const starts = []; let acc = 0;
-  for (const g of shown) { starts.push(acc); acc += g.length; }
-  const meta = all.slice(skip);
-  return { pts: meta.map(p => p.gap), meta, roll: roll.slice(skip), starts,
-           seeds, shownSeeds: shown.length, unscored, scoring };
-}
-
-// Zoom: how many of the most recent scored seeds the graph shows. Sticky.
 const SKILL_ZOOMS = { 10: 10, 100: 100, all: Infinity };
-let skillZoom = 'all';
+let skillZoom = '100';
 try { const z = localStorage.getItem('nwSkillZoom'); if (z in SKILL_ZOOMS) skillZoom = z; } catch (_) {}
 function setSkillZoom(z) {
   skillZoom = z;
@@ -856,51 +844,67 @@ function setSkillZoom(z) {
   refreshSkill();
 }
 
-// Redraw the tally's skill graph + legend in place — cheap enough to run on
-// every zoom tap and every move the background scorer lands. No-op unless the
-// tally is actually up.
 function refreshSkill() {
   if (!$('sk') || !$('ov-res').classList.contains('show')) return;
-  document.querySelectorAll('#skzoom span').forEach(el =>
-    el.classList.toggle('sel', el.dataset.z === skillZoom));
-  const d = skillData(SKILL_ZOOMS[skillZoom]);
+  document.querySelectorAll('#skzoom button').forEach(el => {
+    el.classList.toggle('sel', el.dataset.z === skillZoom);
+    el.setAttribute('aria-pressed', String(el.dataset.z === skillZoom));
+  });
+  const history = skillHistory(M.rounds, reviewing, reviewErr);
+  const c = skillComparison(history);
+  const summary = $('sksummary');
+  summary.dataset.state = c.state;
+  const titles = { better: 'Your recent decisions look better', worse: 'Your recent decisions look worse',
+    unclear: 'No clear improvement yet', early: 'Building your starting point',
+    incomplete: 'Recent analysis is incomplete', 'few-live': 'Too few close decisions to compare' };
+  let detail;
+  if (c.state === 'early') detail = `Play ${c.needed} more finished game${c.needed === 1 ? '' : 's'} to compare two groups of at least 10.`;
+  else if (c.state === 'incomplete') detail = c.unavailable
+    ? `${c.missing} of the last ${c.size * 2} games lack complete analysis. Some older replays are no longer stored; a fair recent comparison needs more games.`
+    : `Analysis of ${c.missing} more game${c.missing === 1 ? '' : 's'} is needed to compare your last ${c.size} with the ${c.size} before them.`;
+  else if (c.state === 'few-live') detail = 'Each period needs at least 10 games with decisions in positions that were not already won or lost.';
+  else {
+    detail = Math.abs(c.change) < 0.05 ? 'Your average decision cost is unchanged.'
+      : `Your average decision cost is ${Math.abs(c.change).toFixed(1)} points ${c.change > 0 ? 'lower' : 'higher'} than in the previous ${c.size} games.`;
+    if (c.state === 'unclear') detail += ' The difference is small or within normal game-to-game variation.';
+  }
+  summary.innerHTML = `<strong>${titles[c.state]}</strong><p>${detail}</p>`;
+  $('skvalues').innerHTML = c.now == null ? '' : `
+    <div><span>Previous ${c.size} games</span><b>${c.earlier.toFixed(1)} <small>points / decision</small></b><small>#${c.first}–${c.middle}</small></div>
+    <div><span>Latest ${c.size} games</span><b>${c.now.toFixed(1)} <small>points / decision</small></b><small>#${c.recentFirst}–${c.last}</small></div>`;
+  const d = skillTrend(history, SKILL_ZOOMS[skillZoom]);
   drawSkill($('sk'), d);
-  const now = d.roll.length ? d.roll[d.roll.length - 1] : null;
-  const status = d.scoring >= 0 ? `<span>scoring seed #${d.scoring + 1}…</span>`
-    : d.unscored ? `<span>${d.unscored} seed${d.unscored === 1 ? '' : 's'} queued</span>` : '';
-  $('sklegend').innerHTML =
-    `<span><i style="background:${YOU_COL}"></i>avg loss/decision`
-      + `${now != null ? ` — now −${now.toFixed(1)}%` : ''} (rolling ${SKILL_WIN})</span>`
-    + `<span>${d.pts.length} decision${d.pts.length === 1 ? '' : 's'} · `
-      + `${skillZoom === 'all' ? '' : 'last '}${d.shownSeeds} seed${d.shownSeeds === 1 ? '' : 's'}</span>`
-    + status;
+  $('sklegend').textContent = `Average of up to ${TREND_GAMES} games · lower is better`;
+  const count = status => history.filter(g => g.status === status).length;
+  const active = history.filter(g => g.status === 'active');
+  const status = [`${count('complete')} of ${history.length} games analyzed`];
+  for (const game of active) status.push(`Analyzing game #${game.ri + 1}`
+    + (game.progress ? ` · ${game.progress.done}/${game.progress.total} moves` : ' · starting…'));
+  if (count('queued')) status.push(`${count('queued')} waiting for analysis · runs while this page is open`);
+  if (count('failed')) status.push(`${count('failed')} could not be analyzed`);
+  if (count('unavailable')) status.push(`${count('unavailable')} older game${count('unavailable') === 1 ? '' : 's'} cannot be analyzed because their replays were already removed to save space`);
+  $('skstatus').replaceChildren(...status.map(t => { const el = document.createElement('div'); el.textContent = t; return el; }));
+  if (count('failed')) {
+    const retry = document.createElement('button'); retry.textContent = 'Retry analysis';
+    retry.onclick = () => { for (const k of Object.keys(reviewErr)) delete reviewErr[k]; scorePump(); };
+    $('skstatus').appendChild(retry);
+  }
 }
 
-// Tap the skill graph → jump into that decision: nearest x is a scored move of
-// some seed; open that seed's analysis with the move selected.
+// One x-position per finished game, including unscored games. Missing analysis
+// leaves a gap instead of making old data look like it reaches the latest game.
+let skHit = null;
 function skTap(ev) {
   if (!skHit) return;
   const frac = (ev.offsetX - skHit.padL) / (skHit.W - skHit.padL - skHit.padR);
-  const i = Math.round(Math.min(1, Math.max(0, frac)) * (skHit.n - 1));
-  const m = skHit.meta[i];
-  if (!m || M.rounds[m.ri].trim) return;    // a trimmed seed has no replay to jump into
+  const i = Math.round(Math.min(1, Math.max(0, frac)) * (skHit.games.length - 1));
+  const game = skHit.games[i];
+  if (!game?.canReplay) return;
   closeRes();
-  openSeed(m.ri, { fromResults: true, sel: m.k });
+  openSeed(game.ri, { fromResults: true, sel: game.k });
 }
 
-// Trailing mean over the last w points (expanding until w have accrued).
-function rollingMean(pts, w) {
-  const out = []; let sum = 0;
-  for (let i = 0; i < pts.length; i++) {
-    sum += pts[i];
-    if (i >= w) sum -= pts[i - w];
-    out.push(sum / Math.min(i + 1, w));
-  }
-  return out;
-}
-
-let skHit = null;   // x-mapping of the last skill-graph draw, for tap-to-jump
-function drawSkill(cv, d) {
+function drawSkill(cv, games) {
   const dpr = window.devicePixelRatio || 1;
   const rect = cv.getBoundingClientRect();
   const W = Math.max(1, Math.round(rect.width)), H = Math.max(1, Math.round(rect.height));
@@ -908,54 +912,43 @@ function drawSkill(cv, d) {
   const g = cv.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, W, H);
-  const n = d.pts.length;
-  skHit = null;
-  if (!n) {
-    g.fillStyle = '#5f9e8e'; g.font = '11px -apple-system, sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText('no live decisions scored yet', W / 2, H / 2);
+  const padL = 33, padR = 12, padT = 12, padB = 26;
+  skHit = games.length ? { W, padL, padR, games } : null;
+  const values = games.flatMap(p => [p.value, p.trend].filter(v => v != null));
+  g.font = '10px -apple-system, sans-serif';
+  if (!values.length) {
+    g.fillStyle = '#8fcfb8'; g.textAlign = 'center';
+    const waiting = games.some(p => p.status === 'queued' || p.status === 'active');
+    g.fillText(waiting ? 'Waiting for game analysis' : 'No decision scores in these games', W / 2, H / 2);
     return;
   }
-  const roll = d.roll;
-  const padL = 5, padR = 8, padT = 6, padB = 5;
-  skHit = { n, W, padL, padR, meta: d.meta };
-  // Scale to the rolling line (the readout), not the raw dots — one 60% blunder
-  // must not flatten the line. Dots above the top are pinned to the edge.
-  const yMax = Math.max(12, Math.ceil(Math.max(...roll) * 1.3));
-  const xOf = (i) => n < 2 ? W / 2 : padL + i / (n - 1) * (W - padL - padR);
-  const yOf = (v) => padT + (1 - Math.min(v, yMax) / yMax) * (H - padT - padB);
-  // seed boundaries — faint, so runs of dots group by game without labels
-  g.strokeStyle = 'rgba(255,255,255,.055)'; g.lineWidth = 1;
-  for (const s of d.starts) {
-    if (!s) continue;
-    const x = Math.round(xOf(s - 0.5)) + .5;
-    g.beginPath(); g.moveTo(x, padT); g.lineTo(x, H - padB); g.stroke();
+  const yMax = Math.max(10, Math.ceil(Math.max(...values) / 10) * 10);
+  const xOf = i => games.length < 2 ? (padL + W - padR) / 2 : padL + i / (games.length - 1) * (W - padL - padR);
+  const yOf = v => padT + (1 - v / yMax) * (H - padT - padB);
+  for (const v of [0, yMax / 2, yMax]) {
+    g.fillStyle = '#8fcfb8'; g.textAlign = 'right'; g.fillText(String(v), padL - 7, yOf(v) + 3);
+    g.strokeStyle = 'rgba(255,255,255,.09)'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(padL, yOf(v)); g.lineTo(W - padR, yOf(v)); g.stroke();
   }
-  // the tier thresholds (same bands the move lists use), dashed
-  g.setLineDash([3, 4]);
-  for (const t of TIERS) {
-    if (t.min > yMax) continue;
-    g.strokeStyle = TIER_COLS[t.k] + '38';
-    g.beginPath(); g.moveTo(0, yOf(t.min) + .5); g.lineTo(W, yOf(t.min) + .5); g.stroke();
-  }
-  g.setLineDash([]);
-  // individual decisions: OK moves recede, mistakes pop
-  for (let i = 0; i < n; i++) {
-    const t = tierOf(d.pts[i]);
-    g.globalAlpha = t.k ? .85 : .3;
-    g.fillStyle = TIER_COLS[t.k];
-    g.beginPath(); g.arc(xOf(i), yOf(d.pts[i]), 2, 0, Math.PI * 2); g.fill();
-  }
-  g.globalAlpha = 1;
-  if (n < 2) return;
-  // the rolling mean — the actual skill line
+  g.fillStyle = '#8fcfb8'; g.textAlign = 'left'; g.fillText(`Game #${games[0].ri + 1}`, padL, H - 6);
+  if (games.length > 1) { g.textAlign = 'right'; g.fillText(`#${games.at(-1).ri + 1}`, W - padR, H - 6); }
+  // Quiet game averages give context without burying the trend in move dots.
+  games.forEach((p, i) => {
+    if (p.value == null) return;
+    g.fillStyle = 'rgba(95,208,214,.3)'; g.beginPath(); g.arc(xOf(i), yOf(p.value), 2, 0, Math.PI * 2); g.fill();
+  });
+  let drawing = false;
   g.beginPath();
-  roll.forEach((v, i) => i ? g.lineTo(xOf(i), yOf(v)) : g.moveTo(xOf(i), yOf(v)));
-  g.strokeStyle = YOU_COL; g.lineWidth = 2.1; g.lineJoin = 'round';
-  g.shadowColor = YOU_COL; g.shadowBlur = 5; g.stroke(); g.shadowBlur = 0;
-  g.fillStyle = YOU_COL;
-  g.beginPath(); g.arc(xOf(n - 1), yOf(roll[n - 1]), 3, 0, Math.PI * 2); g.fill();
-  g.strokeStyle = '#02100b'; g.lineWidth = 1; g.stroke();
+  games.forEach((p, i) => {
+    if (p.trend == null) { drawing = false; return; }
+    if (drawing) g.lineTo(xOf(i), yOf(p.trend)); else g.moveTo(xOf(i), yOf(p.trend));
+    drawing = true;
+  });
+  g.strokeStyle = YOU_COL; g.lineWidth = 2.5; g.lineJoin = 'round'; g.stroke();
+  games.forEach((p, i) => {
+    if (p.trend == null || (i < games.length - 1 && games[i + 1].trend != null)) return;
+    g.fillStyle = YOU_COL; g.beginPath(); g.arc(xOf(i), yOf(p.trend), 3, 0, Math.PI * 2); g.fill();
+  });
 }
 
 // ============================ tally ============================
@@ -966,19 +959,19 @@ function showResults() {
 
   $('res-title').textContent = `Tally · ${paired} pair${paired === 1 ? '' : 's'} complete`;
 
-  // Skill over time: the per-move gap metric, concatenated across scored seeds.
-  // The background scorer works through every finished seed on its own, so the
-  // graph fills itself in while the page is open; the zoom chips cut it to the
-  // most recent seeds. Content is drawn by refreshSkill (also called on every
-  // scored move and every zoom tap).
-  const anySkill = M.rounds.some(r => r.you.review || r.you.result);
+  const anySkill = M.rounds.some(r => r.you.result);
   const skillHtml = !anySkill ? '' : `
-    <div class="h3row"><h3>Skill over time</h3>
-      <div class="zchips" id="skzoom">
-        <span data-z="10">10</span><span data-z="100">100</span><span data-z="all">all</span>
+    <h3>Am I getting better?</h3>
+    <div class="skill-summary" id="sksummary"></div>
+    <div class="skill-values" id="skvalues"></div>
+    <p class="skill-note">Decision cost: estimated win-chance points given up versus the AI’s best move. Lower is better. Each game counts equally; already-decided positions are excluded.</p>
+    <div class="h3row"><h3>Decision cost</h3>
+      <div class="zchips" id="skzoom" aria-label="Games shown">
+        <button data-z="10" aria-label="Last 10 games">10</button><button data-z="100" aria-label="Last 100 games">100</button><button data-z="all" aria-label="All games">All</button>
       </div></div>
-    <canvas class="pg" id="sk"></canvas>
-    <div class="glegend" id="sklegend"></div>`;
+    <canvas class="pg" id="sk" role="img" aria-label="Decision cost by game. Lower means better decisions."></canvas>
+    <div class="glegend" id="sklegend"></div>
+    <div id="skstatus" aria-live="polite"></div>`;
 
   $('res-body').innerHTML = `
     <div id="score">
@@ -1014,7 +1007,7 @@ function showResults() {
     if (r.startNodes) drawThumb(c, r.startNodes);
   }
   $('ov-res').classList.add('show');
-  document.querySelectorAll('#skzoom span').forEach(el => {
+  document.querySelectorAll('#skzoom button').forEach(el => {
     el.onclick = () => setSkillZoom(el.dataset.z);
   });
   if ($('sk')) $('sk').onclick = skTap;
@@ -1384,6 +1377,7 @@ async function runReview(i) {
   if (reviewing.has(i)) return;
   reviewing.add(i);
   delete reviewErr[i];
+  refreshSkill();
   const r = M.rounds[i];
   let checkpointAt = performance.now();
   if (seedPanelOn(i) && sdTab === 'you') renderList();  // swap a retry line to 'Scoring…'
@@ -1423,7 +1417,7 @@ async function runReview(i) {
 // is open, NEWEST first: the seed you just finished is the one you're waiting
 // on, and the backlog fills in behind it. A seed already being scored from an
 // open panel (`reviewing`) is skipped, as is one that failed this session
-// (reviewErr — the panel's retry button still owns that); a completed review
+// (reviewErr — either analysis panel can retry it); a completed review
 // persists, so progress survives reloads.
 let scoreBusy = false;
 async function scorePump() {
@@ -1439,8 +1433,7 @@ async function scorePump() {
       }
       if (i < 0) break;
       await runReview(i);
-      const rv = M.rounds[i].you.review;
-      if (!(rv && !rv.partial)) break;   // scoring failed — wait for the next trigger
+      // A failed game is marked in reviewErr; continue analyzing the rest.
     }
   } finally {
     scoreBusy = false;

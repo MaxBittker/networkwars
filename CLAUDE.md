@@ -59,14 +59,20 @@
         Because the seed pins board+dice, this removes the deal variance that dominates
         unpaired winrates (`sim-vs-real-deal-imbalance`, `hard-set-2026-07-02`). The
         tally panel is deliberately minimal — the two W-L score cards, the
-        **skill-over-time graph**, + the seed-list browser (the McNemar/sign-test
-        readout was cut as clutter 2026-07-17; per-move scoring is the skill readout,
-        and the graph is that metric over time: every scored seed's LIVE decisions
-        concatenated in play order, tier-colored dots + a trailing rolling mean of
-        win%-lost-vs-best over the last 100 decisions, dashed tier thresholds + faint
-        seed boundaries; zoom chips cut it to the last 10/100/all seeds — the mean
-        is computed over the FULL history and only then windowed, so the left edge
-        keeps its trailing context). Coverage comes from the **background scorer**:
+        **progress summary and skill-over-time graph**, + the seed-list browser.
+        `public/skill.js` compares the latest 20 finished games with the previous
+        20 (grows from 10 vs 10); every game in both windows must have a complete
+        review. Only live decisions contribute, with equal weight per game.
+        Direction is described cautiously: changes under 0.5 win-chance points or
+        within two standard errors of game-to-game variation are inconclusive,
+        not a calibrated test of underlying skill. The graph shows game averages
+        as quiet dots + a trailing 10-game mean, labeled axes (lower is better),
+        and last 10/100/all finished games (default 100). Missing reviews retain
+        their x-position and interrupt the line, never shift old data to “now”.
+        The status separates active move counts, queued, failed/retryable, and
+        older games whose replay data is unavailable. Gate:
+        `node solver/skill_gate.mjs` (comparison, coverage, quota, queue failures).
+        Coverage comes from the **background scorer**:
         a pump that reviews every finished seed, NEWEST first, for as long as the
         page is open, so the graph fills itself in and no longer skews toward
         auto-scored losses. The scorer itself is **`public/review.js`**
@@ -113,7 +119,11 @@
         its review weighs ~20 KB, so `save()` strips replay detail (moves/labels/hist/
         start board) from the OLDEST finished pairs when the blob outgrows the cap or
         setItem throws — the result and the review's per-decision gaps (tally + skill
-        graph) stay, the seed just can't be opened for analysis (`r.trim`). Before
+        graph) stay, the seed just can't be opened for analysis (`r.trim`).
+        Fully trim scored pairs first. Unscored pairs can shed labels/history
+        (`r.lean`) but MUST retain their action sequences until grading completes;
+        otherwise they can never leave the analysis backlog. A failed review
+        does not stop the pump from analyzing the rest. Before
         this (fixed 2026-09-04) a quota error was swallowed, the saved state froze at
         whatever last fit, and every reload resumed that same stale seed. Caveat (documented in the page's header comment, no
         longer surfaced in the UI): same seed = same deal + same dice STREAM, but draws
