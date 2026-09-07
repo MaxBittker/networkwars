@@ -21,6 +21,9 @@
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#ifdef NW_VALIDATE_SEARCH
+#include <assert.h>
+#endif
 
 #define MAXN 64
 #define NF 5            /* factions: 0=red, 1..4 bots */
@@ -39,7 +42,7 @@
  * survivor distribution (no beta-binomial). resolve_battle() below is the exact
  * loop; the search's CAPP/CAPES tables are the exact DP of that loop. */
 #define A_END (-1)          /* action sentinel: distinct from any frm<<8|to (>=0) */
-#define MAXCHILD (MAXN * 8 + 1)        /* max legal RED actions at one node */
+#define MAXCHILD (MAXN * 8 + 1) /* action union: directed edges plus END */
 #define UCT_CHECK_EVERY 256 /* adaptive-stop: re-check root visit margin this often */
 
 /* ---- topology (fixed per game) ---- */
@@ -1147,17 +1150,17 @@ static void uct_sim_once(void) {
     int turns = S_root_turns;
     int cur = S_root;
     int plen = 0;
-    int leaf_value_set = 0; double leaf_value = 0.0;
+    double leaf_value;
 
     for (;;) {
-        if (plen >= 16384) { leaf_value = NODES[cur].v; leaf_value_set = 1; break; }
+        if (plen >= 16384) { leaf_value = NODES[cur].v; break; }
         MNode *node = &NODES[cur];
         /* Only an already-terminal root is cached; chance outcomes never are. */
-        if (node->terminal) { leaf_value = node->v; leaf_value_set = 1; break; }
+        if (node->terminal) { leaf_value = node->v; break; }
         int nc = legal_red(owner, strength, legal);
         if (!sync_actions(node, legal, nc, available)) {
             leaf_value = rollout(owner, strength, turns);
-            leaf_value_set = 1; break;
+            break;
         }
         if (!node->expanded) {
             /* leaf eval = rollout average */
@@ -1166,7 +1169,7 @@ static void uct_sim_once(void) {
             v /= (double)S_nroll;
             node->expanded = 1;
             node->v = v;
-            leaf_value = v; leaf_value_set = 1;
+            leaf_value = v;
             break;
         }
         /* select best child (PUCT). total == sum of child visits from prior
@@ -1203,12 +1206,9 @@ static void uct_sim_once(void) {
         int act = E_ACT[off];
         int winner = 0;
 #ifdef NW_VALIDATE_SEARCH
-        if (act != A_END) {
-            int frm = act >> 8, to = act & 0xFF, adjacent = 0;
-            for (int k = ADJ_OFF[frm]; k < ADJ_OFF[frm+1]; k++)
-                if (ADJ[k] == to) adjacent = 1;
-            assert(owner[frm] == 0 && owner[to] != 0 && strength[frm] > 1 && adjacent);
-        }
+        if (act != A_END)
+            assert(owner[act >> 8] == 0 &&
+                   ext_attack_legal(owner, strength, act >> 8, act & 0xFF));
 #endif
         int term = apply_red(owner, strength, act, &turns, &winner);
         /* chance-split: an attack's child is keyed on the sampled outcome so the
@@ -1217,25 +1217,24 @@ static void uct_sim_once(void) {
         if (act != A_END && owner[act & 0xFF] != 0)
             slot = &E_CHILD2[off];
         if (term) {
-            leaf_value = winner ? 1.0 : 0.0; leaf_value_set = 1;
+            leaf_value = winner ? 1.0 : 0.0;
             /* A sampled terminal outcome is not a proof about an open-loop
              * child. In particular END can win, lose, or continue on fresh dice. */
             break;
         }
-        if (turns > MAX_TURNS) { leaf_value = 0.0; leaf_value_set = 1; break; }
+        if (turns > MAX_TURNS) { leaf_value = 0.0; break; }
         if (*slot < 0) {
             int cn = new_node();
-            if (cn < 0) { leaf_value = NODES[cur].v; leaf_value_set = 1; break; }
+            if (cn < 0) { leaf_value = NODES[cur].v; break; }
             *slot = cn;
         }
         cur = *slot;
     }
     /* backup */
-    double val = leaf_value_set ? leaf_value : 0.5;
     for (int p = 0; p < plen; p++) {
         int off = path_eidx[p];
         E_N[off] += 1;
-        E_W[off] += val;
+        E_W[off] += leaf_value;
     }
     S_sims++;
 }

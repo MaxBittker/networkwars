@@ -106,6 +106,9 @@ count for comparison.
 
 ## Search math audit
 
+Run `bash solver/check.sh` from the repository root to rebuild both engines and
+run all gameplay, math, saved-game compatibility, worker, and review gates.
+
 See [MATH_AUDIT.md](MATH_AUDIT.md) for sampled-legality and chance-terminal fixes,
 consistent rollout horizons, exact large-stack battle estimates, corrected grading,
 and projection alignment. The displayed win values remain search estimates.

@@ -1,14 +1,10 @@
 /* White-box math/search regressions. Run:
  * cc -O2 solver/math_gate.c -lm -o /tmp/nw-math-gate && /tmp/nw-math-gate
- * Also supports -DENGINE_SOURCE='"/path/baseline.c"' to reproduce old failures.
  */
 #include <assert.h>
 #include <stdio.h>
-#ifndef ENGINE_SOURCE
-#define ENGINE_SOURCE "fast_engine.c"
-#endif
 #define NW_VALIDATE_SEARCH
-#include ENGINE_SOURCE
+#include "fast_engine.c"
 
 static void horizon(void) {
     int owner[30], strength[30], off[31] = {0}, adj[1] = {0};

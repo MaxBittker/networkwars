@@ -328,7 +328,9 @@
 // presentation only.
 // ============================================================================
 import { Board, ORDER, SPEEDS, sleep, dirArrow, drawThumb } from './board.js?v=4';
-import { createReviewer, tierOf, REVIEW_VERSION } from './review.js';
+import { createReviewer, tierOf, invalidateStaleReview } from './review.js';
+import { LEGACY_RULES_VERSION, RULES_VERSION } from './game-version.js';
+import { aiWinCurve, youWinCurve } from './projections.js';
 import { createReplayInspector } from './replay.js';
 import { skillHistory, skillComparison, skillTrend } from './skill.js';
 
@@ -375,7 +377,7 @@ const KEY = 'nwH2H';
 let M = null;   // { rounds: [...], idx }
 
 const blankSide = () => ({ result: null, turns: 0, red: 0, moves: [], hist: [], review: null });
-const blankRound = (seed) => ({ seed, rules: 2, startNodes: null, you: blankSide(), ai: blankSide() });
+const blankRound = (seed) => ({ seed, rules: RULES_VERSION, startNodes: null, you: blankSide(), ai: blankSide() });
 // new_game() seeds mulberry32 with this; keep it in 1..2^31-1 like the app does.
 const randSeed = () => Math.floor(Math.random() * 0x7ffffffe) + 1;
 
@@ -442,13 +444,7 @@ function load() {
   try {
     const m = JSON.parse(localStorage.getItem(KEY) || 'null');
     if (m && Array.isArray(m.rounds) && m.rounds.length) {
-      for (const r of m.rounds) {
-        if (r.you.review && r.you.review.version !== REVIEW_VERSION) {
-          // Recompute when actions survive; trimmed legacy scores cannot be
-          // compared with the corrected search/scoring and remain unavailable.
-          r.you.review = r.you.moves.length ? null : { ...r.you.review, stale: true };
-        }
-      }
+      m.rounds.forEach(invalidateStaleReview);
       return m;
     }
   } catch (_) {}
@@ -568,7 +564,7 @@ async function aiPlaySeed(i) {
   const r = M.rounds[i];
   const g = r.ai;
   g.moves = []; g.hist = [];                    // restart cleanly (e.g. after a reload)
-  let s = await aiApi('/api/game', 'POST', { seed: r.seed, rules: r.rules ?? 1 });
+  let s = await aiApi('/api/game', 'POST', { seed: r.seed, rules: r.rules ?? LEGACY_RULES_VERSION });
   sampleHist(g, s);
   // Paint BEFORE the first search: its opening think can take seconds, and a badge
   // reading "idle" while the AI is actually grinding is a lie.
@@ -618,7 +614,7 @@ function revealPair(i) {
 // by playing the policy out, so there is no exception left.)
 async function startSeed() {
   const r = cur();
-  const res = await api('/api/game', 'POST', { seed: r.seed, rules: r.rules ?? 1 });
+  const res = await api('/api/game', 'POST', { seed: r.seed, rules: r.rules ?? LEGACY_RULES_VERSION });
   r.startNodes = res.nodes.map(n => ({ x: n.x, y: n.y, owner: n.owner, strength: n.strength }));
   r.you.moves = []; r.you.hist = [];
   save();
@@ -1070,29 +1066,6 @@ function drawPower(cv, r) {
   series(you, YOU_COL);
 }
 
-// ---- expected win% curves, one point per turn ----
-// The AI's is the winexp its search reported for each move it chose; yours is
-// the review's per-decision position value (bestQ — what the position was worth
-// under best play), so it fills in as scoring runs.
-function aiWinCurve(moves) {
-  const out = []; let t = 1;                 // end-turn moves advance the turn
-  for (const mv of moves) {
-    if (!out.length || out[out.length - 1].t !== t) out.push({ t, q: mv.q ?? null });
-    if (mv.e) t++;
-  }
-  return out;
-}
-function youWinCurve(rv, moves) {
-  const out = []; let t = 1;
-  // Anchor to the FIRST decision of each turn, including null review holes.
-  // A later scored move must not shift its post-battle value to turn start.
-  for (let k = 0; k < moves.length; k++) {
-    if (!out.length || out[out.length - 1].t !== t)
-      out.push({ t, q: rv?.moves[k]?.bestQ ?? null });
-    if (moves[k].e) t++;
-  }
-  return out;
-}
 function redrawSeedGraphs(r) {
   if ($('pg')) drawPower($('pg'), r);
 }
@@ -1296,7 +1269,7 @@ async function showMove(k) {
   const my = ++inspectSeq;
   $('ibinfo').textContent = 'Replaying…';
   let s;
-  try { s = await inspectMove(r.seed, side.moves, k, r.rules ?? 1); }
+  try { s = await inspectMove(r.seed, side.moves, k, r.rules ?? LEGACY_RULES_VERSION); }
   catch (e) {
     if (my === inspectSeq) $('ibinfo').textContent = `Replay failed: ${e.message || e}`;
     return;

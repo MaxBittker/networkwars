@@ -3,6 +3,7 @@
 // dedicated engine workers. Pure orchestration over engine.worker.js — no game
 // rules live here (all of those are fast_engine.c). The page owns the model,
 // persistence and rendering; this module only turns a round into a review.
+import { LEGACY_RULES_VERSION } from './game-version.js';
 
 // Review budget: one grading-mode search per decision you made. Grading mode
 // evaluates every alternative to the 24k ceiling. Only a position with one
@@ -13,7 +14,16 @@ export const REVIEW_SIMS = 16000, REVIEW_MAX = 24000;
 // identify the exact seed + action sequence, so they cannot grade another game.
 export const REVIEW_VERSION = 2;
 const reviewSource = r => JSON.stringify([r.seed,
-  r.you.moves.map(m => m.e ? -1 : m.a), r.rules ?? 1]);
+  r.you.moves.map(m => m.e ? -1 : m.a), r.rules ?? LEGACY_RULES_VERSION]);
+
+export function invalidateStaleReview(round) {
+  const side = round.you;
+  if (side.review && side.review.version !== REVIEW_VERSION) {
+    // Requeue replayable games; retain compact historical scores without
+    // comparing them against the current evaluation method.
+    side.review = side.moves.length ? null : { ...side.review, stale: true };
+  }
+}
 
 export const TIERS = [
   { min: 20, k: 3, label: 'Blunder' },
@@ -71,7 +81,7 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
         await w.api(`/api/game/${old.s.id}`, 'DELETE');
         w.replays.delete(key);
       }
-      const s = await w.api('/api/game', 'POST', { seed: r.seed, rules: r.rules ?? 1 });
+      const s = await w.api('/api/game', 'POST', { seed: r.seed, rules: r.rules ?? LEGACY_RULES_VERSION });
       if (s.error) throw new Error(s.error);
       replay = { s, pos: 0 };
     }

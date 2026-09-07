@@ -1,8 +1,10 @@
 // Keep the two inspected trajectories (you + AI) in memory. Concurrent hovers
 // share the same request; revisiting any move needs no replay or worker message.
+import { RULES_VERSION } from './game-version.js';
+
 export function createReplayInspector(api) {
   const cache = [];
-  return async (seed, moves, k, rules = 2) => {
+  return async (seed, moves, k, rules = RULES_VERSION) => {
     if (!Number.isInteger(k) || k < 0 || k >= moves.length) throw new Error('invalid move index');
     let entry = cache.find(e => e.seed === seed && e.rules === rules && e.moves === moves && e.length === moves.length);
     if (!entry) {

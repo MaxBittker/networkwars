@@ -9,11 +9,12 @@
 // Two RNG streams in C: useMb32(seed) = the real seeded mulberry32 game stream;
 // useSim(seed) = the private seed-free splitmix64 stream for search rollouts.
 import Module from './fast_engine.js';
+import { LEGACY_RULES_VERSION, RULES_VERSION } from './game-version.js';
+export { RULES_VERSION } from './game-version.js';
 
 export const FACTIONS = ['red', 'green', 'yellow', 'blue', 'purple'];
 export const FIDX = Object.fromEntries(FACTIONS.map((f, i) => [f, i]));
 export const MAXN = 64;
-export const RULES_VERSION = 2;
 
 // Resolve `./fast_engine.js` against THIS module's URL so the worker (served from
 // /public) and node (filesystem) both find it without a hard-coded path.
@@ -83,8 +84,8 @@ class Engine {
 
   // ---- board generation ----
   newGame(seed, rules = RULES_VERSION) {
-    if (rules !== 1 && rules !== RULES_VERSION) throw new Error('unsupported rules version');
-    const generate = rules === 1 ? this.M._new_game_legacy : this.M._new_game;
+    if (rules !== LEGACY_RULES_VERSION && rules !== RULES_VERSION) throw new Error('unsupported rules version');
+    const generate = rules === LEGACY_RULES_VERSION ? this.M._new_game_legacy : this.M._new_game;
     const n = generate(seed >>> 0, this._owner, this._strength, this._x, this._y);
     return {
       n,
