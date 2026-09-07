@@ -184,19 +184,10 @@
   .zchips button:active { background:rgba(255,255,255,.14); }
   .zchips button.sel { color:#04100c; background:var(--teal); }
 
-  .skill-summary { margin:12px 0; }
-  .skill-summary strong { display:block; font-size:22px; line-height:1.2; color:#e9f7f0; }
-  .skill-summary[data-state="better"] strong { color:var(--green); }
-  .skill-summary[data-state="worse"] strong { color:#ff9f45; }
-  .skill-summary p, .skill-note, #skstatus { font-size:12px; line-height:1.5; color:#8fcfb8; margin:6px 0; }
-  .skill-values { display:flex; gap:10px; margin:12px 0; }
-  .skill-values div { flex:1; padding:10px 12px; background:rgba(255,255,255,.035); border-radius:8px; }
-  .skill-values b { display:block; font-size:24px; color:#e9f7f0; font-variant-numeric:tabular-nums; }
-  .skill-values span, .skill-values small { display:block; font-size:11px; color:#8fcfb8; line-height:1.5; }
   #sk { height:150px; }
-  #skstatus { margin:10px 0 18px; }
-  #skstatus button { border:0; padding:6px 0; color:var(--teal); background:none; font:inherit; cursor:pointer; }
-  .skill-note { margin:8px 0; }
+  #sklegend b { color:#e9f7f0; font-variant-numeric:tabular-nums; }
+  #sklegend[data-state="better"] b { color:var(--green); }
+  #sklegend[data-state="worse"] b { color:#ff9f45; }
 
   /* inspector: the board at the selected move. Square-ish and as wide as the panel —
      the board is the point of this view, so it gets the room. */
@@ -339,7 +330,7 @@
 import { Board, ORDER, SPEEDS, sleep, dirArrow, drawThumb } from './board.js?v=4';
 import { createReviewer, tierOf } from './review.js';
 import { createReplayInspector } from './replay.js';
-import { skillHistory, skillComparison, skillTrend, TREND_GAMES } from './skill.js';
+import { skillHistory, skillComparison, skillTrend } from './skill.js';
 
 // The AI plays at the strength the app's autoplay/live driver uses: 6000-sim floor,
 // adaptive up to the worker's 150k ceiling with the visit/value-margin early stop.
@@ -851,48 +842,24 @@ function refreshSkill() {
     el.setAttribute('aria-pressed', String(el.dataset.z === skillZoom));
   });
   const history = skillHistory(M.rounds, reviewing, reviewErr);
+  $('skill').hidden = !history.some(g => g.value != null);
+  if ($('skill').hidden) return;
   const c = skillComparison(history);
-  const summary = $('sksummary');
-  summary.dataset.state = c.state;
-  const titles = { better: 'Your recent decisions look better', worse: 'Your recent decisions look worse',
-    unclear: 'No clear improvement yet', early: 'Building your starting point',
-    incomplete: 'Recent analysis is incomplete', 'few-live': 'Too few close decisions to compare' };
-  let detail;
-  if (c.state === 'early') detail = `Play ${c.needed} more finished game${c.needed === 1 ? '' : 's'} to compare two groups of at least 10.`;
-  else if (c.state === 'incomplete') detail = c.unavailable
-    ? `${c.missing} of the last ${c.size * 2} games lack complete analysis. Some older replays are no longer stored; a fair recent comparison needs more games.`
-    : `Analysis of ${c.missing} more game${c.missing === 1 ? '' : 's'} is needed to compare your last ${c.size} with the ${c.size} before them.`;
-  else if (c.state === 'few-live') detail = 'Each period needs at least 10 games with decisions in positions that were not already won or lost.';
-  else {
-    detail = Math.abs(c.change) < 0.05 ? 'Your average decision cost is unchanged.'
-      : `Your average decision cost is ${Math.abs(c.change).toFixed(1)} points ${c.change > 0 ? 'lower' : 'higher'} than in the previous ${c.size} games.`;
-    if (c.state === 'unclear') detail += ' The difference is small or within normal game-to-game variation.';
-  }
-  summary.innerHTML = `<strong>${titles[c.state]}</strong><p>${detail}</p>`;
-  $('skvalues').innerHTML = c.now == null ? '' : `
-    <div><span>Previous ${c.size} games</span><b>${c.earlier.toFixed(1)} <small>points / decision</small></b><small>#${c.first}–${c.middle}</small></div>
-    <div><span>Latest ${c.size} games</span><b>${c.now.toFixed(1)} <small>points / decision</small></b><small>#${c.recentFirst}–${c.last}</small></div>`;
   const d = skillTrend(history, SKILL_ZOOMS[skillZoom]);
   drawSkill($('sk'), d);
-  $('sklegend').textContent = `Average of up to ${TREND_GAMES} games · lower is better`;
-  const count = status => history.filter(g => g.status === status).length;
-  const active = history.filter(g => g.status === 'active');
-  const status = [`${count('complete')} of ${history.length} games analyzed`];
-  for (const game of active) status.push(`Analyzing game #${game.ri + 1}`
-    + (game.progress ? ` · ${game.progress.done}/${game.progress.total} moves` : ' · starting…'));
-  if (count('queued')) status.push(`${count('queued')} waiting for analysis · runs while this page is open`);
-  if (count('failed')) status.push(`${count('failed')} could not be analyzed`);
-  if (count('unavailable')) status.push(`${count('unavailable')} older game${count('unavailable') === 1 ? '' : 's'} cannot be analyzed because their replays were already removed to save space`);
-  $('skstatus').replaceChildren(...status.map(t => { const el = document.createElement('div'); el.textContent = t; return el; }));
-  if (count('failed')) {
-    const retry = document.createElement('button'); retry.textContent = 'Retry analysis';
-    retry.onclick = () => { for (const k of Object.keys(reviewErr)) delete reviewErr[k]; scorePump(); };
-    $('skstatus').appendChild(retry);
-  }
+  const legend = $('sklegend');
+  legend.dataset.state = c.state;
+  const now = history.findLast(g => g.value != null)?.value;
+  legend.innerHTML = c.now != null
+    ? `<span>Avg loss/decision · ${c.earlier.toFixed(1)} → <b>${c.now.toFixed(1)}</b> pts</span>`
+    : now != null ? `<span>Avg loss/decision · <b>${now.toFixed(1)}</b> pts</span>` : '';
+  legend.setAttribute('aria-label', c.now != null
+    ? `Average decision cost: previous ${c.size} games ${c.earlier.toFixed(1)}, latest ${c.size} games ${c.now.toFixed(1)} points`
+    : 'Average decision cost');
 }
 
-// One x-position per finished game, including unscored games. Missing analysis
-// leaves a gap instead of making old data look like it reaches the latest game.
+// Games with lost replay data are omitted. Pending reviews keep their place
+// until scored, so old scores do not slide forward into the latest game.
 let skHit = null;
 function skTap(ev) {
   if (!skHit) return;
@@ -918,8 +885,7 @@ function drawSkill(cv, games) {
   g.font = '10px -apple-system, sans-serif';
   if (!values.length) {
     g.fillStyle = '#8fcfb8'; g.textAlign = 'center';
-    const waiting = games.some(p => p.status === 'queued' || p.status === 'active');
-    g.fillText(waiting ? 'Waiting for game analysis' : 'No decision scores in these games', W / 2, H / 2);
+    g.fillText('—', W / 2, H / 2);
     return;
   }
   const yMax = Math.max(10, Math.ceil(Math.max(...values) / 10) * 10);
@@ -961,17 +927,14 @@ function showResults() {
 
   const anySkill = M.rounds.some(r => r.you.result);
   const skillHtml = !anySkill ? '' : `
-    <h3>Am I getting better?</h3>
-    <div class="skill-summary" id="sksummary"></div>
-    <div class="skill-values" id="skvalues"></div>
-    <p class="skill-note">Decision cost: estimated win-chance points given up versus the AI’s best move. Lower is better. Each game counts equally; already-decided positions are excluded.</p>
-    <div class="h3row"><h3>Decision cost</h3>
+    <section id="skill" hidden>
+    <div class="h3row"><h3>Skill over time</h3>
       <div class="zchips" id="skzoom" aria-label="Games shown">
         <button data-z="10" aria-label="Last 10 games">10</button><button data-z="100" aria-label="Last 100 games">100</button><button data-z="all" aria-label="All games">All</button>
       </div></div>
     <canvas class="pg" id="sk" role="img" aria-label="Decision cost by game. Lower means better decisions."></canvas>
     <div class="glegend" id="sklegend"></div>
-    <div id="skstatus" aria-live="polite"></div>`;
+    </section>`;
 
   $('res-body').innerHTML = `
     <div id="score">

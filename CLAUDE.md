@@ -59,18 +59,18 @@
         Because the seed pins board+dice, this removes the deal variance that dominates
         unpaired winrates (`sim-vs-real-deal-imbalance`, `hard-set-2026-07-02`). The
         tally panel is deliberately minimal — the two W-L score cards, the
-        **progress summary and skill-over-time graph**, + the seed-list browser.
+        **skill-over-time graph and compact numeric comparison**, + the seed-list browser.
         `public/skill.js` compares the latest 20 finished games with the previous
-        20 (grows from 10 vs 10); every game in both windows must have a complete
-        review. Only live decisions contribute, with equal weight per game.
-        Direction is described cautiously: changes under 0.5 win-chance points or
+        20 (grows from 10 vs 10); unrecoverable missing games are silently
+        omitted, while pending games in either window defer the comparison. Only live decisions contribute, with equal weight per game.
+        Comparison color is applied cautiously: changes under 0.5 win-chance points or
         within two standard errors of game-to-game variation are inconclusive,
         not a calibrated test of underlying skill. The graph shows game averages
         as quiet dots + a trailing 10-game mean, labeled axes (lower is better),
-        and last 10/100/all finished games (default 100). Missing reviews retain
-        their x-position and interrupt the line, never shift old data to “now”.
-        The status separates active move counts, queued, failed/retryable, and
-        older games whose replay data is unavailable. Gate:
+        and last 10/100/all finished games (default 100). Pending reviews retain
+        their x-position and interrupt the line. Unrecoverable games are omitted.
+        Keep this UI minimal: chart, zoom chips, and one numeric legend only.
+        No explanatory prose, verdicts, coverage notices, or analysis status text. Gate:
         `node solver/skill_gate.mjs` (comparison, coverage, quota, queue failures).
         Coverage comes from the **background scorer**:
         a pump that reviews every finished seed, NEWEST first, for as long as the

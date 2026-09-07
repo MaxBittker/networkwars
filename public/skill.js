@@ -13,6 +13,7 @@ export function skillHistory(rounds, reviewing = new Set(), errors = {}) {
       m && Number.isFinite(m.gap) && !m.dead ? [{ gap: m.gap, k }] : []);
     const status = complete ? 'complete' : reviewing.has(ri) ? 'active'
       : !r.you.moves.length ? 'unavailable' : errors[ri] ? 'failed' : 'queued';
+    if (status === 'unavailable') return [];
     return [{ ri, status, progress: rv?.partial, count: live.length,
       value: complete && live.length ? mean(live.map(m => m.gap)) : null,
       k: live[0]?.k ?? 0, canReplay: !r.trim && !!r.you.moves.length }];
@@ -20,8 +21,8 @@ export function skillHistory(rounds, reviewing = new Set(), errors = {}) {
 }
 
 export function skillComparison(history) {
-  // Fixed, adjacent windows of FINISHED games, never the last available reviews:
-  // otherwise a backlog or auto-reviewed losses silently biases the comparison.
+  // Adjacent windows retain pending games, avoiding a bias toward early reviews.
+  // Games whose replay data is gone have already been silently omitted.
   const size = Math.min(COMPARE_GAMES, Math.floor(history.length / 2));
   if (size < 10) return { state: 'early', needed: 20 - history.length };
   const games = history.slice(-2 * size);
