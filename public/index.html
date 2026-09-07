@@ -85,8 +85,6 @@
   .act:active { opacity:.55; }
   .act.off { opacity:.3; pointer-events:none; }
   #endturn { font-size:20px; }
-  #skip { border:0; background:none; font:inherit; font-size:13px; }
-  #skip[hidden] { display:none; }
   #status { color:#8fcfb8; font-size:12px; flex:1; text-align:center; padding:0 6px; }
 
   /* sweep-up offer: green banner above the footer — the mop-up policy wins this
@@ -272,7 +270,6 @@
 
   <footer>
     <div id="status">—</div>
-    <button class="act" id="skip" hidden>Skip animation</button>
     <div class="act" id="endturn">End Turn</div>
   </footer>
 
@@ -631,14 +628,12 @@ function adopt(s) {
   board.draw();
 }
 
-// One replay boundary owns the temporary controls for attacks and whole turns.
+// Disable End Turn until the attack or whole-turn animation finishes.
 async function replayAnimation(run) {
-  $('skip').hidden = false;
   $('endturn').classList.add('off');
   try { await run(); }
-  finally { $('skip').hidden = true; $('endturn').classList.remove('off'); }
+  finally { $('endturn').classList.remove('off'); }
 }
-$('skip').onclick = () => { board.abort = true; };
 
 async function yourAttack(from, to) {
   inputLocked = true; board.abort = false; cancelSweepOffer();
