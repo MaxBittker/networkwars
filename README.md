@@ -1,5 +1,10 @@
 # Network Wars
 
+GitHub Pages deploys the output of `python3 solver/build_site.py` after compiling
+WASM. It places all page imports and worker dependencies under one content-based
+release URL so returning browsers cannot mix cached modules from different pushes.
+Local development can still serve `public/` directly. Gate: `python3 solver/site_gate.py`.
+
 A faithful reproduction of Jim Rutt's **Network Wars** plus a strong AI player for it.
 You (RED) fight four deterministic bots (GREEN, YELLOW, BLUE, PURPLE) for control of a
 30-node graph; first faction to hold **24 nodes** wins. The whole game — board, deal,

@@ -13,7 +13,7 @@ for gate in math rules; do
   "$check_dir/$gate"
 done
 
-for gate in validate_fast validate_wasm legacy_rules_gate; do
+for gate in validate_fast validate_wasm legacy_rules_gate site_gate; do
   uv run --project solver python "solver/$gate.py"
 done
 

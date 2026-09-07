@@ -31,9 +31,13 @@ jobs:
         uses: mymindstorm/setup-emsdk@v14
       - name: Build WASM engine from source
         run: bash solver/build_wasm.sh
+      - name: Stage matching page, scripts, workers, and engine
+        run: |
+          python3 solver/site_gate.py
+          python3 solver/build_site.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: ./public
+          path: ./_site
       - id: deployment
         uses: actions/deploy-pages@v4
