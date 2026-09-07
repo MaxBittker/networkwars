@@ -95,9 +95,15 @@
         of your game (grading-mode searches, 16k floor / 24k ceiling) and grades each
         choice vs the search's best — the blunder-alert metric over a whole game; it
         starts **automatically whenever a seed's analysis opens** (no button), results
-        render **rolling** (each scored move fills in as its search finishes; only a
-        complete review is persisted), and a loss **auto-opens its analysis**
+        render **rolling** (each scored move fills in as its search finishes;
+        versioned partial checkpoints resume only when the seed + full action
+        sequence match, with a throttled save about once per second), and a loss **auto-opens its analysis**
         (the next seed is dealt underneath, so closing drops you into it).
+        Review workers yield to other reviews between complete searches and keep
+        at most two warm replays each. The inspector uses `public/replay.js` to
+        cache two complete trajectories from `/api/replay`, without retaining
+        another worker game or rebuilding battle animations per selection.
+        `solver/REVIEW_PERFORMANCE.md` documents the performance and accuracy study.
         Only **live** decisions (best-Q in 2–98%) are scored: in a decided position every
         move scores gap 0, so including them flatters the player (measured: a
         pass-every-turn game reads −7.7%/move unfiltered vs −27.6% over its 6 real

@@ -7,7 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <style>
   :root {
-    --red:#ff4d5e; --green:#36d39a; --yellow:#f5c542; --blue:#4d8bff; --purple:#a96bff;
+    --red:#ff4a62; --green:#0ed887; --yellow:#e2b200; --blue:#3b90f1; --purple:#ac64f8;
     --teal:#5fd0d6; --ink:#06140f;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -15,10 +15,7 @@
     font-family: -apple-system, "SF Pro Display", Segoe UI, Roboto, sans-serif; overflow:hidden; }
   #app { display:flex; flex-direction:column; height:100%; max-width:440px; margin:0 auto;
     position:relative;
-    background:
-      radial-gradient(120% 70% at 50% 118%, rgba(40,180,120,.30), transparent 60%),
-      radial-gradient(100% 60% at 50% -10%, rgba(40,120,90,.12), transparent 60%),
-      #04100c; }
+    background:linear-gradient(180deg, #051219 0%, #032017 53%, #242006 100%); }
 
   header { display:flex; align-items:center; gap:8px; padding:10px 14px 4px; }
   /* hamburger + popup menu */
@@ -40,16 +37,19 @@
     letter-spacing:.05em; color:#6fae9e; }
   #menupop .div { height:1px; background:rgba(255,255,255,.08); margin:5px 6px; }
   #chips { flex:1; display:flex; justify-content:center; gap:12px; }
-  .chip { position:relative; width:34px; height:34px; border-radius:50%;
+  .chip { position:relative; width:34px; height:34px;
     display:flex; align-items:center; justify-content:center;
     font-weight:800; font-size:14px; color:#fff;
-    border:2.4px solid currentColor; background:rgba(0,0,0,.55);
-    box-shadow:0 0 10px -1px currentColor, inset 0 0 6px -2px currentColor; }
+    filter:drop-shadow(0 0 5px currentColor); }
   .chip.red{color:var(--red)} .chip.green{color:var(--green)} .chip.yellow{color:var(--yellow)}
   .chip.blue{color:var(--blue)} .chip.purple{color:var(--purple)}
-  .chip.cur { box-shadow:0 0 0 2px #fff, 0 0 16px 1px currentColor; }
+  .chip svg { position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
+  .chip polygon { fill:#061719; stroke:currentColor; stroke-width:1.8; }
+  .chip.cur { filter:drop-shadow(0 0 7px currentColor); }
+  .chip.cur polygon { stroke:#f1fff8; stroke-width:2.8; }
   .chip.dead { opacity:.28; filter:grayscale(.4); }
-  .chip b { color:#fff; }
+  .chip b { position:relative; color:#fff; }
+  .chip.cur b { color:inherit; }
 
   #mstrip { display:flex; align-items:center; gap:8px; padding:2px 14px 6px; font-size:11px;
     text-transform:uppercase; letter-spacing:.06em; color:#7fb6a6; }
@@ -85,6 +85,8 @@
   .act:active { opacity:.55; }
   .act.off { opacity:.3; pointer-events:none; }
   #endturn { font-size:20px; }
+  #skip { border:0; background:none; font:inherit; font-size:13px; }
+  #skip[hidden] { display:none; }
   #status { color:#8fcfb8; font-size:12px; flex:1; text-align:center; padding:0 6px; }
 
   /* sweep-up offer: green banner above the footer — the mop-up policy wins this
@@ -244,7 +246,7 @@
         <div class="lbl">Animation speed</div>
         <div class="mi sp" data-speed="instant">Instant</div>
         <div class="mi sp" data-speed="fast">Fast</div>
-        <div class="mi sp" data-speed="medium">Medium</div>
+        <div class="mi sp" data-speed="medium">Classic</div>
         <div class="mi sp" data-speed="slow">Slow</div>
       </div>
     </div>
@@ -265,6 +267,7 @@
 
   <footer>
     <div id="status">—</div>
+    <button class="act" id="skip" hidden>Skip animation</button>
     <div class="act" id="endturn">End Turn</div>
   </footer>
 
@@ -319,8 +322,9 @@
 // search come from fast_engine.c via engine.worker.js. This file is bookkeeping and
 // presentation only.
 // ============================================================================
-import { Board, ORDER, SPEEDS, sleep, dirArrow, drawThumb } from './board.js';
+import { Board, ORDER, SPEEDS, sleep, dirArrow, drawThumb } from './board.js?v=3';
 import { createReviewer, reviewAggregates, tierOf, TIERS, DEAD_LO, DEAD_HI } from './review.js';
+import { createReplayInspector } from './replay.js';
 
 // The AI plays at the strength the app's autoplay/live driver uses: 6000-sim floor,
 // adaptive up to the worker's 150k ceiling with the visit/value-margin early stop.
@@ -329,6 +333,7 @@ const WIN_NODES = 24;                     // faction node count that ends the ga
 
 const $ = (id) => document.getElementById(id);
 const board = new Board($('cv'), $('board'));
+board.onReplay = (faction, nodes) => renderHeader(faction, nodes);
 
 let state = null;            // authoritative view of YOUR game
 let inputLocked = false;
@@ -351,6 +356,7 @@ function makeEngine() {
 }
 const api = makeEngine();      // your game — never issues a search while you play
 const aiApi = makeEngine();    // the AI's background game
+const inspectMove = createReplayInspector(api);
 // Decision scoring (review.js): its own worker pool, created on the first review.
 const reviewer = createReviewer(makeEngine);
 
@@ -453,15 +459,18 @@ function recordEnd(side, s) {
 }
 
 // ============================ chrome ============================
-function renderHeader() {
+function renderHeader(active = 'red', nodes = null) {
   const h = $('chips');
   h.innerHTML = '';
   if (!state) return;
+  const counts = nodes ? Object.fromEntries(ORDER.map(f => [f, 0])) : state.counts;
+  if (nodes) for (const n of nodes) counts[n.owner]++;
   for (const f of ORDER) {
-    const c = state.counts[f];
+    const c = counts[f];
     const d = document.createElement('div');
-    d.className = 'chip ' + f + (f === 'red' ? ' cur' : '') + (c === 0 ? ' dead' : '');
-    d.innerHTML = '<b>' + c + '</b>';
+    d.className = 'chip ' + f + (f === active ? ' cur' : '') + (c === 0 ? ' dead' : '');
+    d.setAttribute('aria-label', `${f}: ${c} nodes${f === active ? ', current turn' : ''}`);
+    d.innerHTML = '<svg viewBox="0 0 34 34" aria-hidden="true"><polygon points="17,2 27.6,6.4 32,17 27.6,27.6 17,32 6.4,27.6 2,17 6.4,6.4"/></svg><b>' + c + '</b>';
     h.appendChild(d);
   }
 }
@@ -597,6 +606,15 @@ function adopt(s) {
   board.draw();
 }
 
+// One replay boundary owns the temporary controls for attacks and whole turns.
+async function replayAnimation(run) {
+  $('skip').hidden = false;
+  $('endturn').classList.add('off');
+  try { await run(); }
+  finally { $('skip').hidden = true; $('endturn').classList.remove('off'); }
+}
+$('skip').onclick = () => { board.abort = true; };
+
 async function yourAttack(from, to) {
   inputLocked = true; board.abort = false; cancelSweepOffer();
   board.selected = null; board.battle = { from, to }; board.draw();
@@ -604,7 +622,7 @@ async function yourAttack(from, to) {
   cur().you.moves.push({ a: [from, to], l: mkLabel(state, from, to) });
   const res = await api(`/api/game/${state.id}/attack`, 'POST', { from, to });
   const e = res.log && res.log[0];
-  if (e && e.flips && !board.instant) await board.animateBattle(e);
+  if (e && e.flips && !board.instant) await replayAnimation(() => board.animateBattle(e));
   board.battle = null;
   adopt(res); sampleHist(cur().you, res); save();
   // No node ids (the board never labels them) and no repel remnant (always 1).
@@ -621,7 +639,7 @@ async function yourEndTurn() {
   setStatus('Ending turn…');
   cur().you.moves.push({ e: 1 });
   const res = await api(`/api/game/${state.id}/end-turn`, 'POST');
-  if (res.events && res.events.length && !board.instant) await board.animateEndTurn(res, setStatus);
+  if (res.events && res.events.length && !board.instant) await replayAnimation(() => board.animateEndTurn(res, setStatus));
   inputLocked = false;
   adopt(res); sampleHist(cur().you, res); save();
   if (recordEnd(cur().you, res)) { await afterYourGame(); return; }
@@ -1199,11 +1217,13 @@ function openSeed(i, opts = {}) {
   renderList();
   select(opts.sel ?? 0);       // a graph tap lands directly on its decision
   // Scoring IS the analysis — start it the moment the panel opens, no button.
-  if (!r.you.review && r.you.moves.length) runReview(i);
+  if ((!r.you.review || r.you.review.partial) && r.you.moves.length) runReview(i);
 }
 // Back returns wherever you came from: the tally if you drilled in from it, otherwise
 // (auto-opened after a loss) straight back to the seed you're now playing.
 $('sd-close').onclick = () => {
+  ++inspectSeq;
+  clearTimeout(hoverTimer);
   $('ov-seed').classList.remove('show');
   if (sdFromResults) showResults();
 };
@@ -1237,7 +1257,8 @@ function renderList() {
       }
       // While rolling (rv.partial) the growing tier bar is the progress readout —
       // no "Scoring… x/y" line, so nothing disappears (and reflows) on completion.
-    } else if (reviewErr[sdIdx] && !reviewing.has(sdIdx)) {
+    }
+    if (reviewErr[sdIdx] && !reviewing.has(sdIdx)) {
       // Scoring starts automatically when the panel opens — the only interactive
       // state left is a failed run, which stays tappable to retry.
       const btn = document.createElement('div');
@@ -1247,7 +1268,7 @@ function renderList() {
       btn.textContent = `Scoring failed — tap to retry (${reviewErr[sdIdx]})`;
       btn.onclick = () => runReview(sdIdx);
       list.appendChild(btn);
-    } else {
+    } else if (!rv) {
       // first move's search still out — the tier bar takes over as soon as it lands
       const p = document.createElement('div');
       p.className = 'spin';
@@ -1297,12 +1318,11 @@ async function showMove(k) {
   if (k < 0 || k >= side.moves.length) return;
   const my = ++inspectSeq;
   $('ibinfo').textContent = 'Replaying…';
-  // Replay on YOUR worker (idle while you're in a menu). Bit-exact from the seed.
-  let s = await api('/api/game', 'POST', { seed: r.seed });
-  for (let j = 0; j < k; j++) {
-    const mv = side.moves[j];
-    s = mv.e ? await api(`/api/game/${s.id}/end-turn`, 'POST')
-             : await api(`/api/game/${s.id}/attack`, 'POST', { from: mv.a[0], to: mv.a[1] });
+  let s;
+  try { s = await inspectMove(r.seed, side.moves, k); }
+  catch (e) {
+    if (my === inspectSeq) $('ibinfo').textContent = `Replay failed: ${e.message || e}`;
+    return;
   }
   if (my !== inspectSeq) return;                 // a newer selection superseded this
   const mv = side.moves[k];
@@ -1347,30 +1367,45 @@ function hoverEnd() {
 const reviewing = new Set();   // round indices being scored (transient — never saved)
 const reviewErr = {};          // last scoring error per round index (transient)
 const seedPanelOn = (i) => sdIdx === i && $('ov-seed').classList.contains('show');
+// Coalesce completions from multiple workers into one visible update per frame.
+let reviewPaint = 0;
+function scheduleReviewPaint() {
+  if (reviewPaint) return;
+  reviewPaint = requestAnimationFrame(() => {
+    reviewPaint = 0;
+    if (seedPanelOn(sdIdx)) {
+      if (sdTab === 'you') renderList();
+      redrawSeedGraphs(M.rounds[sdIdx]);
+    }
+    refreshSkill();
+  });
+}
 async function runReview(i) {
   if (reviewing.has(i)) return;
   reviewing.add(i);
   delete reviewErr[i];
   const r = M.rounds[i];
+  let checkpointAt = performance.now();
   if (seedPanelOn(i) && sdTab === 'you') renderList();  // swap a retry line to 'Scoring…'
   try {
     // Rolling readout: every scored move lands in r.you.review immediately
     // (marked .partial, so renderList shows '…' pending rows) — the early
     // rows are readable while the rest are still searching, and both the
     // tally's skill graph and this seed's win% panel fill in as they land.
-    // Only the COMPLETE review is persisted; an interrupted scoring saves nothing.
+    // Checkpoint finished positions at most once a second. Reloads/retries resume
+    // the same version + action sequence without repeating expensive searches.
     r.you.review = await reviewer.grade(r, (partial) => {
       r.you.review = partial;
-      if (seedPanelOn(i)) {
-        if (sdTab === 'you') renderList();
-        redrawSeedGraphs(r);
+      scheduleReviewPaint();
+      if (performance.now() - checkpointAt >= 1000) {
+        checkpointAt = performance.now();
+        save();
       }
-      refreshSkill();
     });
     save();
   } catch (e) {
-    r.you.review = null;
     reviewErr[i] = String(e && e.message || e);
+    save();                          // keep completed positions available for retry
   } finally {
     reviewing.delete(i);
   }

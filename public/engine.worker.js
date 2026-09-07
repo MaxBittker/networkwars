@@ -46,13 +46,13 @@ function view(g) {
     over: g.over, youWon: g.youWon, winner: g.winner };
 }
 
-function newGame(seed) {
+function newGame(seed, persist = true) {
   if (seed == null) seed = (Math.floor(Math.random() * 0x7fffffff) + 1);
   const d = E.newGame(seed);
   const g = { id: newId(), owner: d.owner, strength: d.strength, x: d.x, y: d.y,
     adj: d.adj, links: d.links, mb: d.mb, turn: 1, over: false, youWon: false,
     winner: null, seed };
-  GAMES[g.id] = g;
+  if (persist) GAMES[g.id] = g;
   return g;
 }
 
@@ -240,6 +240,22 @@ function route(path, method, body) {
   if (q >= 0) path = path.slice(0, q);
   body = body || {};
 
+  // One pass supplies every historical position. No battle logs, per-move
+  // messages, or retained game in GAMES; the caller caches this one trajectory.
+  if (path === '/api/replay' && method === 'POST') {
+    const g = newGame(body.seed, false);
+    const frames = [view(g)];
+    E.useMb32(g.mb);
+    for (const mv of body.moves) {
+      if (g.over) throw new Error('replay continues after game over');
+      E.replayMove(g.owner, g.strength, mv);
+      if (mv.e) g.turn++;
+      updateWinner(g);
+      frames.push(view(g));
+    }
+    return { frames };
+  }
+
   if (path === '/api/game' && method === 'POST') return view(newGame(body.seed));
 
   if (path.startsWith('/api/game/')) {
@@ -249,6 +265,7 @@ function route(path, method, body) {
     const action = slash < 0 ? '' : rest.slice(slash + 1);
     const g = GAMES[gid];
     if (!g) return { error: 'no such game', _status: 404 };
+    if (method === 'DELETE' && action === '') { delete GAMES[gid]; return { ok: true }; }
     if (method === 'GET' && action === '') return view(g);
     if (action === 'attack') return doAttack(g, body.from | 0, body.to | 0);
     if (action === 'end-turn') return doEndTurn(g);

@@ -9,9 +9,24 @@
 // decoration state that only exists during an animation (overrides / battle /
 // flashId / reinforceFlash / animBoard).
 
-export const COLORS = { red:'#ff4d5e', green:'#36d39a', yellow:'#f5c542', blue:'#4d8bff', purple:'#a96bff' };
+// Sampled from the recording at 5s (idle), 10.8/20/26/36/54s (attacking).
+// Idle fills are intentionally not a fixed multiple of the rim: green and purple
+// are darker. Keep text normal-width; the reference's compressed type is not used.
+export const NODE_PALETTE = {
+  red:    { rim:'#ff4a62', body:'#a93343', bloom:'#f895a3', ink:'#be192b', attack:['#ffdbe2','#ffa9b6','#ff99a8','#ff4a62'] },
+  green:  { rim:'#0ed887', body:'#006b43', bloom:'#69c5a2', ink:'#00a060', attack:['#d9f9f2','#a6efdf','#97edd9','#0ad5a8'] },
+  yellow: { rim:'#e2b200', body:'#967600', bloom:'#e9ce69', ink:'#a88600', attack:['#fff7d8','#ffeeab','#ffeb98','#ffda3f'] },
+  blue:   { rim:'#3b90f1', body:'#2a5fa0', bloom:'#8cbbef', ink:'#105ab5', attack:['#d6e9fd','#a1cbf8','#90c3f7','#3b90f1'] },
+  purple: { rim:'#ac64f8', body:'#582988', bloom:'#af87d9', bloomY:.90, ink:'#702dba', attack:['#f0e0ff','#d9b6fb','#d1a9fb','#ac64f8'] },
+};
+const BATTLE_GLOW = { red:'#ff2842', green:'#00d785', yellow:'#ffd62a', blue:'#2084f5', purple:'#a143ff' };
+export const COLORS = Object.fromEntries(Object.entries(NODE_PALETTE).map(([f, p]) => [f, p.rim]));
+function tint(hex, white, alpha = 1) {
+  const rgb = [1,3,5].map(i => parseInt(hex.slice(i,i+2),16));
+  return `rgba(${rgb.map(c => Math.round(c + (255-c)*white)).join(',')},${alpha})`;
+}
 export const ORDER = ['red','green','yellow','blue','purple'];
-export const SPEEDS = { instant: 0, fast: 0.5, medium: 1, slow: 2 };  // sleep-time multiplier
+export const SPEEDS = { instant: 0, fast: 0.25, medium: 1, slow: 2 };  // sleep-time multiplier
 
 export const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 export const cap = (s) => s[0].toUpperCase() + s.slice(1);
@@ -24,19 +39,19 @@ export function dirArrow(f, t) {
   return DIR_ARROWS[idx];
 }
 
-// Per-faction node styles, cached by hex. Sampled from iOS screenshots: the rim
-// is a slightly whitened faction color, and the body is a MEDIUM tone of it
-// (~0.65x the rim) — not near-black like our old fill.
-const _style = {};
-function nodeStyle(hex) {
-  if (_style[hex]) return _style[hex];
-  const s = hex.replace('#', '');
-  const r = parseInt(s.slice(0,2),16), g = parseInt(s.slice(2,4),16), b = parseInt(s.slice(4,6),16);
-  const lift = (c) => Math.round(c + (255 - c) * 0.12);
-  return (_style[hex] = {
-    ring: `rgb(${lift(r)},${lift(g)},${lift(b)})`,
-    body: `rgb(${Math.round(r*0.58+22)},${Math.round(g*0.58+22)},${Math.round(b*0.58+22)})`,
-  });
+// Classic timings follow the reference's distinct focus / attrition / settle beats.
+// Fast scales every beat; Instant skips the entire replay, including queued frames.
+export const TIMING = Object.freeze({ focus: 240, casualty: 140, settle: 300,
+  handoff: 220, reinforce: 520, gap: 100, arrow: 420 });
+
+function octagon(ctx, x, y, r) {
+  ctx.beginPath();
+  for (let i = 0; i < 8; i++) {
+    const a = -Math.PI / 2 + i * Math.PI / 4;
+    const px = x + r * Math.cos(a), py = y + r * Math.sin(a);
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  }
+  ctx.closePath();
 }
 
 // Paint a tiny starting-board thumbnail (faction-colored dots laid out by x,y).
@@ -79,6 +94,12 @@ export class Board {
     this.flashId = null;
     this.reinforceFlash = null;     // Set(nodeId)
     this.animBoard = null;          // mutable node copy used while animating bot turns
+    this.light = 0;                 // battle/reinforcement brightness, 0..1
+    this.pulse = 0;                 // casualty / reinforcement pulse, 0..1
+    this.onReplay = () => {};       // page updates faction counters at event boundaries
+    this.skins = new Map();         // shaded/glowing sprites; no blur work per frame
+    this.size = { width: 0, height: 0 };
+    this.positions = [];
 
     this.speed = 1;                 // sleep multiplier (0 = instant, no replay)
     this.abort = false;             // set by the page to fast-forward a replay
@@ -94,6 +115,7 @@ export class Board {
     this.hoverMove = null;
     this.dragTo = null;
     this.indexMoves();
+    this.positions = v.nodes.map(n => this.nodePos(n));
   }
 
   indexMoves() {
@@ -108,6 +130,8 @@ export class Board {
   resize() {
     const dpr = window.devicePixelRatio || 1;
     const b = this.boardEl.getBoundingClientRect();
+    this.size = { width: b.width, height: b.height };
+    this.skins.clear();
     this.cv.width = b.width * dpr; this.cv.height = b.height * dpr;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (!this.state) return;
@@ -116,11 +140,13 @@ export class Board {
     const pad = 38;
     // topInset shrinks the fit only when the centered board would reach under it;
     // with vertical slack the max() leaves the board dead-centered as before.
-    const topPad = Math.max(pad, this.topInset);
+    // The inset protects the whole node (rim + halo), not just its center.
+    const topPad = Math.max(pad, this.topInset + 30);
     const s = Math.min((b.width - pad*2) / maxX, (b.height - topPad - pad) / maxY);
     this.layout = { r: Math.min(s * 0.34, 26), s,
       ox: (b.width - maxX * s) / 2,
       oy: Math.max(topPad, (b.height - maxY * s) / 2) };
+    this.positions = this.state.nodes.map(n => this.nodePos(n));
     this.draw();
   }
 
@@ -148,29 +174,86 @@ export class Board {
     return best;
   }
 
-  // vertex-up octagon — matches the real game's node shape (verified by fitting
-  // n-gon outlines to iOS screenshots: n=8, vertex at 12 o'clock)
-  _octagon(x, y, r) {
-    const ctx = this.ctx;
-    ctx.beginPath();
-    for (let i = 0; i < 8; i++) {
-      const a = -Math.PI/2 + Math.PI/8 + Math.PI/8 + i * Math.PI/4;
-      const px = x + r * Math.cos(a), py = y + r * Math.sin(a);
-      i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  // Paint the expensive bloom and shading once per size/faction/state. Animation
+  // frames then composite sprites and numbers, without repeated canvas shadows.
+  _skin(owner, mode = 'idle', glow = owner) {
+    const key = `${owner}:${mode}:${glow}`;
+    if (this.skins.has(key)) return this.skins.get(key);
+    const r = this.layout.r, size = Math.ceil(r * 4.6);
+    const cv = document.createElement('canvas'), dpr = window.devicePixelRatio || 1;
+    cv.width = cv.height = Math.ceil(size * dpr);
+    const ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
+    const c = size / 2, palette = NODE_PALETTE[owner], idle = mode === 'idle';
+    // Measured falloff outside the rim: idle glow is tight; a battle has a much
+    // stronger saturated halo. A gradient also keeps its size consistent at any DPR.
+    const glowColor = idle ? COLORS[glow] : BATTLE_GLOW[glow];
+    const halo = ctx.createRadialGradient(c,c,0,c,c,r*1.75);
+    const falloff = idle ? [[0,.5],[1,.4],[1.22,.19],[1.34,.08],[1.47,.016],[1.6,0],[1.75,0]]
+      : [[0,1],[1,1],[1.22,.8],[1.34,.56],[1.47,.26],[1.7,0],[1.75,0]];
+    for (const [radius, alpha] of falloff) halo.addColorStop(radius/1.75, tint(glowColor,0,alpha));
+    ctx.fillStyle = halo; ctx.fillRect(0,0,size,size);
+    if (mode === 'halo') {
+      ctx.globalCompositeOperation = 'destination-out';
+      octagon(ctx,c,c,r); ctx.fillStyle = '#000'; ctx.fill();
+      const skin = { cv, size }; this.skins.set(key,skin); return skin;
     }
-    ctx.closePath();
+    octagon(ctx, c, c, r);
+    if (idle) {
+      ctx.fillStyle = palette.body;
+    } else {
+      const body = ctx.createLinearGradient(0, c-r, 0, c+r);
+      if (mode === 'attacker') {
+        body.addColorStop(0, tint(palette.rim, .94));
+        for (const [i, stop] of [.2,.5,.65,1].entries())
+          body.addColorStop(stop, palette.attack[i]);
+      } else {
+        // Defenders and reinforced nodes remain saturated, with pale light at
+        // the top and bottom. This is distinct from the paler attacking stack.
+        for (const [stop, white] of [[0,.86],[.2,.60],[.5,.24],[.65,.10],[.9,.44],[1,.22]])
+          body.addColorStop(stop, tint(palette.rim, white));
+      }
+      ctx.fillStyle = body;
+    }
+    ctx.fill();
+    if (idle) {
+      // Localized soft light inside the lower face, not a whole-body gradient.
+      ctx.save(); ctx.clip();
+      ctx.translate(c, c + (palette.bloomY || .875)*r); ctx.scale(.85*r, .62*r);
+      const bloom = ctx.createRadialGradient(0,0,0,0,0,1);
+      bloom.addColorStop(0, palette.bloom);
+      bloom.addColorStop(.2, palette.bloom);
+      bloom.addColorStop(.55, tint(palette.bloom, 0, .45));
+      bloom.addColorStop(1, tint(palette.bloom, 0, 0));
+      ctx.fillStyle = bloom; ctx.fillRect(-1,-1,2,2);
+      ctx.restore();
+    }
+    octagon(ctx, c, c, r * .95);
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = idle ? Math.max(2, r * .13) : Math.max(.8, r * .045);
+    ctx.strokeStyle = palette.rim; ctx.stroke();
+    if (!idle) {
+      // A fine white outside rim, with the owner's color retained inside it.
+      octagon(ctx, c, c, r * .98);
+      ctx.lineWidth = Math.max(.8, r * .045);
+      ctx.strokeStyle = '#f5fff9'; ctx.stroke();
+    }
+    const skin = { cv, size }; this.skins.set(key, skin); return skin;
   }
 
-  // directional arrowhead near p2, pointing from p1 -> p2 (tip just outside p2's ring)
-  _drawArrow(p1, p2, color) {
+  // Arrow travels from the source rim to the target rim, always on the link.
+  // Static move previews use the default endpoint; battles supply their clock.
+  _drawArrow(p1, p2, color, progress = 1) {
     const ctx = this.ctx, r = this.layout.r;
     const dx = p2.x - p1.x, dy = p2.y - p1.y;
     const len = Math.hypot(dx, dy) || 1;
     const ux = dx / len, uy = dy / len;          // unit p1->p2
     const px = -uy, py = ux;                      // perpendicular
-    const tipX = p2.x - ux * (r + 1), tipY = p2.y - uy * (r + 1);
-    const ah = Math.max(5, r * 0.45);            // arrowhead length (small, sits at the target end)
-    const aw = Math.max(3.5, r * 0.3);           // arrowhead half-width
+    const gap = len - 2 * (r + 1);
+    if (gap <= 0) return;
+    const ah = Math.min(Math.max(5, r * .45), gap * .45);
+    const aw = Math.min(Math.max(3, r * .25), ah * .7);
+    const travel = r + 1 + ah + (gap - ah) * Math.max(0, Math.min(1, progress));
+    const tipX = p1.x + ux * travel, tipY = p1.y + uy * travel;
     const bx = tipX - ux * ah, by = tipY - uy * ah;
     ctx.beginPath();
     ctx.moveTo(tipX, tipY);
@@ -187,10 +270,10 @@ export class Board {
     const state = this.state;
     if (!state) return;
     const ctx = this.ctx, layout = this.layout;
-    const b = this.boardEl.getBoundingClientRect();
-    ctx.clearRect(0, 0, b.width, b.height);
+    ctx.clearRect(0, 0, this.size.width, this.size.height);
     const nodes = this.animBoard || state.nodes;
-    const pos = nodes.map(n => this.nodePos(n));
+    const pos = this.positions;
+    if (pos.length !== nodes.length) return;
     const { battle, selected, hoverMove, targetsFor } = this;
 
     // links
@@ -207,8 +290,9 @@ export class Board {
         ctx.strokeStyle = ac; ctx.lineWidth = 4; ctx.setLineDash([]); ctx.shadowColor = ac; ctx.shadowBlur = 12; }
       else if (selHot) { ctx.strokeStyle = COLORS.red; ctx.lineWidth = 4; ctx.setLineDash([]); ctx.shadowColor = COLORS.red; ctx.shadowBlur = 10; }
       else if (isHover) { ctx.strokeStyle = 'rgba(255,211,107,.9)'; ctx.lineWidth = 3.5; ctx.setLineDash([]); ctx.shadowColor = '#ffd36b'; ctx.shadowBlur = 12; }
-      else { ctx.strokeStyle = 'rgba(110,220,170,.38)'; ctx.lineWidth = 1.5; ctx.setLineDash([3,5]); ctx.shadowBlur = 0; }
+      else { ctx.strokeStyle = 'rgba(70,220,165,.65)'; ctx.lineWidth = 0.85; ctx.setLineDash([1.5,2.5]); ctx.shadowBlur = 0; }
       ctx.stroke();
+      if (inBattle) { ctx.shadowBlur = 0; ctx.strokeStyle = 'rgba(234,255,246,.4)'; ctx.lineWidth = 1; ctx.stroke(); }
     }
     ctx.setLineDash([]); ctx.shadowBlur = 0;
 
@@ -218,46 +302,47 @@ export class Board {
       const ov = this.overrides.get(n.id);
       const owner = (ov && ov.owner) ? ov.owner : n.owner;
       const strength = ov ? ov.strength : n.strength;
-      const col = COLORS[owner];
       const isAtk = battle && n.id === battle.from;
       const isDef = battle && n.id === battle.to;
       const isSel = n.id === selected || isAtk;
       const isTarget = isDef || (selected !== null && targetsFor.get(selected)?.has(n.id));
-      const isFlash = n.id === this.flashId;
       const isRein = this.reinforceFlash && this.reinforceFlash.has(n.id);
-      // Real-game look (sampled from iOS screenshots): flat medium-tone colored
-      // body, a thick rounded rim in the faction color, and a strong soft halo
-      // around the whole node.
-      const st = nodeStyle(col);
-      const r = layout.r;
-      const hot = isFlash || isRein || isSel;
+      // Both combatants brighten; only legal targets get a quiet extra outline.
+      // Dark numerals on pale fighting nodes match the recording's contrast flip.
+      const active = isAtk || isDef || isRein;
+      const light = active ? this.light : (isSel ? .28 : 0);
+      const pulse = isRein || n.id === this.flashId ? this.pulse : 0;
+      const mode = isDef ? 'defender' : isRein ? 'reinforce' : 'attacker';
+      const glow = (isAtk || isDef) ? nodes[battle.from].owner : owner;
+      const skin = this._skin(owner), lit = this._skin(owner, mode, glow);
+      const size = skin.size; // fixed geometry: only brightness changes during replay
+      ctx.drawImage(skin.cv, p.x-size/2, p.y-size/2, size, size);
+      if (light > 0) {
+        ctx.globalAlpha = light;
+        ctx.drawImage(lit.cv, p.x-size/2, p.y-size/2, size, size);
+        ctx.globalAlpha = 1;
+      }
+      if (pulse > 0 && light > 0) {
+        ctx.globalAlpha = .15 * pulse * light;
+        ctx.drawImage(this._skin(owner, 'halo', glow).cv, p.x-size/2, p.y-size/2, size, size);
+        ctx.globalAlpha = 1;
+      }
+      if (isTarget && !isDef) {
+        octagon(ctx, p.x, p.y, layout.r * 1.12);
+        ctx.strokeStyle = 'rgba(236,255,249,.8)'; ctx.lineWidth = 1; ctx.stroke();
+      }
       ctx.save();
-      ctx.shadowColor = col;
-      ctx.shadowBlur = isFlash ? r*1.4 : (isRein ? r*1.3 : (isSel ? r*1.1 : (isTarget ? r*0.85 : r*0.6)));
-      this._octagon(p.x, p.y, r);
-      ctx.fillStyle = st.body;
-      ctx.fill();
-      ctx.fill();                       // second pass deepens the halo like the game's bloom
-      ctx.restore();
-      // rim: thick (~0.13r in the real game), rounded corners, glowing
-      ctx.save();
-      this._octagon(p.x, p.y, r * 0.93);
-      ctx.lineJoin = 'round';
-      ctx.lineWidth = Math.max(2.5, r * (hot || isTarget ? 0.17 : 0.14));
-      ctx.strokeStyle = (isFlash || isRein) ? '#fff' : st.ring;
-      ctx.shadowColor = col;
-      ctx.shadowBlur = hot ? r*0.7 : r*0.4;
-      ctx.stroke();
-      ctx.restore();
-      // number (white, with a soft dark shadow so it reads over the colored body)
-      ctx.save();
-      ctx.fillStyle = '#fff';
-      ctx.font = `800 ${Math.round(layout.r*0.85)}px -apple-system, sans-serif`;
+      ctx.translate(p.x, p.y + 1);
+      ctx.fillStyle = light > .55 ? NODE_PALETTE[owner].ink : '#fff';
+      ctx.font = `700 ${Math.round(layout.r * .88)}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 3;
-      ctx.fillText(strength, p.x, p.y + 1);
+      ctx.fillText(strength, 0, 0);
       ctx.restore();
     }
+
+    if (battle && pos[battle.from] && pos[battle.to])
+      this._drawArrow(pos[battle.from], pos[battle.to], '#effff8',
+        ((battle.elapsed || 0) % TIMING.arrow) / TIMING.arrow);
 
     // hovered suggestion: a directional arrow along the edge (drawn on top of nodes)
     if (hoverMove && hoverMove.from != null && hoverMove.to != null) {
@@ -279,84 +364,97 @@ export class Board {
 
   // ---- animation ----
 
-  // Replay the engine's coin-flip sequence before showing the result. The page's
-  // state stays PRE-attack throughout, so an abort mid-replay leaves nothing stale.
+  // A single clock for all phases. Read speed every frame so changing to Instant
+  // takes effect during a fight; use a timer fallback when a tab is backgrounded.
+  async _beat(ms, frame = () => {}) {
+    let elapsed = 0, last = performance.now();
+    if (this.abort || this.instant) return;
+    frame(0); this.draw();
+    while (elapsed < ms && !this.abort && !this.instant) {
+      await new Promise(resolve => {
+        let raf;
+        const finish = () => { clearTimeout(timer); cancelAnimationFrame(raf); resolve(); };
+        const timer = setTimeout(finish, 50);
+        raf = requestAnimationFrame(finish);
+      });
+      const now = performance.now();
+      const delta = (now - last) / (this.speed || 1); last = now;
+      elapsed += delta;
+      if (this.battle) this.battle.elapsed = (this.battle.elapsed || 0) + delta;
+      frame(Math.min(1, elapsed / ms)); this.draw();
+    }
+  }
+
+  _clearAnimation() {
+    this.overrides.clear(); this.battle = null; this.flashId = null;
+    this.reinforceFlash = null; this.light = 0; this.pulse = 0;
+  }
+
+  // Human and bot attacks replay the SAME authoritative casualty log. No dice or
+  // rules are simulated here. Commit both outcomes (including repels) before the
+  // settle beat, and retain the local result until the page adopts its final view.
   async animateBattle(e) {
+    const ownsBoard = !this.animBoard;
+    if (ownsBoard) this.animBoard = this.state.nodes.map(n => ({ ...n }));
     const { from, to, fromStart, toStart, flips } = e;
     let a = fromStart, d = toStart;
-    this.flashId = null;
-    this.battle = { from, to };
-    this.overrides.set(from, { strength: a });
-    this.overrides.set(to, { strength: d });
-    this.draw();
-    await sleep(180 * this.speed);
-    const delay = Math.max(45, Math.min(150, Math.round(850 / Math.max(flips.length, 1)))) * this.speed;
-    for (const f of flips) {
-      if (this.abort) break;                    // page asked to fast-forward
-      if (f === 'd') { d--; this.flashId = to; } else { a--; this.flashId = from; }
+    try {
+      this.battle = { from, to, elapsed: 0 };
       this.overrides.set(from, { strength: a });
-      this.overrides.set(to, { strength: Math.max(d, 0) });
-      this.draw();
-      await sleep(delay);
+      this.overrides.set(to, { strength: d });
+      await this._beat(TIMING.focus, t => { this.light = t; });
+      for (const f of flips) {
+        if (this.abort || this.instant) break;
+        if (f === 'd') { d--; this.flashId = to; } else { a--; this.flashId = from; }
+        this.overrides.set(from, { strength: a });
+        this.overrides.set(to, { strength: Math.max(d, 0) });
+        await this._beat(TIMING.casualty, t => { this.pulse = 1 - t; });
+      }
+      this.overrides.clear();
+      this.animBoard[from].strength = e.fromStrength;
+      this.animBoard[to].strength = e.toStrength;
+      if (e.captured) this.animBoard[to].owner = e.attacker;
+      this.flashId = e.captured ? to : from;
+      this.onReplay(e.attacker, this.animBoard);
+      await this._beat(TIMING.settle, t => { this.light = 1 - t; this.pulse = 1 - t; });
+    } finally {
+      this._clearAnimation();
+      if (ownsBoard) this.animBoard = null;
     }
-    this.flashId = null;
-    if (e.captured) {
-      this.overrides.set(to, { strength: e.toStrength, owner: e.attacker });
-      this.overrides.set(from, { strength: e.fromStrength });
-      this.draw();
-      if (!this.abort) await sleep(240 * this.speed);
-    }
-    this.overrides.clear();
-    this.battle = null;
   }
 
-  // One bot battle, compact: highlight from->to in the attacker's color, then commit
-  // the result with a flash. (Flip-by-flip is reserved for the player's own attacks.)
-  async _animateBotBattle(e) {
-    const from = this.animBoard[e.from], to = this.animBoard[e.to];
-    this.battle = { from: e.from, to: e.to };
-    this.overrides.set(e.from, { strength: e.fromStart });
-    this.overrides.set(e.to, { strength: e.toStart });
-    this.draw();
-    if (!this.abort) await sleep(170 * this.speed);
-    // commit to the working board
-    from.strength = e.fromStrength;
-    if (e.captured) { to.owner = e.attacker; to.strength = e.toStrength; }
-    else { to.strength = e.toStrength; }
-    this.flashId = e.captured ? e.to : e.from;
-    this.overrides.clear();
-    this.draw();
-    if (!this.abort) await sleep(150 * this.speed);
-    this.flashId = null;
-    this.battle = null;
-  }
-
-  // Replay RED reinforce + the four bot turns, step by step, from the engine's event
-  // log. Works on a local copy so each move is visible; the page adopts the
-  // authoritative final state afterwards. onStatus(text) narrates whose turn it is.
+  // The working board and header advance together, only at event boundaries.
   async animateEndTurn(res, onStatus = () => {}) {
     this.animBoard = this.state.nodes.map(n => ({ ...n }));
-    this.selected = null;
+    this.selected = null; this.hoverMove = null; this.dragTo = null;
     let curFaction = null;
-    for (const ev of res.events) {
-      if (this.abort) break;                 // page asked to skip the rest of the replay
-      if (ev.type === 'reinforce') {
-        for (const ch of ev.changes) this.animBoard[ch.id].strength = ch.to;
-        this.reinforceFlash = new Set(ev.changes.map(c => c.id));
-        if (ev.faction !== 'red') onStatus(`${cap(ev.faction)} reinforces.`);
-        this.draw();
-        await sleep((ev.faction === 'red' ? 160 : 240) * this.speed);
-        this.reinforceFlash = null;
-        this.draw();
-      } else {
-        if (ev.attacker !== curFaction) {
-          curFaction = ev.attacker;
-          onStatus(`${cap(ev.attacker)} is attacking…`);
+    try {
+      for (const ev of res.events) {
+        if (this.abort || this.instant) break;
+        const faction = ev.type === 'reinforce' ? ev.faction : ev.attacker;
+        if (faction !== curFaction) {
+          curFaction = faction;
+          this.onReplay(faction, this.animBoard);
+          onStatus(faction === 'red' ? 'Your reinforcements.' : `${cap(faction)}’s turn…`);
+          await this._beat(TIMING.handoff);
         }
-        await this._animateBotBattle(ev);
+        if (ev.type === 'reinforce') {
+          onStatus(faction === 'red' ? 'Your reinforcements.' : `${cap(faction)} reinforces.`);
+          this.reinforceFlash = new Set(ev.changes.map(c => c.id));
+          await this._beat(TIMING.focus, t => { this.light = t; });
+          for (const ch of ev.changes) this.animBoard[ch.id].strength = ch.to;
+          await this._beat(TIMING.reinforce, t => {
+            this.light = 1 - t; this.pulse = Math.sin(Math.PI * t);
+          });
+          this._clearAnimation();
+        } else {
+          onStatus(`${cap(faction)} attacks…`);
+          await this.animateBattle(ev);
+        }
+        await this._beat(TIMING.gap);
       }
+    } finally {
+      this._clearAnimation(); this.animBoard = null;
     }
-    this.animBoard = null;
-    this.reinforceFlash = null;
   }
 }

@@ -289,12 +289,16 @@ static inline void counts(const int *owner, int *c) {
     for (int i = 0; i < N; i++) c[owner[i]]++;
 }
 
-static int check_winner(const int *owner) {
-    int c[NF]; counts(owner, c);
+static int winner_from_counts(const int *c) {
     for (int f = 0; f < NF; f++) if (c[f] >= WIN_NODES) return f;
     int alive = -1, na = 0;
     for (int f = 0; f < NF; f++) if (c[f] > 0) { alive = f; na++; }
     return (na == 1) ? alive : -1;
+}
+
+static int check_winner(const int *owner) {
+    int c[NF]; counts(owner, c);
+    return winner_from_counts(c);
 }
 
 /* ---- exact battle-outcome tables (variance-free policy estimates) ----
@@ -306,16 +310,18 @@ static int check_winner(const int *owner) {
  *  repeats the state). Boundaries: CP[a][0]=CS bases at (a>1); a==1 -> 0.
  * The occupier is the terminal a-1, so CS bases CS[a][0]=a-1.
  * CAPP/CAPES then fold in the two guarded attacker pre-fires on d (a fixed).
- * capES = CAPES/CAPP (expected occupier strength after a capture). */
+ * CAPES stores the conditional expected occupier strength (CS / CP). */
 #define MAXS 160
 static double CAPP[MAXS][MAXS];
 static double CAPES[MAXS][MAXS];
+static double SOURCE_LOG[MAXS];
 static int CAP_READY = 0;
 
 static void build_cap_tables(void) {
     if (CAP_READY) return;
     static double CP[MAXS][MAXS], CS[MAXS][MAXS];
     for (int a = 0; a < MAXS; a++) {
+        SOURCE_LOG[a] = log2((double)(a < 2 ? 2 : a));
         CP[a][0] = (a > 1) ? 1.0 : 0.0;
         CS[a][0] = (a > 1) ? (double)(a - 1) : 0.0;
     }
@@ -342,7 +348,7 @@ static void build_cap_tables(void) {
                     ps += 0.25 * CS[a][dd];
                 }
             CAPP[a][d] = pp;
-            CAPES[a][d] = ps;   /* already P*E[occupier]: matches exp_cap_strength */
+            CAPES[a][d] = pp > 0 ? ps / pp : 0.0; /* divide once, not per rollout move */
         }
     CAP_READY = 1;
 }
@@ -358,8 +364,7 @@ static inline double exp_cap_strength(int a, int d) {
     if (a >= MAXS) a = MAXS - 1;
     if (d < 1) return (a >= 1) ? (double)(a - 1) : 0.0;
     if (d >= MAXS) d = MAXS - 1;
-    double pp = CAPP[a][d];
-    return pp > 0 ? CAPES[a][d] / pp : 0.0;
+    return CAPES[a][d];
 }
 
 /* ---- ranked RED policy (C1-tuned), the single rollout policy ----
@@ -382,8 +387,6 @@ static const RankWeights RW = {  /* C1 */
 /* red component labels: label[i] = component index (-1 if not red) */
 static int LBL[MAXN];
 static int LBL_SIZE[MAXN];
-static int touch_mark[MAXN];   /* per-call scratch for "touching" set */
-static int touch_stamp = 0;
 
 static int red_labels(const int *owner) {
     for (int i = 0; i < N; i++) { LBL[i] = -1; LBL_SIZE[i] = 0; }
@@ -410,13 +413,13 @@ static int red_labels(const int *owner) {
 
 /* score a single RED attack move (frm->to) under the ranked weights. */
 static double ranked_score(const int *owner, const int *strength, const int *c,
-                           int largest, int i, int to) {
+                           int largest, int i, int to, double src) {
     int fs = strength[i], ts = strength[to];
     double pCap = capture_prob(fs, ts);
     double eStr = exp_cap_strength(fs, ts);
     int eStrI = (int)(eStr + 0.5); if (eStrI < 1) eStrI = 1;
 
-    touch_stamp++;
+    uint64_t touched = 0;  /* MAXN <= 64; local set avoids a wrapping global stamp */
     int mergeCount = 0, redAdj = 0, touchesLargest = 0;
     double exposure = 0.0;
     for (int m = ADJ_OFF[to]; m < ADJ_OFF[to+1]; m++) {
@@ -424,8 +427,8 @@ static double ranked_score(const int *owner, const int *strength, const int *c,
         if (owner[nb] == 0) {
             redAdj++;
             int lb = LBL[nb];
-            if (lb >= 0 && touch_mark[lb] != touch_stamp) {
-                touch_mark[lb] = touch_stamp; mergeCount++;
+            if (lb >= 0 && !(touched & (UINT64_C(1) << lb))) {
+                touched |= UINT64_C(1) << lb; mergeCount++;
                 if (lb == largest) touchesLargest = 1;
             }
         } else if (nb != i && strength[nb] > eStr) {
@@ -433,8 +436,8 @@ static double ranked_score(const int *owner, const int *strength, const int *c,
         }
     }
     int slb = LBL[i];
-    if (slb >= 0 && touch_mark[slb] != touch_stamp) {
-        touch_mark[slb] = touch_stamp; mergeCount++;
+    if (slb >= 0 && !(touched & (UINT64_C(1) << slb))) {
+        touched |= UINT64_C(1) << slb; mergeCount++;
         if (slb == largest) touchesLargest = 1;
     }
     mergeCount -= 1; if (mergeCount < 0) mergeCount = 0;
@@ -442,7 +445,6 @@ static double ranked_score(const int *owner, const int *strength, const int *c,
     double margin = (double)(fs - ts);
     double weakTarget = 1.0 / (ts < 1 ? 1 : ts);
     double strongPen = (ts - 3 > 0) ? (ts - 3) : 0;
-    double src = log2((double)(fs < 2 ? 2 : fs));
 
     double score = 0;
     score += pCap * RW.capture;
@@ -470,10 +472,12 @@ static int ranked_best_move(const int *owner, const int *strength) {
     double best = RW.threshold;   /* END competes at the stop threshold */
     for (int i = 0; i < N; i++) {
         if (owner[i] != 0 || strength[i] <= 1) continue;
+        const double src = strength[i] < MAXS ? SOURCE_LOG[strength[i]]
+                                               : log2((double)strength[i]);
         for (int k = ADJ_OFF[i]; k < ADJ_OFF[i+1]; k++) {
             int to = ADJ[k];
             if (owner[to] == 0) continue;   /* attack enemies only (RED is owner 0) */
-            double s = ranked_score(owner, strength, c, largest, i, to);
+            double s = ranked_score(owner, strength, c, largest, i, to, src);
             if (s > best) { best = s; best_act = (i << 8) | to; }
         }
     }
@@ -820,6 +824,7 @@ typedef struct {
     int terminal;
     long total_n;      /* cached sum of child visits (== times selected through) */
     double v;
+    double prior;      /* uniform across this node; store once, not on every edge */
 } MNode;
 
 static MNode  *NODES = NULL;
@@ -828,7 +833,6 @@ static int    *E_CHILD = NULL;     /* node index of child, -1 = none */
 static int    *E_CHILD2 = NULL;    /* repel-outcome child (chance-split mode), -1 = none */
 static int    *E_N = NULL;
 static double *E_W = NULL;
-static double *E_P = NULL;
 static long NODE_CAP = 0, EDGE_CAP = 0;
 static long next_node = 0, next_edge = 0;
 
@@ -855,9 +859,8 @@ static int ensure_pools(long ncap, long ecap) {
         E_CHILD2 = (int*)realloc(E_CHILD2, ecap * sizeof(int));
         E_N      = (int*)realloc(E_N,      ecap * sizeof(int));
         E_W      = (double*)realloc(E_W,   ecap * sizeof(double));
-        E_P      = (double*)realloc(E_P,   ecap * sizeof(double));
         EDGE_CAP = ecap;
-        if (!E_ACT || !E_CHILD || !E_CHILD2 || !E_N || !E_W || !E_P) return 0;
+        if (!E_ACT || !E_CHILD || !E_CHILD2 || !E_N || !E_W) return 0;
     }
     return 1;
 }
@@ -890,16 +893,16 @@ static int apply_red(int *owner, int *strength, int act, int *pturns, int *winne
     if (act == A_END) {
         end_turn(owner, strength);
         (*pturns)++;
-        int w = check_winner(owner);
         int c[NF]; counts(owner, c);
+        int w = winner_from_counts(c);
         if (w != -1 || c[0] == 0) { *winner = (w == 0); return 1; }
         if (*pturns > MAX_TURNS) { *winner = 0; return 1; }
         return 0;
     } else {
         int frm = act >> 8, to = act & 0xFF;
         resolve_battle(owner, strength, frm, to);
-        int w = check_winner(owner);
         int c[NF]; counts(owner, c);
+        int w = winner_from_counts(c);
         if (w != -1 || c[0] == 0) { *winner = (w == 0); return 1; }
         return 0;
     }
@@ -972,8 +975,8 @@ static void uct_sim_once(void) {
                 E_CHILD2[off] = -1;
                 E_N[off] = 0;
                 E_W[off] = 0.0;
-                E_P[off] = 1.0 / nc;     /* uniform priors */
             }
+            node->prior = 1.0 / nc;
             /* leaf eval = rollout average */
             double v = 0.0;
             for (int r = 0; r < S_nroll; r++) v += rollout(owner, strength, turns);
@@ -1001,13 +1004,14 @@ static void uct_sim_once(void) {
         }
         if (best_k < 0) {
             double sqrt_total = sqrt((double)total) + 1e-8;
+            const double explore = S_cpuct * node->prior * sqrt_total;
             double best_u = -1e30;
             best_k = 0;
             for (int k = 0; k < nc; k++) {
                 int off = node->child_off + k;
                 int n = E_N[off];
                 double q = (n > 0) ? (E_W[off] / n) : node->v;
-                double u = q + S_cpuct * E_P[off] * sqrt_total / (1 + n);
+                double u = q + explore / (1 + n);
                 if (u > best_u) { best_u = u; best_k = k; }
             }
         }

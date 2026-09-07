@@ -60,3 +60,41 @@ live game series with the C-UCT engine. See `iphone_data/README.md`.
 
 Deps are managed with `uv` (`pyproject.toml` / `uv.lock`); the only runtime
 dependency is `numpy<2`. `fast_engine.so` is gitignored — rebuild with the `cc` line.
+
+## Search performance checks
+
+`search_bench.py before.so after.so` and
+`node search_bench.mjs before.mjs ../public/fast_engine.js` compare two builds
+using 48 seeded opening/midgame positions, ordinary and grading searches,
+4k fixed / 4k–8k adaptive budgets, and three alternating-order repetitions.
+Every root action, visit count, Q value, simulation total, and game RNG position
+must match. Preserve a baseline build before changing the engine; WASM baselines
+outside `public/` should use the `.mjs` extension.
+
+The September 2026 cleanup stores each uniform prior once per tree node, caches
+conditional capture strength and source logarithms, shares winner/count work,
+and replaces the rollout scorer's global visit stamps with a local bitset.
+In this paired benchmark, native time was 29.304s → 29.022s and WASM time
+32.920s → 32.620s (about 1%, small enough to treat cautiously). The clearer gain
+is memory: at the browser's 150k search ceiling, allocated WASM memory fell from
+99.38 MiB to 79.44 MiB, with exact search-result parity in all 288 comparisons
+on each platform. These timings are local measurements, not a device-wide guarantee.
+
+## Board replay checks
+
+`node board_gate.mjs` checks the renderer against real engine battle logs:
+casualty order, captures, repels, reinforcement, callback boundaries, speed
+changes, interruption, and cleanup. It uses a virtual frame clock; inspect the
+actual page for visual changes as well. `../TODO.md` records the video reference
+and the gamefeel restoration checklist.
+
+## Post-game review performance
+
+See [`REVIEW_PERFORMANCE.md`](REVIEW_PERFORMANCE.md) for the 481-decision budget
+study, resumable scoring and pool scheduling, cached historical replay, and
+validation commands. `review_bench.mjs` measures the actual WASM review path;
+`review_scheduler_gate.mjs` checks checkpoint identity, fairness, and failure
+handling. The default 16k–24k grading budget is retained: a blanket reduction
+made some blunders disappear. `review_gate.mjs` now also checks resume and exact
+historical replay, and accepts an optional pre-change reviewer after the worker
+count for comparison.

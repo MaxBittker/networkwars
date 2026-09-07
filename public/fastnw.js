@@ -174,6 +174,16 @@ class Engine {
     this._getBack(this._strength, strength);
   }
 
+  // Replay without animation logs: the same C primitives and real game dice.
+  replayMove(owner, strength, move) {
+    this._put(this._owner, owner);
+    this._put(this._strength, strength);
+    if (move.e) this.M._end_turn(this._owner, this._strength);
+    else this.M._ext_resolve_battle(this._owner, this._strength, move.a[0], move.a[1]);
+    this._getBack(this._owner, owner);
+    this._getBack(this._strength, strength);
+  }
+
   // ---- sweep-up (mop-up policy + its certificate; see fast_engine.c) ----
   // The rule the sweep plays, straight from C — the pages must not keep their own
   // copy, or the policy that gets certified stops being the policy that plays.
