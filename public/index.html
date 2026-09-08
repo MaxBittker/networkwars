@@ -542,15 +542,21 @@ function paintBadge(nodes, idle) {
   if (nodes) drawThumb($('aicv'), nodes);
 }
 
-// NEWEST dealt-but-unfinished seed — i.e. the one you are playing right now,
-// then the backlog behind it. Oldest-first (the original order) meant that once
-// the AI fell behind at all, the pair you were actually looking at was the LAST
-// one it would get to: every recent seed read "AI —" while it ground through
-// history nobody was waiting on.
+// The inspected/just-finished pair, then the newest dealt seed and its backlog.
+// Selection happens between complete moves, so history cannot hold up the pair
+// the player is waiting for and no search is truncated to change priorities.
 function nextAiSeed() {
-  for (let k = M.rounds.length - 1; k >= 0; k--) {
+  const pending = k => {
     const r = M.rounds[k];
-    if (r.startNodes && !r.ai.result && !aiErr[k]) return k;
+    return r?.startNodes && !r.ai.result && !aiErr[k];
+  };
+  // Finish the pair being inspected, or just played, before the speculative
+  // next game. Recheck after each AI move so older games cannot block it.
+  if (seedPanelOn(sdIdx) && pending(sdIdx)) return sdIdx;
+  for (const k of [M.idx, M.idx - 1])
+    if (pending(k) && M.rounds[k].you.result) return k;
+  for (let k = M.rounds.length - 1; k >= 0; k--) {
+    if (pending(k)) return k;
   }
   return -1;
 }
@@ -587,9 +593,14 @@ async function aiStep(path, method, body) {
 async function aiPlaySeed(i) {
   const r = M.rounds[i];
   const g = r.ai;
-  g.moves = []; g.hist = [];                    // restart cleanly (e.g. after a reload)
   let s = await aiStep('/api/game', 'POST', { seed: r.seed, rules: r.rules ?? LEGACY_RULES_VERSION });
-  sampleHist(g, s);
+  // Resume saved AI actions using the seed's dice, without repeating searches.
+  // This also lets the pump switch seeds between moves without losing work.
+  if (!g.moves.length) { g.hist = []; sampleHist(g, s); }
+  for (const mv of g.moves) {
+    s = mv.e ? await aiStep(`/api/game/${s.id}/end-turn`, 'POST')
+      : await aiStep(`/api/game/${s.id}/attack`, 'POST', { from: mv.a[0], to: mv.a[1] });
+  }
   // Paint BEFORE the first search: its opening think can take seconds, and a badge
   // reading "idle" while the AI is actually grinding is a lie.
   paintBadge(s.nodes, false);
@@ -609,9 +620,16 @@ async function aiPlaySeed(i) {
     // that would spoil the seed you're playing.
     paintBadge(s.nodes, false);
     if (g.moves.length % 4 === 0) save();        // throttled: full-state write per move is wasteful
+    if (!s.over && nextAiSeed() !== i) {
+      save();
+      await aiStep(`/api/game/${s.id}`, 'DELETE');
+      return;
+    }
     await sleep(0);                              // yield so the UI stays smooth
   }
+  if (!s.over) throw new Error('AI move limit reached');
   recordEnd(g, s);
+  await aiStep(`/api/game/${s.id}`, 'DELETE');
   save();
   renderStrip();
   refreshSeedPanel(i);                  // an analysis open on this seed fills in now
@@ -698,7 +716,9 @@ async function afterYourGame() {
   const i = M.idx, r = M.rounds[i];
   const lost = r.you.result === 'lost';
   renderStrip();
-  scorePump();               // the just-finished seed joins the scoring queue
+  // Start this review even when the backlog pump is waiting on an older game.
+  // Worker priority yields at the next complete search, preserving its grades.
+  runReview(i).then(scorePump);
   setStatus(lost ? 'You lost this seed.' : 'You WON this seed.');
   await sleep(1000);
   if (r.ai.result) revealPair(i);
@@ -1190,6 +1210,7 @@ function openSeed(i, opts = {}) {
   select(opts.sel ?? 0);       // a graph tap lands directly on its decision
   // Scoring IS the analysis — start it the moment the panel opens, no button.
   if ((!r.you.review || r.you.review.partial) && r.you.moves.length) runReview(i);
+  aiPump();
 }
 // Back returns wherever you came from: the tally if you drilled in from it, otherwise
 // (auto-opened after a loss) straight back to the seed you're now playing.
@@ -1374,7 +1395,7 @@ async function runReview(i) {
         checkpointAt = performance.now();
         save();
       }
-    });
+    }, () => seedPanelOn(i) ? Number.MAX_SAFE_INTEGER : i);
     save();
   } catch (e) {
     reviewErr[i] = String(e && e.message || e);

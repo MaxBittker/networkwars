@@ -60,8 +60,9 @@
       - `index.html` — **duplicate-format** head-to-head play vs the engine, continuous:
         you play a seed blind (your worker issues ZERO searches) while the AI plays THE
         SAME seed **concurrently in a SECOND worker**; finish and the next seed is dealt,
-        with a running W-L tally. The AI pump takes the **NEWEST** dealt-but-unfinished
-        seed (the one you are on) and only then backfills older ones, and it isolates a
+        with a running W-L tally. The AI pump prioritizes the inspected or just-finished pair, then the
+        newest dealt seed and older ones. It switches between complete moves and
+        resumes saved actions without repeating searches, and it isolates a
         seed it cannot play (`aiErr`) instead of throwing out of the pump — oldest-first
         plus an unhandled throw both meant the pair you were looking at never completed.
         **The two workers are load-bearing, not a nicety**:
@@ -127,11 +128,16 @@
         versioned partial checkpoints resume only when the seed + full action
         sequence match, with a throttled save about once per second), and a loss **auto-opens its analysis**
         (the next seed is dealt underneath, so closing drops you into it).
-        Review workers yield to other reviews between complete searches and keep
+        Review workers prioritize the open panel, then newer finished games, between
+        complete searches. A newly finished game starts grading immediately even
+        if the backlog pump is awaiting an older review. Workers keep
         at most two warm replays each. The inspector uses `public/replay.js` to
         cache two complete trajectories from `/api/replay`, without retaining
         another worker game or rebuilding battle animations per selection.
         `solver/REVIEW_PERFORMANCE.md` documents the performance and accuracy study.
+        The engine caches the extended exact battle DP (up to 16 MiB per worker)
+        instead of rebuilding it for every large-stack pair. Values and search
+        budgets are unchanged; `solver/latency_bench.mjs` checks full-game parity.
         **Live** decisions exclude a move only when BOTH the recommended and played
         Q are in the same extreme band (≤2% or ≥98%). A winning recommendation does
         not excuse a move that throws away the win. Grading choices always use the

@@ -59,11 +59,17 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
   // open analysis panel must not stall outright.
   let limit = workers, running = 0;
   const parked = [];
-  const wake = () => { while (parked.length && running < limit) { running++; parked.shift()(); } };
-  const enterLane = () => {
-    if (running < limit) { running++; return Promise.resolve(); }
-    return new Promise(res => parked.push(res));   // wake() counts it in
+  const wake = () => {
+    while (parked.length && running < limit) {
+      // Priorities are evaluated when a lane becomes free, so opening another
+      // game's panel takes effect after the current search, not the whole game.
+      parked.sort((a, b) => b.priority() - a.priority());
+      running++; parked.shift().resolve();
+    }
   };
+  const enterLane = priority => new Promise(resolve => {
+    parked.push({ resolve, priority }); wake();
+  });
   const leaveLane = () => { running--; wake(); };
   const setLanes = (n) => { limit = Math.max(1, Math.min(workers, n | 0)); wake(); };
   function acquireReviewer() {
@@ -116,7 +122,7 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
     return replay.s;
   }
 
-  async function grade(r, onPartial = () => {}) {
+  async function grade(r, onPartial = () => {}, priority = () => 0) {
     const moves = r.you.moves;
     const source = reviewSource(r), saved = r.you.review;
     const reusable = saved?.version === REVIEW_VERSION && saved.source === source
@@ -162,12 +168,12 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
         myQ: scored ? r4(mine.q) : null, bestQ: best ? r4(best.q) : null, gap: r4(gap) };
     };
 
-    // Hand the worker back after each position. FIFO waiters from a newly opened
-    // seed get a turn after the current searches, without truncating any search.
+    // Hand the worker back after each position. Higher-priority reviews get the
+    // next lane; equal priorities remain FIFO, without truncating any search.
     // With only one review running, each lane still keeps its warm replay.
     const lane = async () => {
       while (next < pending.length && !failed) {
-        await enterLane();
+        await enterLane(priority);
         const w = await acquireReviewer();
         try {
           if (failed || next >= pending.length) return;

@@ -448,15 +448,61 @@ static void build_cap_tables(void) {
 }
 
 /* Large stacks must not be clamped independently: 400 vs 160 is nothing like
- * 159 vs 159. Keep the fast table for ordinary fights, and compute exact moments
- * with two DP rows on rare overflow pairs. A small cache shares the calculation
- * between probability/survivor queries and repeated rollout positions. */
+ * 159 vs 159. Keep the fast table for ordinary fights, reuse an extended exact
+ * DP for larger fights, and fall back to two rows beyond its memory bound.
+ * A small pair cache also shares the probability/survivor readout. */
 typedef struct { int a, d; double p, strength; } CapEstimate;
 static CapEstimate CAP_LARGE[256];
+/* Reuse the DP rectangle across overflow queries. The old per-pair cache still
+ * rebuilt all a*d cells whenever nearby strengths changed during a rollout.
+ * Grow only the calculated rectangle, in small blocks; cap storage at 16 MiB
+ * per engine and retain the two-row fallback for unusually large imports. */
+#define CAP_EXTENT 1024
+static double *CAP_EXT_P, *CAP_EXT_S;
+static int CAP_EXT_A = 1, CAP_EXT_D = 0;
+static int extend_cap_table(int a, int d) {
+    if (a >= CAP_EXTENT || d >= CAP_EXTENT) return 0;
+    if (a <= CAP_EXT_A && d <= CAP_EXT_D) return 1;
+    if (!CAP_EXT_P) {
+        CAP_EXT_P = calloc((size_t)CAP_EXTENT * CAP_EXTENT, sizeof(double));
+        CAP_EXT_S = calloc((size_t)CAP_EXTENT * CAP_EXTENT, sizeof(double));
+        if (!CAP_EXT_P || !CAP_EXT_S) {
+            free(CAP_EXT_P); free(CAP_EXT_S);
+            CAP_EXT_P = CAP_EXT_S = NULL;
+            return 0;
+        }
+    }
+    int na = a > CAP_EXT_A ? (a | 63) : CAP_EXT_A;
+    int nd = d > CAP_EXT_D ? (d | 63) : CAP_EXT_D;
+    for (int aa = 2; aa <= na; aa++) {
+        size_t row = (size_t)aa * CAP_EXTENT, prev = row - CAP_EXTENT;
+        CAP_EXT_P[row] = 1.0; CAP_EXT_S[row] = aa - 1;
+        int start = aa > CAP_EXT_A ? 1 : CAP_EXT_D + 1;
+        for (int dd = start; dd <= nd; dd++) {
+            CAP_EXT_P[row+dd] = (CAP_EXT_P[prev+dd-1] + CAP_EXT_P[row+dd-1]
+                                + CAP_EXT_P[prev+dd]) / 3.0;
+            CAP_EXT_S[row+dd] = (CAP_EXT_S[prev+dd-1] + CAP_EXT_S[row+dd-1]
+                                + CAP_EXT_S[prev+dd]) / 3.0;
+        }
+    }
+    CAP_EXT_A = na; CAP_EXT_D = nd;
+    return 1;
+}
+
 static CapEstimate large_cap_estimate(int a, int d) {
     unsigned key = ((unsigned)a * 131u + (unsigned)d) % 256u;
     CapEstimate *cached = &CAP_LARGE[key];
     if (cached->a == a && cached->d == d) return *cached;
+    if (extend_cap_table(a, d)) {
+        double pp = 0.0, ps = 0.0;
+        for (int c1 = 0; c1 < 2; c1++) for (int c2 = 0; c2 < 2; c2++) {
+            int dd = d - c1 - c2; if (dd < 0) dd = 0;
+            size_t cell = (size_t)a * CAP_EXTENT + dd;
+            pp += 0.25 * CAP_EXT_P[cell]; ps += 0.25 * CAP_EXT_S[cell];
+        }
+        *cached = (CapEstimate){a, d, pp, pp > 0 ? ps / pp : 0.0};
+        return *cached;
+    }
     size_t width = (size_t)d + 1;
     double *rows = calloc(4 * width, sizeof(double));
     if (!rows) { /* bounded approximation only if the exact workspace cannot fit */

@@ -4,7 +4,59 @@ Measured September 6, 2026, using the browser's actual WASM engine in Node worke
 threads, plus an isolated browser check of the page. No C engine, simulation
 budget, grading formula, or game rules changed in this investigation.
 
-## Findings
+## September 7 regression fix: repeated battle math and queued games
+
+The rules/math correction introduced an exact overflow battle calculation for
+stacks of 160 or more. Its 256-entry pair cache missed repeatedly as rollouts
+visited nearby army sizes, rebuilding the entire dynamic-programming rectangle
+for each miss. Native profiling of six complete games found up to 12.3 billion
+DP cells rebuilt in one game (seed 16). This affected both AI play and grading.
+
+The engine now retains the exact DP rectangle, extending it in blocks as needed.
+Storage is lazy and bounded to 16 MiB per engine; larger pairs retain the original
+two-row calculation. Operation order and returned values are unchanged. No search
+budget, game rule, grade threshold, review version, or AI stopping rule changed.
+
+Complete WASM games on the same machine, before/after, run sequentially with the
+page's AI settings (6k floor, 150k ceiling, existing value stop), followed by full
+16k–24k grading of those recorded decisions on a single engine:
+
+| Seed | Moves | AI before → after | Serial grading before → after |
+| --- | ---: | ---: | ---: |
+| 11 | 20 | 14.33 → 9.17 s | 4.54 → 3.62 s |
+| 16 | 44 | 82.03 → 25.17 s | 30.12 → 11.96 s |
+
+Every root action, visit count, Q value, simulation count, played move, terminal
+board and final game-dice state matched exactly. These are engine timings without
+DOM work, history backlog, or competing workers, and are examples rather than a
+bound for all seeds/devices. A separate 96-search sample across 16 opening/early
+positions was 1.34x faster in aggregate, with exact root-stat/RNG parity. Peak WASM
+heap at the 150k ceiling grew from 77.5 to 93.5 MiB per engine.
+
+Queue fixes address additional latency independently of this compute reduction:
+
+- Newly finished games start reviewing immediately, even while the history pump
+  awaits an older game. After each complete search, the reviewer favors the open
+  panel, then newer rounds; equal priorities retain FIFO order. Background work
+  resumes with its completed grades intact, and the AI's one-lane throttle remains.
+- The AI favors the inspected or just-finished pair, then the next dealt game and
+  history. It rechecks after each complete move, instead of making a new game wait
+  for an entire old game. Switching seeds and reloading replay saved AI actions
+  without repeating their searches; suspended/finished worker games are deleted.
+
+Reproduction (save the previous built WASM module before rebuilding):
+
+```sh
+node solver/latency_bench.mjs /tmp/before.mjs public/fast_engine.js 11,16
+node solver/search_bench.mjs /tmp/before.mjs public/fast_engine.js 4 4000
+bash solver/check.sh
+```
+
+The math gate compares cache growth, revisits and fallback values exactly against
+the original two-row DP. Scheduler tests run the page's actual AI loop and verify
+priority, interruption after a move, preserved history, and zero repeated searches.
+
+## Original September 6 findings
 
 Search dominates review time. A review replays each human decision and runs a
 grading search with a 16,000 simulation floor and 24,000 ceiling. The grading

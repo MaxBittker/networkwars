@@ -9,7 +9,8 @@ if (!before || !after) throw new Error('Provide before and after WASM module pat
 const wrapper = await readFile(new URL('../public/fastnw.js', import.meta.url), 'utf8');
 const engines = [];
 for (const path of [before, after]) {
-  const source = wrapper.replace("'./fast_engine.js'", JSON.stringify(pathToFileURL(resolve(path)).href));
+  const source = wrapper.replace("'./fast_engine.js'", JSON.stringify(pathToFileURL(resolve(path)).href))
+    .replaceAll("'./game-version.js'", JSON.stringify(new URL('../public/game-version.js', import.meta.url).href));
   const { loadEngine } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
   engines.push(await loadEngine());
 }

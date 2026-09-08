@@ -83,13 +83,50 @@ static void streaming_and_grade(void) {
     assert(uct_search(owner, strength, 1, 16, 16, 2.5, 1, acts, vis, q) == 0);
 }
 
+static CapEstimate reference_cap_estimate(int a, int d) {
+    size_t width = (size_t)d + 1;
+    double *rows = calloc(4 * width, sizeof(double));
+    assert(rows);
+    double *prev_p = rows, *next_p = rows + width;
+    double *prev_s = rows + 2 * width, *next_s = rows + 3 * width;
+    for (int aa = 2; aa <= a; aa++) {
+        next_p[0] = 1.0; next_s[0] = aa - 1;
+        for (int dd = 1; dd <= d; dd++) {
+            next_p[dd] = (prev_p[dd-1] + next_p[dd-1] + prev_p[dd]) / 3.0;
+            next_s[dd] = (prev_s[dd-1] + next_s[dd-1] + prev_s[dd]) / 3.0;
+        }
+        double *tmp = prev_p; prev_p = next_p; next_p = tmp;
+        tmp = prev_s; prev_s = next_s; next_s = tmp;
+    }
+    double pp = 0.0, ps = 0.0;
+    for (int c1 = 0; c1 < 2; c1++) for (int c2 = 0; c2 < 2; c2++) {
+        int dd = d - c1 - c2; if (dd < 0) dd = 0;
+        pp += 0.25 * prev_p[dd]; ps += 0.25 * prev_s[dd];
+    }
+    free(rows);
+    return (CapEstimate){a, d, pp, pp > 0 ? ps / pp : 0.0};
+}
+
 static void battle_tables(void) {
     build_cap_tables();
+    free(CAP_EXT_P); free(CAP_EXT_S); CAP_EXT_P = CAP_EXT_S = NULL;
+    CAP_EXT_A = 1; CAP_EXT_D = 0;
+    memset(CAP_LARGE, 0, sizeof(CAP_LARGE));
     assert(fabs(capture_prob(2, 1) - 5.0 / 6.0) < 1e-12);
     for (int a = 2; a < MAXS; a += 13) for (int d = 1; d < MAXS; d += 17) {
         CapEstimate e = large_cap_estimate(a, d);
         assert(fabs(e.p - CAPP[a][d]) < 1e-12);
         assert(fabs(e.strength - CAPES[a][d]) < 1e-10);
+    }
+    // Grow each dimension separately and together, revisit old cells, and cross
+    // the bounded cache into the original two-row fallback. Exact, not tolerance.
+    const int pairs[][2] = {{160,1}, {180,200}, {400,160}, {160,400}, {511,511},
+        {700,900}, {1023,1023}, {160,200}, {1024,160}, {160,1024}, {1400,1100}};
+    for (unsigned i = 0; i < sizeof(pairs)/sizeof(pairs[0]); i++) {
+        int a = pairs[i][0], d = pairs[i][1];
+        CapEstimate actual = large_cap_estimate(a, d);
+        CapEstimate expected = reference_cap_estimate(a, d);
+        assert(actual.p == expected.p && actual.strength == expected.strength);
     }
     assert(capture_prob(400, 160) > .999999);
     assert(capture_prob(160, 400) < .000001);

@@ -85,6 +85,22 @@ await parked;
 assert.equal(peak, 4, 'lanes resume when the AI goes idle');
 assert.equal(active, 0);
 
+// A newly finished/visible game bypasses every parked background lane, even
+// while the AI throttle leaves just one active search. All old work survives.
+searches.length = 0;
+const priorityReviewer = createReviewer(makeEngine, 4);
+priorityReviewer.setLanes(1);
+let urgent;
+onSearch = () => {
+  if (searches.length === 1)
+    urgent = priorityReviewer.grade(round(21, 3), () => {}, () => 100);
+};
+await priorityReviewer.grade(round(20, 8));
+await urgent;
+assert.deepEqual(searches.slice(0, 4), [[20, 1], [21, 1], [21, 2], [21, 3]]);
+assert.equal(searches.filter(([seed]) => seed === 20).length, 8);
+onSearch = () => {};
+
 let calls = 0, replayFails = true;
 const inspect = createReplayInspector(async (_path, _method, body) => {
   calls++;
@@ -130,6 +146,7 @@ const page = fs.readFileSync(new URL('../public/index.html', import.meta.url), '
 const played = [], lanes = [];
 const pumpCtx = vm.createContext({ console: { warn() {} },
   M: { rounds: [], idx: 0 }, aiBusy: false, aiErr: {},
+  seedPanelOn: () => false, sdIdx: 0,
   paintBadge: () => {},
   reviewer: { workers: 6, setLanes: (n) => lanes.push(n) },
   aiPlaySeed: async (i) => {
@@ -139,7 +156,7 @@ const pumpCtx = vm.createContext({ console: { warn() {} },
   } });
 vm.runInContext(page.slice(page.indexOf('function nextAiSeed()'),
                            page.indexOf('// Every worker reply is checked')), pumpCtx);
-const dealt = (extra = {}) => ({ startNodes: [], ai: { result: null }, ...extra });
+const dealt = (extra = {}) => ({ startNodes: [], you: { result: null }, ai: { result: null }, ...extra });
 pumpCtx.M.rounds = [dealt(), dealt(), dealt({ bad: 1 }), dealt()];
 pumpCtx.M.idx = 3;
 await pumpCtx.aiPump();
@@ -157,4 +174,59 @@ pumpCtx.aiPlaySeed = async (i) => {
 pumpCtx.M.rounds[3].ai.result = null;
 await pumpCtx.aiPump();
 assert.deepEqual(played, [3, 4], 'a newly dealt seed is played next');
+played.length = 0;
+pumpCtx.aiPlaySeed = growing;
+pumpCtx.aiErr = {};
+pumpCtx.M.rounds = [dealt(), dealt({ you: { result: 'lost' } }), dealt()];
+pumpCtx.M.idx = 2;
+await pumpCtx.aiPump();
+assert.deepEqual(played, [1, 2, 0], 'finish the just-played pair before the next seed');
+pumpCtx.M.rounds = [dealt(), dealt(), dealt()];
+pumpCtx.seedPanelOn = () => true;
+assert.equal(pumpCtx.nextAiSeed(), 0, 'an inspected pair has priority');
 console.log('PASS: AI pump plays the current seed first, isolates a failed seed, paces reviews');
+
+// Run the actual AI move loop: interrupt an older seed, then resume its saved
+// actions. Replaying the prefix must not search it again or duplicate history.
+let wanted = 0, sequence = 0;
+const aiGames = new Map(), aiSearches = [];
+const aiRound = seed => ({ seed, rules: 2, you: {}, ai: { moves: [], hist: [] } });
+const loopCtx = vm.createContext({
+  M: { rounds: [aiRound(30), aiRound(31)] }, LEGACY_RULES_VERSION: 1, AI_SIMS: 6000,
+  nextAiSeed: () => wanted,
+  aiStep: async (path, method, body) => {
+    if (path === '/api/game') {
+      const s = { id: ++sequence, turn: 1, seed: body.seed, nodes: [], over: false };
+      aiGames.set(String(s.id), s); return s;
+    }
+    const id = path.split('/')[3], s = aiGames.get(id);
+    if (method === 'DELETE') { aiGames.delete(id); return {}; }
+    if (path.endsWith('/search')) {
+      aiSearches.push([s.seed, s.turn]);
+      if (aiSearches.length === 1) wanted = 1;
+      return { best: { action: -1 }, winexp: .5 };
+    }
+    const next = { ...s, turn: s.turn + 1, over: s.turn === 3 };
+    aiGames.set(id, next); return next;
+  },
+  sampleHist: (g, s) => g.hist.push(s.turn),
+  recordEnd: (g, s) => { assert(s.over); g.result = 'won'; },
+  paintBadge() {}, save() {}, renderStrip() {}, refreshSeedPanel() {}, revealPair() {},
+  sleep: tick,
+});
+vm.runInContext(page.slice(page.indexOf('async function aiPlaySeed(i)'),
+  page.indexOf('// A finished pair is the only informative unit')), loopCtx);
+await loopCtx.aiPlaySeed(0);
+assert.equal(loopCtx.M.rounds[0].ai.moves.length, 1);
+assert.equal(aiGames.size, 0);
+await loopCtx.aiPlaySeed(1);
+wanted = 0;
+await loopCtx.aiPlaySeed(0);
+assert.deepEqual(aiSearches, [[30, 1], [31, 1], [31, 2], [31, 3], [30, 2], [30, 3]]);
+for (const r of loopCtx.M.rounds) {
+  assert.equal(r.ai.moves.length, 3);
+  assert.deepEqual(Array.from(r.ai.hist), [1, 2, 3, 4]);
+  assert.equal(r.ai.result, 'won');
+}
+assert.equal(aiGames.size, 0, 'finished/suspended worker games must be deleted');
+console.log('PASS: review priority; AI switches after a move and resumes without repeated searches');
