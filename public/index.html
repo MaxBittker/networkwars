@@ -532,50 +532,77 @@ window.addEventListener('resize', () => refreshSkill());
 if (window.ResizeObserver) new ResizeObserver(resize).observe($('board'));
 
 // ============================ background AI ============================
-// A pump that keeps the AI busy: it plays any dealt seed it hasn't finished, in order,
+// A pump that keeps the AI busy: it plays any dealt seed it hasn't finished,
 // forever. It never touches your worker, your game state or your dice.
 let aiBusy = false;
+const aiErr = {};              // seeds the AI could not play this session (transient)
 
 function paintBadge(nodes, idle) {
   $('aibadge').classList.toggle('idle', !!idle);
   if (nodes) drawThumb($('aicv'), nodes);
 }
 
+// NEWEST dealt-but-unfinished seed — i.e. the one you are playing right now,
+// then the backlog behind it. Oldest-first (the original order) meant that once
+// the AI fell behind at all, the pair you were actually looking at was the LAST
+// one it would get to: every recent seed read "AI —" while it ground through
+// history nobody was waiting on.
+function nextAiSeed() {
+  for (let k = M.rounds.length - 1; k >= 0; k--) {
+    const r = M.rounds[k];
+    if (r.startNodes && !r.ai.result && !aiErr[k]) return k;
+  }
+  return -1;
+}
+
 async function aiPump() {
   if (aiBusy) return;
   aiBusy = true;
+  reviewer.setLanes(1);                        // the live game gets the cores
   try {
     for (;;) {
-      // oldest dealt-but-unfinished seed
-      const i = M.rounds.findIndex(r => r.startNodes && !r.ai.result);
+      const i = nextAiSeed();
       if (i < 0) break;
-      await aiPlaySeed(i);
+      // One unplayable seed must not wedge the AI forever: before this, a worker
+      // error threw out of the pump, and every later call picked the same broken
+      // seed again, so the AI never finished another game all session.
+      try { await aiPlaySeed(i); }
+      catch (e) { aiErr[i] = String(e && e.message || e); console.warn(`AI seed ${i + 1}:`, e); }
     }
   } finally {
     aiBusy = false;
+    reviewer.setLanes(reviewer.workers);       // idle: background scoring may fan out
     paintBadge(null, true);
   }
+}
+
+// Every worker reply is checked: an `{error}` view has no counts/nodes, so letting
+// one through only turns a clear failure into a TypeError deeper in the pump.
+async function aiStep(path, method, body) {
+  const s = await aiApi(path, method, body);
+  if (s.error) throw new Error(s.error);
+  return s;
 }
 
 async function aiPlaySeed(i) {
   const r = M.rounds[i];
   const g = r.ai;
   g.moves = []; g.hist = [];                    // restart cleanly (e.g. after a reload)
-  let s = await aiApi('/api/game', 'POST', { seed: r.seed, rules: r.rules ?? LEGACY_RULES_VERSION });
+  let s = await aiStep('/api/game', 'POST', { seed: r.seed, rules: r.rules ?? LEGACY_RULES_VERSION });
   sampleHist(g, s);
   // Paint BEFORE the first search: its opening think can take seconds, and a badge
   // reading "idle" while the AI is actually grinding is a lie.
   paintBadge(s.nodes, false);
   for (let guard = 0; guard < 4000 && !s.over; guard++) {
-    const res = await aiApi(`/api/game/${s.id}/search`, 'POST', { sims: AI_SIMS });
+    const res = await aiStep(`/api/game/${s.id}/search`, 'POST', { sims: AI_SIMS });
     const b = res.best;
     const q = res.winexp == null ? null : Math.round(res.winexp * 1e4) / 1e4;   // 4 dp: storage
     if (!b || b.action === -1) {
       g.moves.push({ e: 1, q });
-      s = await aiApi(`/api/game/${s.id}/end-turn`, 'POST');
+      s = await aiStep(`/api/game/${s.id}/end-turn`, 'POST');
     } else {
       g.moves.push({ a: [b.from, b.to], q, l: mkLabel(s, b.from, b.to) });
-      s = await aiApi(`/api/game/${s.id}/attack`, 'POST', { from: b.from, to: b.to });
+      s = await aiStep(`/api/game/${s.id}/attack`, 'POST', { from: b.from, to: b.to });
     }
     sampleHist(g, s);
     // ambient badge: blurred+grey board. No seed/turn/win%/result readout —

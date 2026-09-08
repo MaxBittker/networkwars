@@ -60,7 +60,11 @@
       - `index.html` — **duplicate-format** head-to-head play vs the engine, continuous:
         you play a seed blind (your worker issues ZERO searches) while the AI plays THE
         SAME seed **concurrently in a SECOND worker**; finish and the next seed is dealt,
-        with a running W-L tally. **The two workers are load-bearing, not a nicety**:
+        with a running W-L tally. The AI pump takes the **NEWEST** dealt-but-unfinished
+        seed (the one you are on) and only then backfills older ones, and it isolates a
+        seed it cannot play (`aiErr`) instead of throwing out of the pump — oldest-first
+        plus an unhandled throw both meant the pair you were looking at never completed.
+        **The two workers are load-bearing, not a nicety**:
         `engine.worker.js` serves its inbox in order and aborts an in-flight search as
         soon as a request queues behind it, so a shared worker would let every tap you
         make truncate the AI's search and silently handicap it — corrupting the very
@@ -82,7 +86,9 @@
         their x-position and interrupt the line. Unrecoverable games are omitted.
         Keep this UI minimal: chart, zoom chips, and one numeric legend only.
         No explanatory prose, verdicts, coverage notices, or analysis status text. Gate:
-        `node solver/skill_gate.mjs` (comparison, coverage, quota, queue failures).
+        `node solver/skill_gate.mjs` (comparison, coverage, quota, queue failures) and
+        `node solver/review_scheduler_gate.mjs` (which also runs the page's own
+        `nextAiSeed`/`aiPump` and the lane throttle).
         Coverage comes from the **background scorer**:
         a pump that reviews every finished seed, NEWEST first, for as long as the
         page is open, so the graph fills itself in and no longer skews toward
@@ -91,7 +97,12 @@
         constants and `reviewAggregates`; the page keeps only the model, the pump and
         rendering): all grading (pump + an open panel's review) runs on a **review
         worker pool** (`REVIEW_WORKERS` = hardwareConcurrency − 2, capped at 6,
-        lazily created). Positions of a game are independent bit-exact replays, so
+        lazily created) whose concurrency the page throttles: `reviewer.setLanes(1)`
+        while the AI is playing, back to the full pool when it idles. Dedicated
+        workers are still workers — an unthrottled pool starved the h2h AI to ~1/6
+        speed on a 10-core (fixed 2026-09-07), which together with an oldest-first
+        AI pump left every visible pair reading "AI —". Never 0 lanes: an open
+        panel's review must keep progressing. Positions of a game are independent bit-exact replays, so
         each pool worker keeps its own replay and pulls the next unscored move in
         play order (2026-09-01: 44-decision game 10.4s → 2.2s on a 10-core, results
         bit-identical; the partial review has null holes where a search is still

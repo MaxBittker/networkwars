@@ -49,6 +49,23 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
   // would silently truncate a grading search below its 16k floor. Workers are
   // created lazily on the first review and live for the page.
   const reviewPool = { all: [], free: [], waiting: [] };
+  // Concurrency throttle, ACROSS every review in flight. Dedicated workers are
+  // still workers: a full pool of them competes with the two play workers for
+  // cores, and measured on a 10-core desktop it cut the h2h AI to ~1/6 speed —
+  // enough that the AI never finished the seed you had just played (every pair
+  // read "AI —"). The page drops the pool to a single lane while the AI is
+  // playing and restores it when the AI goes idle, so scoring keeps making
+  // progress without starving the live game. Never 0: a foreground review of an
+  // open analysis panel must not stall outright.
+  let limit = workers, running = 0;
+  const parked = [];
+  const wake = () => { while (parked.length && running < limit) { running++; parked.shift()(); } };
+  const enterLane = () => {
+    if (running < limit) { running++; return Promise.resolve(); }
+    return new Promise(res => parked.push(res));   // wake() counts it in
+  };
+  const leaveLane = () => { running--; wake(); };
+  const setLanes = (n) => { limit = Math.max(1, Math.min(workers, n | 0)); wake(); };
   function acquireReviewer() {
     if (!reviewPool.all.length)
       for (let k = 0; k < workers; k++) {
@@ -150,6 +167,7 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
     // With only one review running, each lane still keeps its warm replay.
     const lane = async () => {
       while (next < pending.length && !failed) {
+        await enterLane();
         const w = await acquireReviewer();
         try {
           if (failed || next >= pending.length) return;
@@ -167,6 +185,7 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
           throw e;
         } finally {
           releaseReviewer(w);
+          leaveLane();
         }
       }
     };
@@ -180,7 +199,7 @@ export function createReviewer(makeEngine, workers = REVIEW_WORKERS) {
     return reviewAggregates(out);
   }
 
-  return { grade, workers };
+  return { grade, workers, setLanes };
 }
 
 // Aggregates exclude decisions whose recommended and played values both stay
