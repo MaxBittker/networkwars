@@ -54,6 +54,20 @@ function octagon(ctx, x, y, r) {
   ctx.closePath();
 }
 
+// Nodes read as short octagonal prisms: the base sits on the node's layout point,
+// where the links meet, and the top face (numeral, glow, hits, arrows) rises above it.
+// Height grows logarithmically with strength and saturates, so a big stack stands
+// taller without dominating the board.
+const OCT_COS = Array.from({ length: 9 }, (_, i) => Math.cos(i * Math.PI / 4));
+const OCT_SIN = Array.from({ length: 9 }, (_, i) => Math.sin(i * Math.PI / 4));
+const rgbOf = (hex) => [1,3,5].map(i => parseInt(hex.slice(i,i+2),16));
+const mixRgb = (a, b, t) => a.map((c, i) => c + (b[i]-c)*t);
+const css = (rgb) => `rgb(${rgb.map(Math.round).join(',')})`;
+export function nodeHeight(strength, r) {
+  return strength > 0 ? r * LIFT * Math.min(1, Math.log2(1 + strength) / Math.log2(25)) : 0;
+}
+const LIFT = .42, MAX_R = 26;
+
 // Paint a tiny starting-board thumbnail (faction-colored dots laid out by x,y).
 // Used by the per-seed scoreboard rows and the AI-progress badge.
 export function drawThumb(cv, nodes) {
@@ -140,10 +154,10 @@ export class Board {
     const pad = 38;
     // topInset shrinks the fit only when the centered board would reach under it;
     // with vertical slack the max() leaves the board dead-centered as before.
-    // The inset protects the whole node (rim + halo), not just its center.
-    const topPad = Math.max(pad, this.topInset + 30);
+    // The inset protects the whole node (rim + halo + the tallest lift), not just its center.
+    const topPad = Math.max(pad, this.topInset + 30) + MAX_R * LIFT;
     const s = Math.min((b.width - pad*2) / maxX, (b.height - topPad - pad) / maxY);
-    this.layout = { r: Math.min(s * 0.34, 26), s,
+    this.layout = { r: Math.min(s * 0.34, MAX_R), s,
       ox: (b.width - maxX * s) / 2,
       oy: Math.max(topPad, (b.height - maxY * s) / 2) };
     this.positions = this.state.nodes.map(n => this.nodePos(n));
@@ -152,12 +166,16 @@ export class Board {
 
   nodePos(n) { return { x: this.layout.ox + n.x * this.layout.s, y: this.layout.oy + n.y * this.layout.s }; }
 
+  // pointer distance to the node's column: anywhere from its base up to its top face
+  _columnDist(n, mx, my) {
+    const p = this.nodePos(n), top = p.y - nodeHeight(n.strength, this.layout.r);
+    return Math.hypot(mx - p.x, my - Math.min(p.y, Math.max(top, my)));
+  }
+
   hitNode(mx, my) {
     if (!this.state) return null;
-    for (const n of this.state.nodes) {
-      const p = this.nodePos(n);
-      if (Math.hypot(mx - p.x, my - p.y) <= this.layout.r) return n;
-    }
+    for (const n of this.state.nodes)
+      if (this._columnDist(n, mx, my) <= this.layout.r) return n;
     return null;
   }
 
@@ -168,10 +186,42 @@ export class Board {
     let best = null, bd = this.layout.r * slop;
     for (const id of ids) {
       const n = this.state.nodes[id]; if (!n) continue;
-      const p = this.nodePos(n), d = Math.hypot(mx - p.x, my - p.y);
+      const d = this._columnDist(n, mx, my);
       if (d <= bd) { bd = d; best = n; }
     }
     return best;
+  }
+
+  // The prism's visible walls, from the raised top face `p` down `h` to the ground:
+  // four facets from angle 0 to π, shaded darker toward the right, brightening toward
+  // the owner's rim while the node is lit.
+  _drawWall(p, h, owner, light) {
+    const r = this.layout.r;
+    if (h < .5) return;
+    const ctx = this.ctx, palette = NODE_PALETTE[owner];
+    const body = rgbOf(palette.body), rim = rgbOf(palette.rim), black = [0,0,0];
+    for (let k = 0; k < 4; k++) {
+      const x0 = p.x + r * OCT_COS[k], y0 = p.y + r * OCT_SIN[k];
+      const x1 = p.x + r * OCT_COS[k+1], y1 = p.y + r * OCT_SIN[k+1];
+      ctx.beginPath();
+      ctx.moveTo(x0, y0); ctx.lineTo(x1, y1);
+      ctx.lineTo(x1, y1 + h); ctx.lineTo(x0, y0 + h);
+      ctx.closePath();
+      ctx.fillStyle = css(mixRgb(mixRgb(body, black, .6 - .14 * k), rim, light * .55));
+      ctx.fill();
+    }
+    ctx.beginPath();
+    for (let k = 0; k <= 4; k++) {
+      const x = p.x + r * OCT_COS[k], y = p.y + r * OCT_SIN[k] + h;
+      k ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    for (let k = 1; k < 4; k++) {
+      const x = p.x + r * OCT_COS[k], y = p.y + r * OCT_SIN[k];
+      ctx.moveTo(x, y); ctx.lineTo(x, y + h);
+    }
+    ctx.strokeStyle = css(mixRgb(rim, black, .3));
+    ctx.lineWidth = Math.max(.8, r * .05); ctx.lineJoin = 'round';
+    ctx.stroke();
   }
 
   // Paint the expensive bloom and shading once per size/faction/state. Animation
@@ -297,12 +347,14 @@ export class Board {
     }
     ctx.setLineDash([]); ctx.shadowBlur = 0;
 
-    // nodes
+    // nodes: links meet at the ground (pos); everything that marks a node sits on its raised top
+    const tops = [];
     for (const n of nodes) {
-      const p = pos[n.id];
       const ov = this.overrides.get(n.id);
       const owner = (ov && ov.owner) ? ov.owner : n.owner;
       const strength = ov ? ov.strength : n.strength;
+      const h = nodeHeight(strength, layout.r);
+      const p = tops[n.id] = { x: pos[n.id].x, y: pos[n.id].y - h };
       const isAtk = battle && n.id === battle.from;
       const isDef = battle && n.id === battle.to;
       const isSel = n.id === selected || isAtk;
@@ -316,7 +368,8 @@ export class Board {
       const mode = isDef ? 'defender' : isRein ? 'reinforce' : 'attacker';
       const glow = (isAtk || isDef) ? nodes[battle.from].owner : owner;
       const skin = this._skin(owner), lit = this._skin(owner, mode, glow);
-      const size = skin.size; // fixed geometry: only brightness changes during replay
+      const size = skin.size; // fixed sprite: brightness and wall height change during replay
+      this._drawWall(p, h, owner, light);
       ctx.drawImage(skin.cv, p.x-size/2, p.y-size/2, size, size);
       if (light > 0) {
         ctx.globalAlpha = light;
@@ -341,19 +394,19 @@ export class Board {
       ctx.restore();
     }
 
-    if (battle && pos[battle.from] && pos[battle.to])
-      this._drawArrow(pos[battle.from], pos[battle.to], '#effff8',
+    if (battle && tops[battle.from] && tops[battle.to])
+      this._drawArrow(tops[battle.from], tops[battle.to], '#effff8',
         ((battle.elapsed || 0) % TIMING.arrow) / TIMING.arrow);
 
     // hovered suggestion: a directional arrow along the edge (drawn on top of nodes)
     if (hoverMove && hoverMove.from != null && hoverMove.to != null) {
-      const pf = pos[hoverMove.from], pt = pos[hoverMove.to];
+      const pf = tops[hoverMove.from], pt = tops[hoverMove.to];
       if (pf && pt) this._drawArrow(pf, pt, '#ffd36b');
     }
     // drag-to-attack in progress: a free line from the selected node to the pointer
     // (once the pointer is over a legal target the page swaps this for hoverMove)
-    if (this.dragTo && selected !== null && pos[selected]) {
-      const pf = pos[selected], pt = this.dragTo;
+    if (this.dragTo && selected !== null && tops[selected]) {
+      const pf = tops[selected], pt = this.dragTo;
       ctx.save();
       ctx.beginPath(); ctx.moveTo(pf.x, pf.y); ctx.lineTo(pt.x, pt.y);
       ctx.strokeStyle = 'rgba(255,77,94,.75)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
