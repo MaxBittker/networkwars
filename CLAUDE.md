@@ -177,7 +177,11 @@
     **turn 3 / 10 RED nodes** and the mop-ups it authorized **lost 5.3%**. The
     certificate is ~100x cheaper (0.1ms median / 8.6ms worst in WASM) and measures
     0 losses in 12400 sweeps. Full numbers + tooling: `solver/SWEEP_UP.md`
-    (`sweep_audit.py`, `sweep_variants.py`, `sweep_final.py`).
+    (`sweep_audit.py`, `sweep_variants.py`, `sweep_final.py`). On top of the
+    certificate the page withholds the offer until RED holds a strict board majority
+    (more nodes than all bots combined — median offer 16 RED nodes vs 15 under the
+    old plain-lead rule), and shows it in the footer in place of the status line so
+    it never covers the board.
   - `solver/server.py` — now OPTIONAL: it serves `public/` static assets and is only
     needed for the iOS `/grab` and `/load` board-import endpoints (live iPhone
     Mirroring; the old server-side `/api/game/*` is gone). Pure offline play needs

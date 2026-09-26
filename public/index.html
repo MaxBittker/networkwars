@@ -87,19 +87,17 @@
   #endturn { font-size:20px; }
   #status { color:#8fcfb8; font-size:12px; flex:1; text-align:center; padding:0 6px; }
 
-  /* sweep-up offer: green banner above the footer — the mop-up policy wins this
-     position 1000/1000 times, offer to run it. */
-  #sweep { position:absolute; left:12px; right:12px;
-    bottom:calc(56px + env(safe-area-inset-bottom)); z-index:4;
-    display:none; align-items:center; gap:12px; padding:10px 14px;
-    background:#04140c; border:1px solid var(--green); border-radius:12px;
-    box-shadow:0 8px 30px -8px rgba(0,0,0,.85), 0 0 18px -6px var(--green);
-    font-size:13px; }
+  /* sweep-up offer: takes the status line's slot in the footer, next to End Turn,
+     so it never covers the board — the mop-up policy wins this position
+     1000/1000 times, offer to run it. */
+  #sweep { flex:1; min-width:0; display:none; align-items:center; gap:4px;
+    padding:2px 4px 2px 12px; background:#04140c; border:1px solid var(--green);
+    border-radius:10px; box-shadow:0 0 14px -6px var(--green); font-size:13px; }
   #sweep.show { display:flex; animation:blup .18s ease-out; }
-  @keyframes blup { from { transform:translateY(10px); opacity:0; } to { transform:none; opacity:1; } }
-  #sw-text { flex:1; display:flex; align-items:baseline; gap:8px; min-width:0;
-    white-space:nowrap; }
-  #sw-text b { color:var(--green); font-size:14px; }
+  #sweep.show + #status { display:none; }
+  @keyframes blup { from { transform:translateY(6px); opacity:0; } to { transform:none; opacity:1; } }
+  #sw-text { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #sw-text b { color:var(--green); font-size:14px; margin-right:6px; }
   #sw-sub { color:#cfe; }
   #sweep .act { padding:6px 8px; flex:0 0 auto; }
   #sw-x { color:#7fb6a6; font-weight:800; }
@@ -269,15 +267,14 @@
   </div>
 
   <footer>
+    <div id="sweep">
+      <div id="sw-text"><b>1000/1000</b><span id="sw-sub">wins</span></div>
+      <div class="act" id="sw-go">Sweep</div>
+      <div class="act" id="sw-x">&#10005;</div>
+    </div>
     <div id="status">—</div>
     <div class="act" id="endturn">End Turn</div>
   </footer>
-
-  <div id="sweep">
-    <div id="sw-text"><b>1000/1000</b><span id="sw-sub">mop-ups win it</span></div>
-    <div class="act" id="sw-go">Sweep</div>
-    <div class="act" id="sw-x">&#10005;</div>
-  </div>
 </div>
 
 <!-- tally -->
@@ -833,10 +830,12 @@ $('mi-sweep').onclick = () => setSweep(!sweepOn);
 async function maybeOfferSweep() {
   if (!sweepOn || sweeping || !state || state.over) return;
   if (sweepDismissed === M.idx) return;                // dismissed for this seed
-  // only offer once RED strictly leads the node count — a certified-but-trailing
-  // position is still a game worth playing by hand
+  // only offer once RED holds a strict majority of the board (more nodes than every
+  // bot combined) — a certified position short of that is still a game worth playing
+  // by hand. Over 40 seeds this moved the median offer from 15 to 16 RED nodes.
   const c = state.counts;
-  if (!Object.keys(c).every(f => f === 'red' || c.red > c[f])) return;
+  const others = Object.keys(c).reduce((n, f) => f === 'red' ? n : n + c[f], 0);
+  if (c.red <= others) return;
   const my = ++sweepSeq, gid = state.id;
   const res = await api(`/api/game/${gid}/sweep-check`, 'POST', { trials: SWEEP_TRIALS });
   if (my !== sweepSeq || sweeping || !state || state.id !== gid || state.over) return;
