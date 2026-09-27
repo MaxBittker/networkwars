@@ -144,7 +144,7 @@ console.log('PASS: winning-position blunders retained; same-band extremes exclud
 // were regressions that left every visible pair reading "AI —".
 const page = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const played = [], lanes = [];
-const pumpCtx = vm.createContext({ console: { warn() {} }, note() {},
+const pumpCtx = vm.createContext({ console: { warn() {} }, note() {}, reportError() {}, errMsg: String,
   M: { rounds: [], idx: 0 }, aiBusy: false, aiErr: {},
   seedPanelOn: () => false, sdIdx: 0,
   paintBadge: () => {},

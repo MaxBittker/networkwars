@@ -59,6 +59,19 @@
     text-underline-offset:3px; letter-spacing:.02em; }
   #tally:active { opacity:.55; }
   #tally .y { color:var(--teal); } #tally .a { color:var(--yellow); }
+  /* error pill: absent unless something failed (a phone has no console to show it) */
+  #errpill { display:none; flex:0 0 auto; padding:1px 7px; border-radius:9px; cursor:pointer;
+    background:rgba(255,74,98,.16); border:1px solid rgba(255,74,98,.6); color:#ff7d8a;
+    font-weight:800; letter-spacing:.02em; }
+  #errpill.show { display:inline-block; }
+  #errpill:active { opacity:.55; }
+  .err { padding:8px 0; border-bottom:1px solid rgba(255,255,255,.06); }
+  .err-meta { font-size:11px; color:#7fb6a6; letter-spacing:.03em; }
+  .err-msg { font:12px/1.4 ui-monospace, Menlo, monospace; color:#ffb3bc;
+    word-break:break-word; white-space:pre-wrap; margin-top:2px; }
+  .err.prev .err-msg { color:#c9a3a9; }
+  #err-ctx { font:11px/1.45 ui-monospace, Menlo, monospace; color:#7fb6a6;
+    white-space:pre-wrap; word-break:break-word; margin-top:14px; }
 
   #board { flex:1; position:relative; min-height:0; }
   canvas#cv { width:100%; height:100%; display:block; touch-action:none; }
@@ -257,6 +270,7 @@
   </header>
   <div id="mstrip">
     <span id="mgame">—</span>
+    <span id="errpill"></span>
     <span id="tally">—</span>
   </div>
 
@@ -285,6 +299,16 @@
   <div class="p-body" id="res-body"></div>
   <div class="p-foot">
     <div class="act danger" id="res-reset">Reset tally</div>
+  </div>
+</div></div>
+
+<!-- errors (only reachable from the error pill) -->
+<div class="ov" id="ov-err"><div class="panel">
+  <div class="p-head"><span>Errors</span><div class="act" id="err-close">&#10005;</div></div>
+  <div class="p-body"><div id="err-list"></div><div id="err-ctx"></div></div>
+  <div class="p-foot">
+    <div class="act" id="err-copy">Copy</div>
+    <div class="act danger" id="err-clear">Clear</div>
   </div>
 </div></div>
 
@@ -353,6 +377,36 @@ function note(ev, detail) {
 }
 document.addEventListener('visibilitychange', () => note(document.visibilityState));
 
+// ---- errors, surfaced on screen: a phone has no console, so every failure the
+// page can see (uncaught errors, a worker that dies or stops answering, an AI seed
+// or review that fails, a save that doesn't fit) lands in `diag.errors` and lights
+// the red pill in the strip; tapping it lists them. Kept in their own small
+// localStorage key so they survive iOS reloading the tab; earlier sessions' entries
+// are marked `prev`. Repeats of the same message count up instead of stacking.
+const ERR_KEY = 'nwErrors', ERR_MAX = 60;
+try { diag.errors = (JSON.parse(localStorage.getItem(ERR_KEY)) || []).map(e => ({ ...e, prev: 1 })); }
+catch (_) { diag.errors = []; }
+function reportError(src, msg) {
+  msg = String(msg).slice(0, 600);
+  const at = new Date().toISOString();
+  const same = diag.errors.find(e => !e.prev && e.src === src && e.msg === msg);
+  if (same) { same.n++; same.at = at; }
+  else diag.errors.push({ src, msg, n: 1, at });
+  if (diag.errors.length > ERR_MAX) diag.errors.splice(0, diag.errors.length - ERR_MAX);
+  note('error', { src, msg });
+  try { localStorage.setItem(ERR_KEY, JSON.stringify(diag.errors)); } catch (_) {}
+  renderErrors();
+}
+// Safari's stack omits the message line that V8's starts with; keep both once.
+const errMsg = (e) => {
+  if (!(e instanceof Error)) return String(e);
+  const st = e.stack || '';
+  return st.includes(e.message) ? st : `${e.message}\n${st}`;
+};
+window.addEventListener('error', (e) => reportError('page',
+  `${e.message}${e.filename ? ` @ ${e.filename.split('/').pop()}:${e.lineno}` : ''}`));
+window.addEventListener('unhandledrejection', (e) => reportError('page', errMsg(e.reason)));
+
 // ---- independent engines: yours, the AI's, and (lazily, in review.js) the review pool's ----
 const engines = [];            // every worker's in-flight requests, for the export
 function makeEngine(name = 'review') {
@@ -371,15 +425,30 @@ function makeEngine(name = 'review') {
   // everything in flight with an ordinary {error} reply instead.
   w.onerror = (e) => {
     const error = `${name} worker: ${e.message || 'failed'}`;
-    note('worker-error', { error });
+    reportError(name, error);
     for (const r of pending.values()) r.resolve({ error });
     pending.clear();
   };
   return (path, method = 'GET', body) => new Promise((resolve) => {
-    const k = ++id; pending.set(k, { resolve, path, t: performance.now() });
+    const k = ++id; pending.set(k, { resolve, path, t: performance.now(), vis: 0 });
     w.postMessage({ id: k, path, method, body });
   });
 }
+// A worker that silently stops answering (killed by the OS) raises nothing at all.
+// Flag any request with no reply after STALL_S seconds of the page being VISIBLE —
+// a suspended phone page isn't stalled, and the slowest legitimate request (an AI
+// search at its 150k ceiling) takes seconds, not minutes.
+const STALL_S = 120;
+setInterval(() => {
+  if (document.visibilityState !== 'visible') return;
+  for (const e of engines) for (const p of e.pending.values()) {
+    p.vis += 5;
+    if (p.vis >= STALL_S && !p.stalled) {
+      p.stalled = true;
+      reportError(e.name, `no reply to ${p.path} after ${STALL_S}s`);
+    }
+  }
+}, 5000);
 const api = makeEngine('you');   // your game — never issues a search while you play
 const aiApi = makeEngine('ai');  // the AI's background game
 const inspectMove = createReplayInspector(api);
@@ -420,6 +489,7 @@ function save() {
       if (!trimOldest()) {
         console.warn('tally save failed:', e);
         diag.saveFails++; diag.lastSaveError = `${String(e)} (${js.length} chars)`;
+        reportError('save', diag.lastSaveError);
         return false;
       }
     }
@@ -601,7 +671,7 @@ async function aiPump() {
       try { await aiPlaySeed(i); }
       catch (e) {
         aiErr[i] = String(e && e.message || e); console.warn(`AI seed ${i + 1}:`, e);
-        note('ai-error', { i, error: aiErr[i] });
+        reportError('ai', `seed ${i + 1}: ${errMsg(e)}`);
       }
     }
   } finally {
@@ -1438,7 +1508,7 @@ async function runReview(i) {
     save();
   } catch (e) {
     reviewErr[i] = String(e && e.message || e);
-    note('review-error', { i, error: reviewErr[i] });
+    reportError('review', `seed ${i + 1}: ${errMsg(e)}`);
     save();                          // keep completed positions available for retry
   } finally {
     reviewing.delete(i);
@@ -1561,6 +1631,64 @@ $('mi-export').onclick = () => {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 };
+
+// ---- error pill + panel (see reportError) ----
+function renderErrors() {
+  const n = diag.errors.reduce((a, e) => a + e.n, 0);
+  $('errpill').textContent = `⚠︎ ${n}`;
+  $('errpill').classList.toggle('show', n > 0);
+  if ($('ov-err').classList.contains('show')) fillErrPanel();
+}
+// What was running when you looked: device, AI state, and any request still waiting.
+function errContext() {
+  const now = performance.now(), s = (ms) => (ms / 1000).toFixed(1) + 's';
+  const inFlight = engines.flatMap(e => [...e.pending.values()].map(p =>
+    `${e.name} ${p.path} ${s(now - p.t)}`));
+  return [
+    navigator.userAgent,
+    `cores ${navigator.hardwareConcurrency} · review workers ${reviewer.workers}`
+      + ` · AI ${aiBusy ? 'busy' : 'idle'} · failed saves ${diag.saveFails}`,
+    `AI searches ${diag.aiSearches}`
+      + (diag.aiSearches ? `, avg ${s(diag.aiSearchMs / diag.aiSearches)}, max ${s(diag.aiSearchMaxMs)}` : ''),
+    `in flight: ${inFlight.join('; ') || 'none'}`,
+  ].join('\n');
+}
+function fillErrPanel() {
+  const list = $('err-list');
+  list.innerHTML = '';
+  for (const e of diag.errors.slice().reverse()) {             // newest first
+    const row = document.createElement('div');
+    row.className = 'err' + (e.prev ? ' prev' : '');
+    const meta = document.createElement('div');
+    meta.className = 'err-meta';
+    meta.textContent = [new Date(e.at).toLocaleString(), e.src,
+      e.n > 1 ? `×${e.n}` : '', e.prev ? 'earlier session' : ''].filter(Boolean).join(' · ');
+    const msg = document.createElement('div');
+    msg.className = 'err-msg';
+    msg.textContent = e.msg;
+    row.append(meta, msg);
+    list.appendChild(row);
+  }
+  $('err-ctx').textContent = errContext();
+}
+$('errpill').onclick = () => { fillErrPanel(); $('ov-err').classList.add('show'); };
+$('err-close').onclick = () => $('ov-err').classList.remove('show');
+$('err-copy').onclick = async () => {
+  const text = diag.errors.map(e => `${e.at} ${e.src}${e.n > 1 ? ` x${e.n}` : ''}`
+    + `${e.prev ? ' (earlier session)' : ''}\n${e.msg}`).join('\n\n') + '\n\n' + errContext();
+  try {
+    await navigator.clipboard.writeText(text);
+    $('err-copy').textContent = 'Copied';
+    setTimeout(() => { $('err-copy').textContent = 'Copy'; }, 1500);
+  } catch (_) { prompt('Copy the errors:', text); }       // clipboard blocked — show it instead
+};
+$('err-clear').onclick = () => {
+  diag.errors = [];
+  try { localStorage.removeItem(ERR_KEY); } catch (_) {}
+  $('ov-err').classList.remove('show');
+  renderErrors();
+};
+renderErrors();                        // earlier sessions' errors light the pill on load
 
 // ============================ boot ============================
 // Resume: your recorded moves replay back into a fresh game for the seed in progress

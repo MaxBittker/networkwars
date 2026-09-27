@@ -158,8 +158,12 @@
         whatever last fit, and every reload resumed that same stale seed. **Save Data (JSON)** in the
         menu downloads the in-memory tally + settings + a session `diagnostics` block (AI-pump events,
         search timings, save failures, in-flight worker requests, reported cores) — the way to debug a
-        device-only failure offline; never surfaced in the UI. A worker `onerror` now answers its
-        in-flight requests with `{error}` instead of leaving the AI pump waiting forever. Caveat (documented in the page's header comment, no
+        device-only failure offline. A worker `onerror` now answers its in-flight requests with
+        `{error}` instead of leaving the AI pump waiting forever. Errors are also **surfaced on
+        screen** (a phone has no console): uncaught errors/rejections, worker failures, a request
+        with no reply after 120 visible seconds, failed AI seeds/reviews and failed saves go to
+        `reportError` → a red pill in the seed strip (absent when there are none) → a list with
+        Copy/Clear. Persisted in `nwErrors` so they survive iOS reloading the tab. Caveat (documented in the page's header comment, no
         longer surfaced in the UI): same seed = same deal + same dice STREAM, but draws
         are consumed serially, so once your moves diverge from the AI's you pull
         different coins. Duplicate bridge, not dice-for-dice (which isn't coherent once
