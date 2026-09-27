@@ -57,6 +57,14 @@
     One page, pure-static (`server.py` also still routes the old extensionless
     `/head-to-head` paths to it; the free-play page was removed 2026-08-14 and lives
     in git history):
+      - `sw.js` — **offline, no UI**: the page is fetched network-first (a 3 s stall
+        serves the cached copy) and `assets/<hash>/` cache-first, one cache per release.
+        `build_site.py` pins the release + precache list into it, so every deploy
+        installs a new worker; activation keeps the current + previous release. Each
+        `new Worker` gets its own URL (`engine.worker.js?N`): WebKit shares one script
+        load between workers started together and leaves the second uncontrolled, so
+        the AI worker failed a cold offline start (Playwright WebKit, 2026-09-27).
+        Gate: `solver/site_gate.py`.
       - `index.html` — **duplicate-format** head-to-head play vs the engine, continuous:
         you play a seed blind (your worker issues ZERO searches) while the AI plays THE
         SAME seed **concurrently in a SECOND worker**; finish and the next seed is dealt,

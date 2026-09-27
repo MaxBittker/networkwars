@@ -407,10 +407,16 @@ window.addEventListener('error', (e) => reportError('page',
   `${e.message}${e.filename ? ` @ ${e.filename.split('/').pop()}:${e.lineno}` : ''}`));
 window.addEventListener('unhandledrejection', (e) => reportError('page', errMsg(e.reason)));
 
+// ---- offline: sw.js caches the page + engine (see its header). Not an app error if
+// it can't register (file://, private modes), so only the export hears about it.
+navigator.serviceWorker?.register('sw.js').catch((e) => note('sw', { msg: String(e) }));
+
 // ---- independent engines: yours, the AI's, and (lazily, in review.js) the review pool's ----
 const engines = [];            // every worker's in-flight requests, for the export
 function makeEngine(name = 'review') {
-  const w = new Worker('engine.worker.js', { type: 'module' });
+  // One URL per worker: WebKit shares a script load between workers started together,
+  // and the second one is then not controlled by sw.js, so its imports fail offline.
+  const w = new Worker(`engine.worker.js?${engines.length}`, { type: 'module' });
   const pending = new Map();   // id -> { resolve, path, t }
   let id = 0;
   engines.push({ name, pending });
