@@ -459,12 +459,15 @@ const reviewer = createReviewer(makeEngine);
 // One entry per seed. `moves` on each side is the full ordered list of RED decisions
 // ({a:[from,to]} attack | {e:1} end turn) — replaying it from the seed is bit-exact,
 // which is what makes both the retroactive review and the move inspector possible.
+// Your moves also carry `t` (epoch ms when committed) and `ms` (think time, see
+// thinkStart); swept moves carry `sw: 1` and no `ms`. `at` is when the seed was dealt.
 // `hist` is red power sampled per turn: {t: turn, n: nodes, s: total strength}.
 const KEY = 'nwH2H';
 let M = null;   // { rounds: [...], idx }
 
 const blankSide = () => ({ result: null, turns: 0, red: 0, moves: [], hist: [], review: null });
-const blankRound = (seed) => ({ seed, rules: RULES_VERSION, startNodes: null, you: blankSide(), ai: blankSide() });
+const blankRound = (seed) => ({ seed, rules: RULES_VERSION, at: Date.now(), startNodes: null,
+  you: blankSide(), ai: blankSide() });
 // new_game() seeds mulberry32 with this; keep it in 1..2^31-1 like the app does.
 const randSeed = () => Math.floor(Math.random() * 0x7ffffffe) + 1;
 
@@ -512,7 +515,7 @@ function trimOldest() {
     r.startNodes = null;
     for (const side of [r.you, r.ai]) {
       side.hist = [];
-      side.moves = side.moves.map(m => m.e ? { e: 1 } : { a: m.a });
+      side.moves = side.moves.map(({ l, q, ...keep }) => keep);   // actions + timing
     }
   }
   if (!trimNoted) {
@@ -523,14 +526,16 @@ function trimOldest() {
   return true;
 }
 function trimRound(r) {
+  const rv = r.you.review, played = r.you.moves;
   r.trim = 1;
   r.startNodes = null;
   for (const side of [r.you, r.ai]) { side.moves = []; side.hist = []; }
-  const rv = r.you.review;
-  // keep exactly what the skill graph + tier bar read; drop labels/Qs/turns
+  // keep exactly what the skill graph + tier bar read, plus each decision's think
+  // time (so time-vs-gap stays analyzable); drop labels/Qs/turns
   r.you.review = (rv && !rv.partial)
     ? { version: rv.version, n: rv.n, nLive: rv.nLive, meanLoss: rv.meanLoss, counts: rv.counts,
-        moves: rv.moves.map(m => m && { gap: m.gap, dead: m.dead }) }
+        moves: rv.moves.map((m, k) => m && { gap: m.gap, dead: m.dead,
+          ...(played[k]?.ms != null && { ms: played[k].ms }) }) }
     : null;
 }
 function load() {
@@ -761,6 +766,33 @@ function revealPair(i) {
 // Fully blind: no search is ever issued on your worker while you play. (The opt-in
 // sweep-up offer below used to be an exception; it now certifies its mop-up policy
 // by playing the policy out, so there is no exception left.)
+
+// Think time per decision, for analysis in the data export (never shown). The clock
+// runs from the moment the board is yours to act on (seed dealt, attack resolved,
+// bot turns animated) to the tap that commits the move, and only while you can see
+// the board: animations, a hidden tab and a full-screen panel (the analysis that
+// opens after a loss, results, errors) don't count.
+const think = { on: false, acc: 0, since: null };
+function thinkSync() {
+  const now = performance.now();
+  if (think.since != null) { think.acc += now - think.since; think.since = null; }
+  if (think.on && document.visibilityState === 'visible' && !document.querySelector('.ov.show'))
+    think.since = now;
+}
+function thinkStart() { think.on = true; think.acc = 0; think.since = null; thinkSync(); }
+document.addEventListener('visibilitychange', thinkSync);
+for (const ov of document.querySelectorAll('.ov'))
+  new MutationObserver(thinkSync).observe(ov, { attributes: true, attributeFilter: ['class'] });
+// Stamp a move as it is committed: wall-clock time + think time, or `sw` if swept.
+function timed(mv) {
+  thinkSync();
+  mv.t = Date.now();
+  if (sweeping) mv.sw = 1;
+  else if (think.on) mv.ms = Math.round(think.acc);
+  think.on = false; think.since = null;
+  return mv;
+}
+
 async function startSeed() {
   const r = cur();
   const res = await api('/api/game', 'POST', { seed: r.seed, rules: r.rules ?? LEGACY_RULES_VERSION });
@@ -770,6 +802,7 @@ async function startSeed() {
   adopt(res); resize(); renderStrip();
   sampleHist(r.you, res); save();
   setStatus('Select a red node to attack.');
+  thinkStart();
   aiPump();                                    // the AI starts this seed too, right now
 }
 
@@ -791,7 +824,7 @@ async function yourAttack(from, to) {
   inputLocked = true; board.abort = false; cancelSweepOffer();
   board.selected = null; board.battle = { from, to }; board.draw();
   setStatus('Attacking…');
-  cur().you.moves.push({ a: [from, to], l: mkLabel(state, from, to) });
+  cur().you.moves.push(timed({ a: [from, to], l: mkLabel(state, from, to) }));
   const res = await api(`/api/game/${state.id}/attack`, 'POST', { from, to });
   const e = res.log && res.log[0];
   if (e && e.flips && !board.instant) await replayAnimation(() => board.animateBattle(e));
@@ -801,7 +834,7 @@ async function yourAttack(from, to) {
   setStatus(e ? (e.captured ? 'Captured!' : 'Repelled.') : 'Done.');
   inputLocked = false;
   if (recordEnd(cur().you, res)) await afterYourGame();
-  else maybeOfferSweep();
+  else { thinkStart(); maybeOfferSweep(); }
 }
 
 async function yourEndTurn() {
@@ -809,13 +842,14 @@ async function yourEndTurn() {
   inputLocked = true; board.abort = false; cancelSweepOffer();
   board.selected = null; board.draw();
   setStatus('Ending turn…');
-  cur().you.moves.push({ e: 1 });
+  cur().you.moves.push(timed({ e: 1 }));
   const res = await api(`/api/game/${state.id}/end-turn`, 'POST');
   if (res.events && res.events.length && !board.instant) await replayAnimation(() => board.animateEndTurn(res, setStatus));
   inputLocked = false;
   adopt(res); sampleHist(cur().you, res); save();
   if (recordEnd(cur().you, res)) { await afterYourGame(); return; }
   setStatus('Your move.');
+  thinkStart();
   maybeOfferSweep();
 }
 
@@ -1719,6 +1753,7 @@ async function resume() {
   adopt(s); resize(); renderStrip();
   if (recordEnd(r.you, s)) { await afterYourGame(); return; }
   setStatus('Resumed. Your move.');
+  thinkStart();                                  // restart the clock after the replay
 }
 
 paintBadge(null, true);

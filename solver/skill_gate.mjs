@@ -66,6 +66,19 @@ assert.equal(ctx.trimOldest(), false, 'do not discard the remaining unscored act
 unscored.you.review = round(10).you.review;
 assert.equal(ctx.trimOldest(), true, 'compact queued games can be fully trimmed after grading');
 assert.equal(unscored.trim, 1);
+// Think time survives both trims: the lean pass keeps it on the actions, the full
+// trim moves it into the compact review next to each decision's gap.
+const timedRound = round(9, 2);
+timedRound.you.review = null;
+timedRound.you.moves = [{ e: 1, l: 'label', t: 5, ms: 1200 }, { a: [1, 2], l: 'label', t: 6, sw: 1 }];
+ctx.M.rounds = [timedRound];
+assert.equal(ctx.trimOldest(), true);
+assert.equal(JSON.stringify(timedRound.you.moves),
+  JSON.stringify([{ e: 1, t: 5, ms: 1200 }, { a: [1, 2], t: 6, sw: 1 }]), 'lean trim keeps timing');
+timedRound.you.review = round(9, 2).you.review;
+assert.equal(ctx.trimOldest(), true);
+assert.equal(JSON.stringify(timedRound.you.review.moves),
+  JSON.stringify([{ gap: 9, dead: false, ms: 1200 }, { gap: 9, dead: false }]), 'full trim keeps think time');
 const calls = [];
 ctx.M.rounds = [round(10), round(10), round(10)];
 ctx.M.rounds.forEach(r => r.you.review = null);

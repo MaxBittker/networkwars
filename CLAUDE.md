@@ -158,7 +158,11 @@
         whatever last fit, and every reload resumed that same stale seed. **Save Data (JSON)** in the
         menu downloads the in-memory tally + settings + a session `diagnostics` block (AI-pump events,
         search timings, save failures, in-flight worker requests, reported cores) — the way to debug a
-        device-only failure offline. A worker `onerror` now answers its in-flight requests with
+        device-only failure offline. **Think time** (since 2026-09-27, never shown): each of your moves
+        stores `t` (epoch ms committed) and `ms` (visible time the board was yours before the tap,
+        excluding animations, a hidden tab and full-screen panels). Swept moves carry `sw: 1` and no `ms`;
+        each round stores `at` (dealt). Trimming keeps `ms` beside each review gap, so think time vs
+        mistakes stays analyzable. A worker `onerror` now answers its in-flight requests with
         `{error}` instead of leaving the AI pump waiting forever. Errors are also **surfaced on
         screen** (a phone has no console): uncaught errors/rejections, worker failures, a request
         with no reply after 120 visible seconds, failed AI seeds/reviews and failed saves go to
