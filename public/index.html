@@ -249,6 +249,8 @@
         <div class="mi sp" data-speed="fast">Fast</div>
         <div class="mi sp" data-speed="medium">Classic</div>
         <div class="mi sp" data-speed="slow">Slow</div>
+        <div class="div"></div>
+        <div class="mi" id="mi-export">Save Data (JSON)</div>
       </div>
     </div>
     <div id="chips"></div>
@@ -340,24 +342,46 @@ board.onReplay = (faction, nodes) => renderHeader(faction, nodes);
 let state = null;            // authoritative view of YOUR game
 let inputLocked = false;
 
+// ---- diagnostics: never shown in the UI, only written into the data export, so a
+// device-specific failure (e.g. the AI stalling on a phone but not on a desktop)
+// can be read offline instead of guessed at. A bounded event ring + counters.
+const diag = { started: new Date().toISOString(), events: [], saveFails: 0, lastSaveError: null,
+  aiSearches: 0, aiSims: 0, aiSearchMs: 0, aiSearchMaxMs: 0 };
+function note(ev, detail) {
+  diag.events.push({ t: Math.round(performance.now()) / 1000, ev, ...detail });
+  if (diag.events.length > 400) diag.events.splice(0, 100);
+}
+document.addEventListener('visibilitychange', () => note(document.visibilityState));
+
 // ---- independent engines: yours, the AI's, and (lazily, in review.js) the review pool's ----
-function makeEngine() {
+const engines = [];            // every worker's in-flight requests, for the export
+function makeEngine(name = 'review') {
   const w = new Worker('engine.worker.js', { type: 'module' });
-  const pending = new Map();
+  const pending = new Map();   // id -> { resolve, path, t }
   let id = 0;
+  engines.push({ name, pending });
   w.onmessage = (e) => {
     const d = e.data;
     if (d.type === 'progress') return;             // neither side streams here
     const r = pending.get(d.id);
-    if (r) { pending.delete(d.id); r(d.result); }
+    if (r) { pending.delete(d.id); r.resolve(d.result); }
+  };
+  // A worker that fails to load or dies with an uncaught error never answers, and
+  // its callers (the AI pump above all) would wait forever without a trace. Answer
+  // everything in flight with an ordinary {error} reply instead.
+  w.onerror = (e) => {
+    const error = `${name} worker: ${e.message || 'failed'}`;
+    note('worker-error', { error });
+    for (const r of pending.values()) r.resolve({ error });
+    pending.clear();
   };
   return (path, method = 'GET', body) => new Promise((resolve) => {
-    const k = ++id; pending.set(k, resolve);
+    const k = ++id; pending.set(k, { resolve, path, t: performance.now() });
     w.postMessage({ id: k, path, method, body });
   });
 }
-const api = makeEngine();      // your game — never issues a search while you play
-const aiApi = makeEngine();    // the AI's background game
+const api = makeEngine('you');   // your game — never issues a search while you play
+const aiApi = makeEngine('ai');  // the AI's background game
 const inspectMove = createReplayInspector(api);
 // Decision scoring (review.js): its own worker pool, created on the first review.
 const reviewer = createReviewer(makeEngine);
@@ -393,7 +417,11 @@ function save() {
     if (js.length > SAVE_CAP && trimOldest()) continue;
     try { localStorage.setItem(KEY, js); return true; }
     catch (e) {
-      if (!trimOldest()) { console.warn('tally save failed:', e); return false; }
+      if (!trimOldest()) {
+        console.warn('tally save failed:', e);
+        diag.saveFails++; diag.lastSaveError = `${String(e)} (${js.length} chars)`;
+        return false;
+      }
     }
   }
 }
@@ -420,6 +448,7 @@ function trimOldest() {
   if (!trimNoted) {
     trimNoted = true;
     console.warn(`tally near the storage cap — trimming replay detail from the oldest seeds`);
+    note('trim', { i });
   }
   return true;
 }
@@ -570,9 +599,13 @@ async function aiPump() {
       // error threw out of the pump, and every later call picked the same broken
       // seed again, so the AI never finished another game all session.
       try { await aiPlaySeed(i); }
-      catch (e) { aiErr[i] = String(e && e.message || e); console.warn(`AI seed ${i + 1}:`, e); }
+      catch (e) {
+        aiErr[i] = String(e && e.message || e); console.warn(`AI seed ${i + 1}:`, e);
+        note('ai-error', { i, error: aiErr[i] });
+      }
     }
   } finally {
+    note('ai-idle');
     aiBusy = false;
     reviewer.setLanes(reviewer.workers);       // idle: background scoring may fan out
     paintBadge(null, true);
@@ -590,6 +623,7 @@ async function aiStep(path, method, body) {
 async function aiPlaySeed(i) {
   const r = M.rounds[i];
   const g = r.ai;
+  note('ai-seed', { i, resumeAt: g.moves.length });
   let s = await aiStep('/api/game', 'POST', { seed: r.seed, rules: r.rules ?? LEGACY_RULES_VERSION });
   // Resume saved AI actions using the seed's dice, without repeating searches.
   // This also lets the pump switch seeds between moves without losing work.
@@ -602,7 +636,11 @@ async function aiPlaySeed(i) {
   // reading "idle" while the AI is actually grinding is a lie.
   paintBadge(s.nodes, false);
   for (let guard = 0; guard < 4000 && !s.over; guard++) {
+    const t0 = performance.now();
     const res = await aiStep(`/api/game/${s.id}/search`, 'POST', { sims: AI_SIMS });
+    const ms = performance.now() - t0;
+    diag.aiSearches++; diag.aiSims += res.sims || 0; diag.aiSearchMs += ms;
+    diag.aiSearchMaxMs = Math.max(diag.aiSearchMaxMs, ms);
     const b = res.best;
     const q = res.winexp == null ? null : Math.round(res.winexp * 1e4) / 1e4;   // 4 dp: storage
     if (!b || b.action === -1) {
@@ -618,6 +656,7 @@ async function aiPlaySeed(i) {
     paintBadge(s.nodes, false);
     if (g.moves.length % 4 === 0) save();        // throttled: full-state write per move is wasteful
     if (!s.over && nextAiSeed() !== i) {
+      note('ai-switch', { i, moves: g.moves.length });
       save();
       await aiStep(`/api/game/${s.id}`, 'DELETE');
       return;
@@ -626,6 +665,7 @@ async function aiPlaySeed(i) {
   }
   if (!s.over) throw new Error('AI move limit reached');
   recordEnd(g, s);
+  note('ai-done', { i, result: g.result, moves: g.moves.length });
   await aiStep(`/api/game/${s.id}`, 'DELETE');
   save();
   renderStrip();
@@ -1398,6 +1438,7 @@ async function runReview(i) {
     save();
   } catch (e) {
     reviewErr[i] = String(e && e.message || e);
+    note('review-error', { i, error: reviewErr[i] });
     save();                          // keep completed positions available for retry
   } finally {
     reviewing.delete(i);
@@ -1488,6 +1529,37 @@ $('mi-paste').onclick = async () => {
   save();
   renderStrip();
   await startSeed();
+};
+
+// ---- data export: the whole tally (every seed, move list and review) + settings as
+// one JSON download, plus the session's diagnostics (see `diag`). The in-memory
+// tally is exported, not the stored copy: it is never older, and if saves have been
+// failing it is the only complete one. ----
+$('mi-export').onclick = () => {
+  menupop.classList.remove('show');
+  save();
+  const get = (k) => { try { return localStorage.getItem(k); } catch (_) { return null; } };
+  const tally = JSON.stringify(M), stored = get(KEY), now = performance.now();
+  const data = {
+    app: 'network-wars-h2h', exported: new Date().toISOString(),
+    tally: M,
+    settings: Object.fromEntries(['nwSweep', 'nwSpeed', 'nwSkillZoom'].map(k => [k, get(k)])),
+    diagnostics: {
+      userAgent: navigator.userAgent, hardwareConcurrency: navigator.hardwareConcurrency,
+      reviewWorkers: reviewer.workers, tallyChars: tally.length,
+      storedChars: stored == null ? null : stored.length, storedInSync: stored === tally,
+      aiBusy, aiErr, reviewErr, reviewing: [...reviewing],
+      inFlight: engines.flatMap(e => [...e.pending.values()].map(p =>
+        ({ engine: e.name, path: p.path, ageS: Math.round(now - p.t) / 1000 }))),
+      ...diag,
+    },
+  };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `network-wars-${data.exported.slice(0, 10)}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 };
 
 // ============================ boot ============================

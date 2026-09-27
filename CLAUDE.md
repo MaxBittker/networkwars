@@ -155,7 +155,11 @@
         otherwise they can never leave the analysis backlog. A failed review
         does not stop the pump from analyzing the rest. Before
         this (fixed 2026-09-04) a quota error was swallowed, the saved state froze at
-        whatever last fit, and every reload resumed that same stale seed. Caveat (documented in the page's header comment, no
+        whatever last fit, and every reload resumed that same stale seed. **Save Data (JSON)** in the
+        menu downloads the in-memory tally + settings + a session `diagnostics` block (AI-pump events,
+        search timings, save failures, in-flight worker requests, reported cores) — the way to debug a
+        device-only failure offline; never surfaced in the UI. A worker `onerror` now answers its
+        in-flight requests with `{error}` instead of leaving the AI pump waiting forever. Caveat (documented in the page's header comment, no
         longer surfaced in the UI): same seed = same deal + same dice STREAM, but draws
         are consumed serially, so once your moves diverge from the AI's you pull
         different coins. Duplicate bridge, not dice-for-dice (which isn't coherent once
