@@ -13,6 +13,10 @@
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin:0; height:100%; background:#04100c; color:#cfe;
     font-family: -apple-system, "SF Pro Display", Segoe UI, Roboto, sans-serif; overflow:hidden; }
+  /* no native selection or long-press callout; iOS otherwise selects a whole
+     canvas on long press */
+  body, canvas { -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+  #err-list, #err-ctx { -webkit-user-select:text; user-select:text; }
   #app { display:flex; flex-direction:column; height:100%; max-width:440px; margin:0 auto;
     position:relative;
     background:linear-gradient(180deg, #051219 0%, #032017 53%, #242006 100%); }
@@ -955,6 +959,7 @@ function dragUp(ev) {
   board.draw();
 }
 $('cv').addEventListener('pointerup', dragUp);
+for (const ev of ['contextmenu', 'selectstart']) $('cv').addEventListener(ev, (e) => e.preventDefault());
 $('cv').addEventListener('pointercancel', (ev) => { if (drag && ev.pointerId === drag.pid) { endDrag(); board.draw(); } });
 $('endturn').onclick = () => { if (!sweeping) yourEndTurn(); };
 $('aibadge').onclick = () => showResults();
