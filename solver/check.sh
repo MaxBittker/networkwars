@@ -21,5 +21,6 @@ for gate in board projection skill review_scheduler rules_worker; do
   node "solver/${gate}_gate.mjs"
 done
 node solver/worker_gate.mjs 40
+node solver/yield_gate.mjs
 node solver/review_gate.mjs 11 4
 git diff --check

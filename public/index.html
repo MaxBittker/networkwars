@@ -722,6 +722,7 @@ async function aiPlaySeed(i) {
     const ms = performance.now() - t0;
     diag.aiSearches++; diag.aiSims += res.sims || 0; diag.aiSearchMs += ms;
     diag.aiSearchMaxMs = Math.max(diag.aiSearchMaxMs, ms);
+    if (res.yield && res.yield !== diag.aiYield) { diag.aiYield = res.yield; note('ai-yield', { mode: res.yield }); }
     const b = res.best;
     const q = res.winexp == null ? null : Math.round(res.winexp * 1e4) / 1e4;   // 4 dp: storage
     if (!b || b.action === -1) {
@@ -1689,7 +1690,8 @@ function errContext() {
     `cores ${navigator.hardwareConcurrency} · review workers ${reviewer.workers}`
       + ` · AI ${aiBusy ? 'busy' : 'idle'} · failed saves ${diag.saveFails}`,
     `AI searches ${diag.aiSearches}`
-      + (diag.aiSearches ? `, avg ${s(diag.aiSearchMs / diag.aiSearches)}, max ${s(diag.aiSearchMaxMs)}` : ''),
+      + (diag.aiSearches ? `, avg ${s(diag.aiSearchMs / diag.aiSearches)}, max ${s(diag.aiSearchMaxMs)}` : '')
+      + (diag.aiYield ? ` · yield ${diag.aiYield}` : ''),
     `in flight: ${inFlight.join('; ') || 'none'}`,
   ].join('\n');
 }

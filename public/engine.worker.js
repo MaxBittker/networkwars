@@ -223,6 +223,7 @@ async function doSearch(g, sims = 2000, cPuct = 2.5, nroll = 1, simSeed = 0x1234
     const r = E.uctReport();
     const out = buildResult(r.acts, r.visits, r.q);
     out.sims = E.uctSimsDone(); out.done = done;
+    out.yield = portYield ? 'port' : 'timer';   // diagnostics: has the port fallback fired?
     return out;
   } finally {
     E.setGrade(0);
@@ -309,10 +310,28 @@ let pumping = false;
 // Fast macrotask yield via MessageChannel (no setTimeout clamping). Client
 // postMessages that arrived during the last uctStep chunk are queued ahead of
 // our port message, so they hit `inbox` before the yield resolves.
-let _yieldDone = null;
+//
+// A timer races every port yield. WebKit brokers each MessagePort through its
+// networking process, even a channel inside one worker, and when iOS suspends or
+// kills that process (the app is backgrounded), ports stop delivering without any
+// error. The search then awaited a yield that never came, and every later request
+// queued behind it: on a phone every searching worker (the AI, the review pool)
+// was wedged for the rest of the session, while the player's worker, which never
+// searches, kept working. If the timer wins, the channel is treated as dead and
+// this worker yields on timers from then on (4 ms clamp per chunk, never a hang).
+const PORT_GRACE_MS = 250;
+let _yieldDone = null, portYield = true;
 const _yield = new MessageChannel();
 _yield.port1.onmessage = () => { const r = _yieldDone; _yieldDone = null; if (r) r(); };
-const yieldToInbox = () => new Promise(r => { _yieldDone = r; _yield.port2.postMessage(0); });
+const yieldToInbox = () => new Promise(resolve => {
+  let settled = false;
+  const done = () => { if (!settled) { settled = true; clearTimeout(timer); resolve(); } };
+  const timer = setTimeout(() => {
+    if (!settled && portYield) { portYield = false; _yieldDone = null; }
+    done();
+  }, portYield ? PORT_GRACE_MS : 0);
+  if (portYield) { _yieldDone = done; _yield.port2.postMessage(0); }
+});
 
 self.onmessage = (ev) => { inbox.push(ev.data); pump(); };
 

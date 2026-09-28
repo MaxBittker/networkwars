@@ -175,7 +175,14 @@
         screen** (a phone has no console): uncaught errors/rejections, worker failures, a request
         with no reply after 120 visible seconds, failed AI seeds/reviews and failed saves go to
         `reportError` → a red pill in the seed strip (absent when there are none) → a list with
-        Copy/Clear. Persisted in `nwErrors` so they survive iOS reloading the tab. Caveat (documented in the page's header comment, no
+        Copy/Clear. Persisted in `nwErrors` so they survive iOS reloading the tab. That pill found
+        the phone-only "no AI results" bug (2026-09-28): `engine.worker.js` yields between
+        search chunks through a MessageChannel, and WebKit brokers every MessagePort via its
+        networking process, which iOS suspends/kills when the app is backgrounded — ports
+        then stop delivering with no error, so every searching worker (AI + review pool)
+        awaited a yield forever for the rest of the session. The yield now races a 250 ms
+        timer and falls back to timer yields for good (results bit-identical). Gate:
+        `node solver/yield_gate.mjs` (kills the port mid-session; old code hangs). Caveat (documented in the page's header comment, no
         longer surfaced in the UI): same seed = same deal + same dice STREAM, but draws
         are consumed serially, so once your moves diverge from the AI's you pull
         different coins. Duplicate bridge, not dice-for-dice (which isn't coherent once
