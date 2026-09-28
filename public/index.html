@@ -415,10 +415,19 @@ function makeEngine(name = 'review') {
   // and the second one is then not controlled by sw.js, so its imports fail offline.
   const w = new Worker(`engine.worker.js?${engines.length}`, { type: 'module' });
   const pending = new Map();   // id -> { resolve, path, t }
-  let id = 0;
-  engines.push({ name, pending });
+  let id = 0, pongs = [];
+  // beat: the worker's last finished search chunk; ping: its probe(), answered
+  // outside its request queue (null if it doesn't answer) — both for stall reports.
+  const entry = { name, pending, beat: null,
+    ping: () => new Promise((resolve) => {
+      pongs.push(resolve); w.postMessage({ ping: 1 });
+      setTimeout(() => resolve(null), 5000);
+    }) };
+  engines.push(entry);
   w.onmessage = (e) => {
     const d = e.data;
+    if (d.type === 'beat') { entry.beat = { sims: d.sims, at: performance.now() }; return; }
+    if (d.type === 'pong') { for (const r of pongs.splice(0)) r(d.probe); return; }
     if (d.type === 'progress') return;             // neither side streams here
     const r = pending.get(d.id);
     if (r) { pending.delete(d.id); r.resolve(d.result); }
@@ -440,7 +449,9 @@ function makeEngine(name = 'review') {
 // A worker that silently stops answering (killed by the OS) raises nothing at all.
 // Flag any request with no reply after STALL_S seconds of the page being VISIBLE —
 // a suspended phone page isn't stalled, and the slowest legitimate request (an AI
-// search at its 150k ceiling) takes seconds, not minutes.
+// search at its 150k ceiling) takes seconds, not minutes. The report says where the
+// worker stopped: its last search chunk (from beats) and, if it still answers a
+// ping, what its queue is doing.
 const STALL_S = 120;
 setInterval(() => {
   if (document.visibilityState !== 'visible') return;
@@ -448,10 +459,19 @@ setInterval(() => {
     p.vis += 5;
     if (p.vis >= STALL_S && !p.stalled) {
       p.stalled = true;
-      reportError(e.name, `no reply to ${p.path} after ${STALL_S}s`);
+      reportStall(e, p);
     }
   }
 }, 5000);
+async function reportStall(e, p) {
+  const now = performance.now(), age = (t) => ((now - t) / 1000).toFixed(1) + 's';
+  const beat = e.beat && e.beat.at > p.t ? e.beat : null;
+  const head = `no reply to ${p.path} after ${STALL_S}s visible (${age(p.t)} total)`
+    + (beat ? ` · last chunk ${age(beat.at)} ago at ${beat.sims} sims` : ' · no search chunk finished');
+  const probe = await e.ping();
+  reportError(e.name, head
+    + (probe ? ` · worker answers: ${JSON.stringify(probe)}` : ' · worker does not answer a ping'));
+}
 const api = makeEngine('you');   // your game — never issues a search while you play
 const aiApi = makeEngine('ai');  // the AI's background game
 const inspectMove = createReplayInspector(api);
@@ -719,7 +739,6 @@ async function aiPlaySeed(i) {
     const ms = performance.now() - t0;
     diag.aiSearches++; diag.aiSims += res.sims || 0; diag.aiSearchMs += ms;
     diag.aiSearchMaxMs = Math.max(diag.aiSearchMaxMs, ms);
-    if (res.yield && res.yield !== diag.aiYield) { diag.aiYield = res.yield; note('ai-yield', { mode: res.yield }); }
     const b = res.best;
     const q = res.winexp == null ? null : Math.round(res.winexp * 1e4) / 1e4;   // 4 dp: storage
     if (!b || b.action === -1) {
@@ -1702,8 +1721,7 @@ function errContext() {
     `cores ${navigator.hardwareConcurrency} · review workers ${reviewer.workers}`
       + ` · AI ${aiBusy ? 'busy' : 'idle'} · failed saves ${diag.saveFails}`,
     `AI searches ${diag.aiSearches}`
-      + (diag.aiSearches ? `, avg ${s(diag.aiSearchMs / diag.aiSearches)}, max ${s(diag.aiSearchMaxMs)}` : '')
-      + (diag.aiYield ? ` · yield ${diag.aiYield}` : ''),
+      + (diag.aiSearches ? `, avg ${s(diag.aiSearchMs / diag.aiSearches)}, max ${s(diag.aiSearchMaxMs)}` : ''),
     `in flight: ${inFlight.join('; ') || 'none'}`,
   ].join('\n');
 }

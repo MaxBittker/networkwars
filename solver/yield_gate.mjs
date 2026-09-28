@@ -1,30 +1,25 @@
-// Gate for engine.worker.js's between-chunk yield surviving a dead MessagePort.
+// Gate for engine.worker.js's between-chunk yield and its liveness reporting.
 // On iOS, WebKit brokers every MessagePort through its networking process; when
 // iOS suspends or kills that process, ports stop delivering with no error. The
-// worker's search used to await a port yield forever, wedging the AI and review
-// workers for the rest of the session (found via the page's stall reports on a
-// phone). This hosts the worker in node, kills its channel mid-session, and
-// asserts a search still finishes on the timer fallback, bit-identical to the
-// same search with a working channel.
+// worker's search used to yield through a MessageChannel and then hung forever,
+// wedging the AI and review workers for the rest of the session (found via the
+// page's stall reports on a phone). The worker now yields on timers only; this
+// makes MessageChannel unusable before loading it, so any reintroduction fails.
+// It also checks what the page's stall reports rely on: a `beat` per finished
+// search chunk, and a `ping` answered outside the request queue mid-search.
 //
 //   node solver/yield_gate.mjs
 import assert from 'node:assert/strict';
 
-// A MessageChannel whose deliveries can be switched off, like a port whose broker died.
-let portsDead = false;
-const Native = globalThis.MessageChannel;
 globalThis.MessageChannel = class {
-  constructor() {
-    const ch = new Native();
-    this.port1 = ch.port1;
-    this.port2 = { postMessage: (m) => { if (!portsDead) ch.port2.postMessage(m); } };
-    ch.port1.unref?.();
-  }
+  constructor() { throw new Error('engine.worker.js must not use MessageChannel (iOS drops ports)'); }
 };
 globalThis.self = globalThis;
-const pending = new Map();
+const pending = new Map(), beats = [], pongs = [];
 let nextReq = 0;
 self.postMessage = (msg) => {
+  if (msg.type === 'beat') { beats.push(msg.sims); return; }
+  if (msg.type === 'pong') { pongs.push(msg.probe); return; }
   const r = pending.get(msg.id);
   if (r) { pending.delete(msg.id); r(msg.result); }
 };
@@ -38,19 +33,21 @@ const within = (p, ms, what) => Promise.race([p, new Promise((_, rej) =>
 
 const game = await api('/api/game', 'POST', { seed: 11 });
 const search = { sims: 6000, maxSims: 30000 };
-const live = await within(api(`/api/game/${game.id}/search`, 'POST', search), 60000, 'live-port search');
-assert.equal(live.done, true);
-assert.equal(live.yield, 'port', 'a working channel keeps the fast port yield');
-
-portsDead = true;
-const t0 = performance.now();
-const dead = await within(api(`/api/game/${game.id}/search`, 'POST', search), 60000, 'dead-port search');
-assert.equal(dead.done, true, 'the search runs to its own stop, not an abort');
-assert.equal(dead.yield, 'timer', 'a dead channel falls back to timer yields');
-assert.deepEqual(dead.all, live.all, 'yield mode never changes the search result');
-assert.equal(dead.sims, live.sims);
-const again = await within(api(`/api/game/${game.id}/search`, 'POST', search), 60000, 'timer-mode search');
-assert.deepEqual(again.all, live.all);
-console.log(`PASS: dead MessagePort -> timer yields (${(performance.now() - t0).toFixed(0)} ms for two`
-  + ` searches), results bit-identical to the live-port search (${live.sims} sims)`);
+const first = within(api(`/api/game/${game.id}/search`, 'POST', search), 60000, 'search');
+setTimeout(() => self.onmessage({ data: { ping: 1 } }), 0);   // lands between chunks
+const out = await first;
+assert.equal(out.done, true, 'the search runs to its own stop');
+assert.ok(beats.length >= 2, 'one beat per finished chunk');
+assert.equal(beats.at(-1), out.sims, 'the last beat is the final sim count');
+assert.equal(pongs.length, 1, 'a ping is answered mid-search, outside the queue');
+const p = pongs[0];
+assert.equal(p.path, `/api/game/${game.id}/search`);
+assert.equal(p.pumping, true);
+assert.ok(p.chunks >= 1 && p.lastChunkMs >= 0 && p.busyMs >= 0, JSON.stringify(p));
+const again = await within(api(`/api/game/${game.id}/search`, 'POST', search), 60000, 'repeat search');
+assert.deepEqual(again.all, out.all, 'timer-yield searches are deterministic');
+self.onmessage({ data: { ping: 1 } });
+assert.equal(pongs[1].path, null, 'an idle worker reports no request in progress');
+console.log(`PASS: no MessageChannel in the worker; ${beats.length} beats, mid-search ping `
+  + `answered (${p.chunks} chunks in), repeat search identical (${out.sims} sims)`);
 process.exit(0);

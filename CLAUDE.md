@@ -184,9 +184,12 @@
         search chunks through a MessageChannel, and WebKit brokers every MessagePort via its
         networking process, which iOS suspends/kills when the app is backgrounded — ports
         then stop delivering with no error, so every searching worker (AI + review pool)
-        awaited a yield forever for the rest of the session. The yield now races a 250 ms
-        timer and falls back to timer yields for good (results bit-identical). Gate:
-        `node solver/yield_gate.mjs` (kills the port mid-session; old code hangs). Caveat (documented in the page's header comment, no
+        awaited a yield forever for the rest of the session. The worker now yields on
+        timers only (no MessageChannel; measured no slower, results identical). A stall
+        report says where the worker stopped: its last search chunk (a `beat` message
+        per chunk) and, via a `ping` answered outside the request queue, what its pump
+        is doing, or that it doesn't answer. Gate: `node solver/yield_gate.mjs`
+        (MessageChannel made unusable; beats; mid-search ping). Caveat (documented in the page's header comment, no
         longer surfaced in the UI): same seed = same deal + same dice STREAM, but draws
         are consumed serially, so once your moves diverge from the AI's you pull
         different coins. Duplicate bridge, not dice-for-dice (which isn't coherent once

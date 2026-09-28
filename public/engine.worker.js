@@ -209,6 +209,8 @@ async function doSearch(g, sims = 2000, cPuct = 2.5, nroll = 1, simSeed = 0x1234
     let done = false;
     while (!done) {
       done = E.uctStep(SEARCH_CHUNK);
+      live.chunks++; live.chunkAt = performance.now();
+      self.postMessage({ type: 'beat', sims: E.uctSimsDone() });   // progress, for stall reports
       if (tag != null) {
         const r = E.uctReport();
         const out = buildResult(r.acts, r.visits, r.q);
@@ -223,7 +225,6 @@ async function doSearch(g, sims = 2000, cPuct = 2.5, nroll = 1, simSeed = 0x1234
     const r = E.uctReport();
     const out = buildResult(r.acts, r.visits, r.q);
     out.sims = E.uctSimsDone(); out.done = done;
-    out.yield = portYield ? 'port' : 'timer';   // diagnostics: has the port fallback fired?
     return out;
   } finally {
     E.setGrade(0);
@@ -307,39 +308,41 @@ function route(path, method, body) {
 const inbox = [];
 let pumping = false;
 
-// Fast macrotask yield via MessageChannel (no setTimeout clamping). Client
-// postMessages that arrived during the last uctStep chunk are queued ahead of
-// our port message, so they hit `inbox` before the yield resolves.
-//
-// A timer races every port yield. WebKit brokers each MessagePort through its
-// networking process, even a channel inside one worker, and when iOS suspends or
-// kills that process (the app is backgrounded), ports stop delivering without any
-// error. The search then awaited a yield that never came, and every later request
-// queued behind it: on a phone every searching worker (the AI, the review pool)
-// was wedged for the rest of the session, while the player's worker, which never
-// searches, kept working. If the timer wins, the channel is treated as dead and
-// this worker yields on timers from then on (4 ms clamp per chunk, never a hang).
-const PORT_GRACE_MS = 250;
-let _yieldDone = null, portYield = true;
-const _yield = new MessageChannel();
-_yield.port1.onmessage = () => { const r = _yieldDone; _yieldDone = null; if (r) r(); };
+// Liveness, for the page's stall reports: the request being served and since when,
+// and how far the current search has got. Read by probe(), which answers a ping
+// outside the request queue, so a stalled request still shows where it stopped.
+const live = { path: null, since: 0, chunks: 0, chunkAt: 0, yieldSince: 0 };
+function probe() {
+  const now = performance.now(), ago = (t) => t ? Math.round(now - t) : null;
+  return { pumping, queued: inbox.length, path: live.path, busyMs: ago(live.since),
+    chunks: live.chunks, lastChunkMs: ago(live.chunkAt), yieldWaitMs: ago(live.yieldSince),
+    engine: !!E };
+}
+
+// Macrotask yield between search chunks: client postMessages that arrived during
+// the last chunk land in `inbox` before it resolves. A timer, not a MessageChannel:
+// WebKit brokers every MessagePort through its networking process, which iOS
+// suspends or kills when the app is backgrounded, and ports then stop delivering
+// with no error. A search awaiting one hung its worker for the rest of the session
+// (2026-09-28: the phone's AI and review workers all stalled on /search). Timer
+// yields measured no slower (20k-sim searches, WebKit and Chromium: ~600 ms either
+// way), and yield_gate.mjs keeps MessageChannel out of this worker.
 const yieldToInbox = () => new Promise(resolve => {
-  let settled = false;
-  const done = () => { if (!settled) { settled = true; clearTimeout(timer); resolve(); } };
-  const timer = setTimeout(() => {
-    if (!settled && portYield) { portYield = false; _yieldDone = null; }
-    done();
-  }, portYield ? PORT_GRACE_MS : 0);
-  if (portYield) { _yieldDone = done; _yield.port2.postMessage(0); }
+  live.yieldSince = performance.now();
+  setTimeout(() => { live.yieldSince = 0; resolve(); }, 0);
 });
 
-self.onmessage = (ev) => { inbox.push(ev.data); pump(); };
+self.onmessage = (ev) => {
+  if (ev.data && ev.data.ping) { self.postMessage({ type: 'pong', probe: probe() }); return; }
+  inbox.push(ev.data); pump();
+};
 
 async function pump() {
   if (pumping) return;
   pumping = true;
   while (inbox.length) {
     const { id, path, method, body } = inbox.shift();
+    Object.assign(live, { path, since: performance.now(), chunks: 0, chunkAt: 0 });
     try {
       if (!E) {
         E = await loadEngine();
@@ -354,5 +357,6 @@ async function pump() {
       self.postMessage({ id, result: { error: String(err && err.message || err) } });
     }
   }
+  live.path = null; live.since = 0;
   pumping = false;
 }
