@@ -59,12 +59,8 @@
     text-underline-offset:3px; letter-spacing:.02em; }
   #tally:active { opacity:.55; }
   #tally .y { color:var(--teal); } #tally .a { color:var(--yellow); }
-  /* error pill: absent unless something failed (a phone has no console to show it) */
-  #errpill { display:none; flex:0 0 auto; padding:1px 7px; border-radius:9px; cursor:pointer;
-    background:rgba(255,74,98,.16); border:1px solid rgba(255,74,98,.6); color:#ff7d8a;
-    font-weight:800; letter-spacing:.02em; }
-  #errpill.show { display:inline-block; }
-  #errpill:active { opacity:.55; }
+  /* error log: a menu item (a phone has no console to show it), counted when non-empty */
+  #mi-errn { color:#ff7d8a; font-weight:800; margin-left:6px; }
   .err { padding:8px 0; border-bottom:1px solid rgba(255,255,255,.06); }
   .err-meta { font-size:11px; color:#7fb6a6; letter-spacing:.03em; }
   .err-msg { font:12px/1.4 ui-monospace, Menlo, monospace; color:#ffb3bc;
@@ -264,13 +260,13 @@
         <div class="mi sp" data-speed="slow">Slow</div>
         <div class="div"></div>
         <div class="mi" id="mi-export">Save Data (JSON)</div>
+        <div class="mi" id="mi-errors">Errors<span id="mi-errn"></span></div>
       </div>
     </div>
     <div id="chips"></div>
   </header>
   <div id="mstrip">
     <span id="mgame">—</span>
-    <span id="errpill"></span>
     <span id="tally">—</span>
   </div>
 
@@ -302,7 +298,7 @@
   </div>
 </div></div>
 
-<!-- errors (only reachable from the error pill) -->
+<!-- errors (reachable from the menu) -->
 <div class="ov" id="ov-err"><div class="panel">
   <div class="p-head"><span>Errors</span><div class="act" id="err-close">&#10005;</div></div>
   <div class="p-body"><div id="err-list"></div><div id="err-ctx"></div></div>
@@ -349,7 +345,7 @@
 // ============================================================================
 import { Board, ORDER, SPEEDS, sleep, dirArrow, drawThumb } from './board.js?v=4';
 import { createReviewer, tierOf, invalidateStaleReview } from './review.js';
-import { LEGACY_RULES_VERSION, RULES_VERSION } from './game-version.js';
+import { LEGACY_RULES_VERSION, RULES_VERSION, RELEASE } from './game-version.js';
 import { aiWinCurve, youWinCurve } from './projections.js';
 import { createReplayInspector } from './replay.js';
 import { skillHistory, skillComparison, skillTrend } from './skill.js';
@@ -379,10 +375,11 @@ document.addEventListener('visibilitychange', () => note(document.visibilityStat
 
 // ---- errors, surfaced on screen: a phone has no console, so every failure the
 // page can see (uncaught errors, a worker that dies or stops answering, an AI seed
-// or review that fails, a save that doesn't fit) lands in `diag.errors` and lights
-// the red pill in the strip; tapping it lists them. Kept in their own small
-// localStorage key so they survive iOS reloading the tab; earlier sessions' entries
-// are marked `prev`. Repeats of the same message count up instead of stacking.
+// or review that fails, a save that doesn't fit) lands in `diag.errors`, counted on
+// the menu's Errors item, which lists them. Each carries the release that raised
+// it. Kept in their own small localStorage key so they survive iOS reloading the
+// tab; earlier sessions' entries are marked `prev`. Repeats of the same message
+// count up instead of stacking.
 const ERR_KEY = 'nwErrors', ERR_MAX = 60;
 try { diag.errors = (JSON.parse(localStorage.getItem(ERR_KEY)) || []).map(e => ({ ...e, prev: 1 })); }
 catch (_) { diag.errors = []; }
@@ -391,7 +388,7 @@ function reportError(src, msg) {
   const at = new Date().toISOString();
   const same = diag.errors.find(e => !e.prev && e.src === src && e.msg === msg);
   if (same) { same.n++; same.at = at; }
-  else diag.errors.push({ src, msg, n: 1, at });
+  else diag.errors.push({ src, msg, n: 1, at, v: RELEASE });
   if (diag.errors.length > ERR_MAX) diag.errors.splice(0, diag.errors.length - ERR_MAX);
   note('error', { src, msg });
   try { localStorage.setItem(ERR_KEY, JSON.stringify(diag.errors)); } catch (_) {}
@@ -1673,19 +1670,34 @@ $('mi-export').onclick = () => {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 };
 
-// ---- error pill + panel (see reportError) ----
+// ---- error log: a menu item + panel (see reportError), counted in the menu only,
+// so harmless errors add no noise to the board ----
 function renderErrors() {
   const n = diag.errors.reduce((a, e) => a + e.n, 0);
-  $('errpill').textContent = `⚠︎ ${n}`;
-  $('errpill').classList.toggle('show', n > 0);
+  $('mi-errn').textContent = n ? String(n) : '';
   if ($('ov-err').classList.contains('show')) fillErrPanel();
 }
-// What was running when you looked: device, AI state, and any request still waiting.
+// Is this tab running the latest deploy? A resumed phone tab keeps the code it
+// loaded, and sw.js serves the cached page when the network stalls. Ask the
+// network for the current page (sw.js lets this through) and compare releases.
+let latestRelease = null;             // null: not checked, offline, or dev
+async function checkLatest() {
+  if (RELEASE === 'dev') return;
+  try {
+    const html = await (await fetch('./', { cache: 'no-store' })).text();
+    latestRelease = html.match(/assets\/([0-9a-f]{16})\//)?.[1] ?? null;
+  } catch (_) { latestRelease = null; }
+  renderErrors();
+}
+const short = (v) => v.slice(0, 7);
+// What was running when you looked: version, device, AI state, and any request still waiting.
 function errContext() {
   const now = performance.now(), s = (ms) => (ms / 1000).toFixed(1) + 's';
   const inFlight = engines.flatMap(e => [...e.pending.values()].map(p =>
     `${e.name} ${p.path} ${s(now - p.t)}`));
   return [
+    `version ${short(RELEASE)}` + (latestRelease == null ? ''
+      : latestRelease === RELEASE ? ' (latest)' : ` — newer ${short(latestRelease)} deployed, reload`),
     navigator.userAgent,
     `cores ${navigator.hardwareConcurrency} · review workers ${reviewer.workers}`
       + ` · AI ${aiBusy ? 'busy' : 'idle'} · failed saves ${diag.saveFails}`,
@@ -1698,13 +1710,21 @@ function errContext() {
 function fillErrPanel() {
   const list = $('err-list');
   list.innerHTML = '';
+  if (!diag.errors.length) {
+    const none = document.createElement('div');
+    none.className = 'err-meta';
+    none.textContent = 'No errors recorded.';
+    list.appendChild(none);
+  }
   for (const e of diag.errors.slice().reverse()) {             // newest first
     const row = document.createElement('div');
     row.className = 'err' + (e.prev ? ' prev' : '');
     const meta = document.createElement('div');
     meta.className = 'err-meta';
-    meta.textContent = [new Date(e.at).toLocaleString(), e.src,
-      e.n > 1 ? `×${e.n}` : '', e.prev ? 'earlier session' : ''].filter(Boolean).join(' · ');
+    // Entries without `v` were recorded before errors carried a version: older code.
+    meta.textContent = [new Date(e.at).toLocaleString(), e.src, e.n > 1 ? `×${e.n}` : '',
+      e.prev ? 'earlier session' : '', e.v !== RELEASE ? 'older version' : '']
+      .filter(Boolean).join(' · ');
     const msg = document.createElement('div');
     msg.className = 'err-msg';
     msg.textContent = e.msg;
@@ -1713,11 +1733,17 @@ function fillErrPanel() {
   }
   $('err-ctx').textContent = errContext();
 }
-$('errpill').onclick = () => { fillErrPanel(); $('ov-err').classList.add('show'); };
+$('mi-errors').onclick = () => {
+  menupop.classList.remove('show');
+  fillErrPanel();
+  $('ov-err').classList.add('show');
+  checkLatest();
+};
 $('err-close').onclick = () => $('ov-err').classList.remove('show');
 $('err-copy').onclick = async () => {
   const text = diag.errors.map(e => `${e.at} ${e.src}${e.n > 1 ? ` x${e.n}` : ''}`
-    + `${e.prev ? ' (earlier session)' : ''}\n${e.msg}`).join('\n\n') + '\n\n' + errContext();
+    + `${e.prev ? ' (earlier session)' : ''} [${e.v ? short(e.v) : 'old'}]\n${e.msg}`)
+    .join('\n\n') + '\n\n' + errContext();
   try {
     await navigator.clipboard.writeText(text);
     $('err-copy').textContent = 'Copied';
@@ -1730,7 +1756,7 @@ $('err-clear').onclick = () => {
   $('ov-err').classList.remove('show');
   renderErrors();
 };
-renderErrors();                        // earlier sessions' errors light the pill on load
+renderErrors();                        // earlier sessions' errors count in the menu on load
 
 // ============================ boot ============================
 // Resume: your recorded moves replay back into a fresh game for the seed in progress

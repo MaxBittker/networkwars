@@ -174,8 +174,12 @@
         `{error}` instead of leaving the AI pump waiting forever. Errors are also **surfaced on
         screen** (a phone has no console): uncaught errors/rejections, worker failures, a request
         with no reply after 120 visible seconds, failed AI seeds/reviews and failed saves go to
-        `reportError` → a red pill in the seed strip (absent when there are none) → a list with
-        Copy/Clear. Persisted in `nwErrors` so they survive iOS reloading the tab. That pill found
+        `reportError` → the menu's **Errors** item (count only there, so harmless errors add
+        no noise to the board) → a list with Copy/Clear, each entry tagged with the release
+        that raised it (`RELEASE` from game-version.js, the assets/<hash> dir; 'dev' locally).
+        The panel's first line is the running version, checked against the live page ("newer
+        … deployed, reload") — a resumed phone tab keeps old code and sw.js may serve the
+        cached page. Persisted in `nwErrors` so they survive iOS reloading the tab. That log found
         the phone-only "no AI results" bug (2026-09-28): `engine.worker.js` yields between
         search chunks through a MessageChannel, and WebKit brokers every MessagePort via its
         networking process, which iOS suspends/kills when the app is backgrounded — ports
